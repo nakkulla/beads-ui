@@ -23206,7 +23206,13 @@ export function createScheduler(deps) {
           )
         : await agyQuotaVerdict(workspace, agy_model);
       if (provider.held) {
-        return { ok: false, reason: 'provider_held' };
+        // An agy quota read outside the external-wait return is the hold an
+        // ordinary rung reports as `provider_gate`: it waits, never spends
+        // the retry ladder the way a permanent `provider_held` would.
+        return {
+          ok: false,
+          reason: external_wait_resume ? 'provider_held' : 'provider_gate'
+        };
       }
       const agy_after = agy ? agyListRefusal(agy_model) : null;
       if (agy_after !== null) {

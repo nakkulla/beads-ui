@@ -17652,7 +17652,7 @@ describe('scheduler agy pre-run gate (UI-h0hwo Phase 2)', () => {
 
       const result = await env.scheduler.resume(WS, env.attempt_id);
 
-      expect(result).toEqual({ ok: false, reason: 'provider_held' });
+      expect(result).toEqual({ ok: false, reason: 'provider_gate' });
       expect(env.runner.spawnOrder).toEqual(['A1']);
     });
 

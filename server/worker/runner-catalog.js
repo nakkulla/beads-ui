@@ -636,8 +636,10 @@ function dropAgyIdsTakenElsewhere(runners, active, builtin_names, warn) {
 /**
  * Build the model → runner index, enforcing global model-name uniqueness.
  * Builtin names (including the codex names generated from the CLI list and the
- * agy ids from `agy models`) are registered first so they always win; a
- * config-added name that collides is dropped from its runner. Two builtin names
+ * agy ids from `agy models`) are registered first so they win; a config-added
+ * name that collides is dropped from its runner. The one exception runs
+ * before them: a listed agy id that a Claude or Codex model already names,
+ * builtin or config-added, is dropped from agy instead. Two builtin names
  * that collide keep the runner earlier in `active`, so a listed agy id never
  * takes a Claude or Codex name. Both passes walk `active` in order, so the
  * result does not depend on config declaration order.

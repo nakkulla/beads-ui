@@ -513,6 +513,7 @@ describe('nested usage legs across providers (UI-2mpn §5.3)', () => {
     expect(result).toEqual([codex_leg]);
   });
 
+  // A synthetic receipt, like the inbox one above (follow-up UI-4clyv).
   test('accepts an agy delegation receipt unchanged', () => {
     const agy_leg = {
       ...codex_leg,
