@@ -10,6 +10,7 @@
  *
  * @import { ChildProcess } from 'node:child_process'
  * @import { Account } from './account-catalog.js'
+ * @import { AgyQuota } from './agy-model-list.js'
  * @import { GlobalProviderTarget } from './provider-holds.js'
  */
 import debug from 'debug';
@@ -19,6 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
 import { timingLadder, timingSeconds } from '../timing-settings.js';
+import { agyModelList } from './agy-model-list.js';
 import {
   codexAccountAuthFile,
   prepareCodexAccountHome as defaultPrepareCodexAccountHome
@@ -282,6 +284,7 @@ function decodeCodexProbe(stdout) {
  *   codexRoot?: string,
  *   homeDir?: string,
  *   catalog?: ReturnType<typeof runtimeCatalog>,
+ *   agyQuota?: () => Promise<AgyQuota>,
  *   now?: () => number,
  *   setTimeoutImpl?: (fn: () => void, delay: number) => any,
  *   clearTimeoutImpl?: (handle: any) => void
@@ -296,6 +299,7 @@ export function createProviderHealth(deps) {
   // Read per use: the runtime catalog is swapped when the Codex model list
   // changes (UI-gpac §3.3), so a captured copy would probe stale model ids.
   const catalogNow = () => deps.catalog || runtimeCatalog();
+  const agyQuota = deps.agyQuota || (() => agyModelList().quota());
   const setTimeoutImpl = deps.setTimeoutImpl || setTimeout;
   const clearTimeoutImpl = deps.clearTimeoutImpl || clearTimeout;
   const holds = deps.holds || deps.store.providerHolds;
@@ -739,6 +743,9 @@ export function createProviderHealth(deps) {
    * @returns {Promise<{ ok: boolean, outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }|null, error: string }>}
    */
   async function probeTarget(cwd, runner, target) {
+    if (runner === 'agy') {
+      return probeAgyQuota();
+    }
     const argv = await probeArgv(runner, target);
     if (!argv) {
       return { ok: false, outage: null, error: 'probe_route_unavailable' };
@@ -813,6 +820,43 @@ export function createProviderHealth(deps) {
       ok: false,
       outage,
       error: outage?.message || result.stderr || 'probe_failed'
+    };
+  }
+
+  /**
+   * The agy probe is the pre-run quota read itself (agy-runtime §3.2): no
+   * process is started here. An exhausted `Gemini Models` bucket keeps the
+   * hold until its reset; any other answer, a failed read included, releases
+   * it, because a read failure never blocks an agy launch. A reset time that
+   * already passed is dropped so the next probe waits the unknown-reset delay
+   * instead of firing at once.
+   *
+   * @returns {Promise<{ ok: boolean, outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }|null, error: string }>}
+   */
+  async function probeAgyQuota() {
+    /** @type {AgyQuota} */
+    let quota;
+    try {
+      quota = await agyQuota();
+    } catch (err) {
+      quota = { state: 'unknown', reason: String(err) };
+    }
+    if (quota.state !== 'exhausted') {
+      return { ok: true, outage: null, error: '' };
+    }
+    const message = `agy Gemini quota exhausted (${quota.buckets.join(', ')})`;
+    return {
+      ok: false,
+      outage: {
+        detail: 'usage_limit',
+        message,
+        scope: 'account',
+        resets_at:
+          quota.resets_at !== null && quota.resets_at > now()
+            ? quota.resets_at
+            : null
+      },
+      error: message
     };
   }
 

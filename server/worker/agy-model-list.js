@@ -46,6 +46,13 @@ export const AGY_QUOTA_CACHE_MS = 180_000;
 const QUOTA_GROUP = 'Gemini Models';
 
 /**
+ * The account an agy quota hold names. No agy output carries an account
+ * name until `agy-auth` lands (Phase 3), so every agy hold is on the one
+ * logged-in pool the credential fingerprint follows.
+ */
+export const AGY_HOLD_ACCOUNT = 'agy:active';
+
+/**
  * Session models shown by default; the rest are enabled in model visibility.
  *
  * @type {ReadonlyArray<string>}
@@ -496,6 +503,27 @@ export function createAgyModelList(options = {}) {
   }
 
   /**
+   * Whether a cached answer still stands: inside its reuse window, and not an
+   * exhausted verdict whose reset time already passed — the hold probe at the
+   * reset must read the CLI again.
+   *
+   * @param {{ value: AgyQuota, expires_at: number }} entry
+   * @returns {boolean}
+   */
+  function quotaCacheFresh(entry) {
+    const at = now();
+    if (at >= entry.expires_at) {
+      return false;
+    }
+    const value = entry.value;
+    return !(
+      value.state === 'exhausted' &&
+      value.resets_at !== null &&
+      value.resets_at <= at
+    );
+  }
+
+  /**
    * One `/usage` read, judged. A failure is `unknown`.
    *
    * @returns {Promise<AgyQuota>}
@@ -637,7 +665,7 @@ export function createAgyModelList(options = {}) {
      * @returns {Promise<AgyQuota>}
      */
     quota() {
-      if (quota_cache && now() < quota_cache.expires_at) {
+      if (quota_cache && quotaCacheFresh(quota_cache)) {
         return Promise.resolve(quota_cache.value);
       }
       if (!quota_in_flight) {

@@ -17,6 +17,10 @@ import {
   __resetTimingSettingsForTest,
   __setTimingOverridesForTest
 } from '../timing-settings.js';
+import {
+  AGY_HOLD_ACCOUNT,
+  __setAgyModelListForTest
+} from './agy-model-list.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import { selectCodexSwitchCandidate } from './codex-switch-candidate.js';
 import { createDirectionInquiry } from './direction-inquiry.js';
@@ -50,7 +54,7 @@ import {
 } from './resolve-session.js';
 import { claudeSpec } from './runner/claude.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
-import { createRunner } from './runner/index.js';
+import { __resetRuntimeCatalogForTest, createRunner } from './runner/index.js';
 import { runSession, terminalResultOf } from './runner/session.js';
 import {
   BASE_FETCH_RETRY_MS,
@@ -2232,6 +2236,8 @@ function setup(opts) {
     // error settles on the active account.
     recentClaudeSwitch: /** @type {any} */ (opts).recentClaudeSwitch,
     providerHealth: opts.providerHealth,
+    // Absent by default: no agy model is in the catalog, so no agy gate runs.
+    agyModels: /** @type {any} */ (opts).agyModels,
     // Absent by default: an unwired kv channel leaves the repo account layer
     // ABSENT, which is what every test that never stores a default expects.
     kvGet: opts.kvGet,
@@ -17344,7 +17350,7 @@ describe('scheduler dispatch through the REAL createRunner (spawn-literal wiring
     const env = setup({
       config: { S1: {} },
       slots: 1,
-      makeRunner: () => createRunner('agy', { spawn_impl })
+      makeRunner: () => createRunner('gemini', { spawn_impl })
     });
     seedQueue(env.store, ['S1']);
 
@@ -17356,6 +17362,165 @@ describe('scheduler dispatch through the REAL createRunner (spawn-literal wiring
     expect(a.cause).toBe('unknown_runner');
     expect(spawn_impl.captured.calls).toHaveLength(0);
     expect(env.scheduler.isRunning('S1')).toBe(false);
+  });
+});
+
+describe('scheduler agy pre-run gate (UI-h0hwo Phase 2)', () => {
+  const AGY_MODEL = 'gemini-4-neon-high';
+  const RESET = 5_000_000;
+
+  /**
+   * An injected agy model list holding one id, with a scripted quota.
+   *
+   * @param {{ ready?: boolean, quota?: () => Promise<any> }} [options]
+   */
+  function agyModels(options = {}) {
+    let ready = options.ready ?? true;
+    return {
+      names: () => [AGY_MODEL],
+      ready: () => ready,
+      revision: () => 1,
+      status: () => ({ source: 'list', read_at: 1 }),
+      checkCredentials: vi.fn(() => {
+        if (options.ready === false) {
+          ready = false;
+        }
+        return options.ready === false;
+      }),
+      quota: vi.fn(options.quota || (async () => ({ state: 'ok' }))),
+      stop: () => {}
+    };
+  }
+
+  /**
+   * @param {ReturnType<typeof agyModels>} models
+   */
+  function agySetup(models) {
+    __setAgyModelListForTest(/** @type {any} */ (models));
+    __resetRuntimeCatalogForTest();
+    return setup(
+      /** @type {any} */ ({
+        config: { A1: { model: AGY_MODEL } },
+        slots: 1,
+        agyModels: models
+      })
+    );
+  }
+
+  afterEach(() => {
+    __setAgyModelListForTest(null);
+    __resetRuntimeCatalogForTest();
+  });
+
+  test('launches an agy model through the agy runner when the quota is left', async () => {
+    const models = agyModels();
+    const env = agySetup(models);
+    seedQueue(env.store, ['A1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.factoryNames).toEqual(['agy']);
+    expect(env.runner.spawnOrder).toEqual(['A1']);
+    expect(models.quota).toHaveBeenCalledTimes(1);
+  });
+
+  test('holds an agy launch until the reset when a Gemini bucket is exhausted', async () => {
+    const models = agyModels({
+      quota: async () => ({
+        state: 'exhausted',
+        resets_at: RESET,
+        buckets: ['gemini-5h']
+      })
+    });
+    const env = agySetup(models);
+    seedQueue(env.store, ['A1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.providerHolds.holds().agy.targets).toEqual([
+      expect.objectContaining({
+        kind: 'usage_limit',
+        model: AGY_MODEL,
+        account: AGY_HOLD_ACCOUNT,
+        detail: 'usage_limit',
+        resets_at: RESET
+      })
+    ]);
+    expect(env.store.snapshot(WS).admission.A1).toMatchObject({
+      reason: 'provider_gate',
+      gate: {
+        runner: 'agy',
+        kind: 'usage_limit',
+        account: AGY_HOLD_ACCOUNT,
+        unresolved: false
+      }
+    });
+  });
+
+  test('keeps an agy row gated by the standing hold without reading the quota again', async () => {
+    const models = agyModels({
+      quota: async () => ({
+        state: 'exhausted',
+        resets_at: RESET,
+        buckets: ['gemini-5h']
+      })
+    });
+    const env = agySetup(models);
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(models.quota).toHaveBeenCalledTimes(1);
+  });
+
+  test('launches the held agy row once the hold is released', async () => {
+    const models = agyModels({
+      quota: async () => ({
+        state: 'exhausted',
+        resets_at: RESET,
+        buckets: ['gemini-5h']
+      })
+    });
+    const env = agySetup(models);
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    const target = env.store.providerHolds.holds().agy.targets[0];
+    models.quota.mockImplementation(async () => ({ state: 'ok' }));
+
+    env.store.providerHolds.remove(target.target_id);
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['A1']);
+  });
+
+  test('launches an agy row when the quota read fails', async () => {
+    const models = agyModels({
+      quota: async () => ({ state: 'unknown', reason: 'timed out' })
+    });
+    const env = agySetup(models);
+    seedQueue(env.store, ['A1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['A1']);
+    expect(env.store.providerHolds.holds().agy).toBeUndefined();
+  });
+
+  test('refuses an agy launch while no model list stands for the credentials', async () => {
+    const models = agyModels({ ready: false });
+    const env = agySetup(models);
+    seedQueue(env.store, ['A1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(models.quota).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).admission.A1).toMatchObject({
+      reason: 'agy_model_list_unavailable'
+    });
   });
 });
 

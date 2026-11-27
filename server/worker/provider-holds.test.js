@@ -2,11 +2,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { AGY_HOLD_ACCOUNT } from './agy-model-list.js';
+import { createProviderHealth, usageResetGraceMs } from './provider-health.js';
 import {
   createProviderHoldStore,
   effectiveProviderHolds,
   providerTargetScope
 } from './provider-holds.js';
+import { createQueueStore } from './queue-store.js';
 import { providerHoldsFilePath } from './state-paths.js';
 
 /** @type {string} */
@@ -375,5 +378,158 @@ describe('effective provider holds (UI-3v1h §5.5)', () => {
       switch_ready_at: null,
       switch_ready_account: null
     });
+  });
+});
+
+describe('agy quota hold release (UI-h0hwo Phase 2)', () => {
+  const WS = '/tmp/example-workspace/agy-repo';
+  const NOW = Date.parse('2026-11-27T12:00:00Z');
+  const RESET = Date.parse('2026-11-27T16:52:46Z');
+
+  /**
+   * A probe controller over a real queue store and hold store, with every
+   * timer and the quota read injected.
+   *
+   * @param {() => Promise<import('./agy-model-list.js').AgyQuota>} agyQuota
+   */
+  function agyHealth(agyQuota) {
+    let clock = NOW;
+    /** @type {Array<{ fn: () => void, delay: number, done: boolean }>} */
+    const timers = [];
+    const store = createQueueStore({ now: () => clock });
+    const tick = vi.fn(async () => {});
+    const spawnImpl = vi.fn(() => {
+      throw new Error('no process in this test');
+    });
+    const health = createProviderHealth({
+      store,
+      accountCatalog: {},
+      tick,
+      spawnImpl,
+      repo: WS,
+      agyQuota,
+      now: () => clock,
+      stateDir: () => tmp_state,
+      setTimeoutImpl: (fn, delay) => {
+        const entry = { fn, delay, done: false };
+        timers.push(entry);
+        return entry;
+      },
+      clearTimeoutImpl: (/** @type {any} */ entry) => {
+        entry.done = true;
+      }
+    });
+    return {
+      store,
+      health,
+      tick,
+      spawnImpl,
+      timers,
+      /** @param {number} at */
+      setClock(at) {
+        clock = at;
+      },
+      async fireNext() {
+        const entry = timers.find((candidate) => !candidate.done);
+        if (!entry) {
+          throw new Error('no armed timer');
+        }
+        entry.done = true;
+        entry.fn();
+        for (let i = 0; i < 5; i++) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      }
+    };
+  }
+
+  /**
+   * @param {ReturnType<typeof createQueueStore>} store
+   */
+  function holdAgy(store) {
+    return store.providerHolds.enter({
+      runner: 'agy',
+      origin: WS,
+      target: {
+        kind: 'usage_limit',
+        model: 'gemini-4-neon-high',
+        account: AGY_HOLD_ACCOUNT,
+        detail: 'usage_limit',
+        last_error: 'Gemini 잔량 소진',
+        resets_at: RESET,
+        rearm_count: 0
+      }
+    });
+  }
+
+  test('arms the agy probe for the reset time and releases after it', async () => {
+    const quota = vi.fn(async () => ({ state: /** @type {const} */ ('ok') }));
+    const env = agyHealth(quota);
+    holdAgy(env.store);
+
+    env.health.sync(WS);
+    const armed = env.timers.find((entry) => !entry.done);
+    env.setClock(RESET + usageResetGraceMs());
+    await env.fireNext();
+
+    expect(armed?.delay).toBe(RESET + usageResetGraceMs() - NOW);
+    expect(quota).toHaveBeenCalledTimes(1);
+    expect(env.store.providerHolds.holds().agy).toBeUndefined();
+    expect(env.store.snapshot(WS).provider_hold.agy).toBeUndefined();
+    expect(env.tick).toHaveBeenCalledWith(WS);
+  });
+
+  test('keeps the agy hold while the quota still reads exhausted', async () => {
+    const next_reset = RESET + 5 * 60 * 60 * 1000;
+    const quota = vi.fn(async () => ({
+      state: /** @type {const} */ ('exhausted'),
+      resets_at: next_reset,
+      buckets: ['gemini-5h']
+    }));
+    const env = agyHealth(quota);
+    holdAgy(env.store);
+
+    env.health.sync(WS);
+    env.setClock(RESET + usageResetGraceMs());
+    await env.fireNext();
+
+    expect(env.store.providerHolds.holds().agy.targets).toEqual([
+      expect.objectContaining({
+        account: AGY_HOLD_ACCOUNT,
+        resets_at: next_reset,
+        rearm_count: 1
+      })
+    ]);
+    expect(env.timers.filter((entry) => !entry.done)).toEqual([
+      expect.objectContaining({
+        delay: next_reset + usageResetGraceMs() - (RESET + usageResetGraceMs())
+      })
+    ]);
+  });
+
+  test('releases the agy hold when the quota read fails', async () => {
+    const quota = vi.fn(async () => ({
+      state: /** @type {const} */ ('unknown'),
+      reason: 'timed out'
+    }));
+    const env = agyHealth(quota);
+    holdAgy(env.store);
+
+    env.health.sync(WS);
+    await env.fireNext();
+
+    expect(env.store.providerHolds.holds().agy).toBeUndefined();
+  });
+
+  test('resolves an agy probe without spawning a process', async () => {
+    const quota = vi.fn(async () => ({ state: /** @type {const} */ ('ok') }));
+    const env = agyHealth(quota);
+    holdAgy(env.store);
+
+    env.health.sync(WS);
+    await env.fireNext();
+
+    expect(env.spawnImpl).not.toHaveBeenCalled();
+    expect(quota).toHaveBeenCalledTimes(1);
   });
 });

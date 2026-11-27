@@ -81,6 +81,7 @@ import {
   WORKSPACE_ACCOUNTS_KV_KEY,
   normalizeWorkspaceAccounts
 } from '../workspace-accounts.js';
+import { AGY_HOLD_ACCOUNT, agyModelList } from './agy-model-list.js';
 import { buildAttemptFacts } from './attempt-facts.js';
 import { writeAttemptPrompts } from './attempt-prompts.js';
 import { observeBaseDrift } from './base-drift.js';
@@ -209,6 +210,7 @@ import {
   RUNNERS,
   UNKNOWN_RUNNER,
   adapterSpec,
+  dispatchCatalog,
   isUnknownRunnerError,
   runtimeCatalog
 } from './runner/index.js';
@@ -1153,6 +1155,9 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {{ cover_ms: number, max_wait_ms: number }} [waitingRescan]
  * @property {{ sync: (workspace: string) => void }} [providerHealth]
  * Waiting-return throttle timings. Production uses the constants above.
+ * @property {{ ready: () => boolean, checkCredentials: () => boolean, quota: () => Promise<import('./agy-model-list.js').AgyQuota> }} [agyModels]
+ * The agy model list and pre-run quota read (agy-runtime §3.2-§3.3); the
+ * process-wide reader when absent.
  */
 
 // Per-lane occupancy is the store's ONE walk (`queue-store.js` `laneHolds`):
@@ -1600,6 +1605,9 @@ const FAILURE_HANDOFF_ACTIONS = Object.freeze({
  * (UI-1fss §4.3): it stays on the card while the failure row stands.
  */
 const NO_WORKER_EXIT_REFUSAL = '이 행에는 Worker 출구 없음';
+
+/** Refusal reason for an agy launch while no model list stands. */
+const AGY_MODEL_LIST_UNAVAILABLE = 'agy_model_list_unavailable';
 
 /**
  * The run recorded as the retry of `operation_id` — the one whose `retry_of`
@@ -4921,7 +4929,9 @@ export function createScheduler(deps) {
         ? accounts.claude
         : runner === 'codex'
           ? accounts.codex
-          : null;
+          : runner === 'agy'
+            ? AGY_HOLD_ACCOUNT
+            : null;
     if (account === null) {
       try {
         if (runner === 'claude' && deps.accountCatalog?.activeClaude) {
@@ -4965,6 +4975,65 @@ export function createScheduler(deps) {
       };
     }
     return { held: false };
+  }
+
+  /**
+   * The agy pre-run gate (agy-runtime §3.2-§3.3), judged after the provider
+   * gate let the row through. The credentials are re-stated first: a moved
+   * fingerprint drops the list, and no agy run starts until a new list for
+   * the new credentials arrives (`refused`). An exhausted `Gemini Models`
+   * bucket enters a global usage-limit target that holds every agy row until
+   * the reset, which the provider probe then confirms (`held`). A failed
+   * quota read never blocks the launch, and a `[지금 시작]` row skips the
+   * quota as it skips the provider gate.
+   *
+   * @param {string} workspace
+   * @param {string|null} model
+   * @param {boolean} start_now_bypass
+   * @returns {Promise<'launch'|'held'|'refused'>}
+   */
+  async function agyLaunchGate(workspace, model, start_now_bypass) {
+    const models = deps.agyModels || agyModelList();
+    models.checkCredentials();
+    if (!models.ready()) {
+      return 'refused';
+    }
+    if (start_now_bypass) {
+      return 'launch';
+    }
+    /** @type {import('./agy-model-list.js').AgyQuota} */
+    let quota;
+    try {
+      quota = await models.quota();
+    } catch (err) {
+      quota = { state: 'unknown', reason: String(err) };
+    }
+    if (quota.state !== 'exhausted') {
+      return 'launch';
+    }
+    const message = `agy Gemini quota exhausted (${quota.buckets.join(', ')})`;
+    try {
+      deps.store.providerHolds.enter({
+        runner: 'agy',
+        origin: path.resolve(workspace),
+        target: {
+          kind: 'usage_limit',
+          model: model ?? 'agy',
+          account: AGY_HOLD_ACCOUNT,
+          detail: 'usage_limit',
+          last_error: message,
+          resets_at:
+            quota.resets_at !== null && quota.resets_at > now()
+              ? quota.resets_at
+              : null,
+          rearm_count: 0
+        }
+      });
+    } catch (err) {
+      log('agy quota hold write failed for %s: %o', workspace, err);
+    }
+    deps.providerHealth?.sync(workspace);
+    return 'held';
   }
 
   /**
@@ -16309,6 +16378,31 @@ export function createScheduler(deps) {
         claimed.delete(bead_id);
         return;
       }
+      if (runner_name === 'agy') {
+        const agy_gate = await agyLaunchGate(
+          workspace,
+          exec.orchestration_model ?? null,
+          start_now_bypass
+        );
+        if (agy_gate === 'refused') {
+          reservation.release();
+          refuseDispatch(workspace, bead_id, AGY_MODEL_LIST_UNAVAILABLE);
+          return;
+        }
+        if (agy_gate === 'held') {
+          recordSkipReason(workspace, bead_id, 'provider_gate', {
+            gate: {
+              runner: 'agy',
+              kind: 'usage_limit',
+              account: AGY_HOLD_ACCOUNT,
+              unresolved: false
+            }
+          });
+          reservation.release();
+          claimed.delete(bead_id);
+          return;
+        }
+      }
 
       const attempt_id = makeAttemptId(bead_id);
       const prior = snap.workflow_mode ?? null;
@@ -21396,7 +21490,7 @@ export function createScheduler(deps) {
     /** @type {any} */
     let catalog;
     try {
-      catalog = runtimeCatalog();
+      catalog = dispatchCatalog();
     } catch {
       return false;
     }
@@ -21440,7 +21534,7 @@ export function createScheduler(deps) {
   async function priorExecutionUsable(prior, options = {}) {
     const runner = typeof prior.runner === 'string' ? prior.runner : '';
     try {
-      if (!runtimeCatalog().runners[runner]) {
+      if (!dispatchCatalog().runners[runner]) {
         return false;
       }
     } catch {

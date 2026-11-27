@@ -456,6 +456,27 @@ describe('worker/agy-model-list pre-run quota', () => {
     expect(execFile).toHaveBeenCalledTimes(2);
   });
 
+  test('rereads a cached exhausted answer once its reset time passed', async () => {
+    const payload = JSON.parse(USAGE_TEXT);
+    payload.command.data.groups[0].buckets[1].remaining_fraction = 0;
+    payload.command.data.groups[0].buckets[1].reset_time =
+      '1970-01-01T00:00:10Z';
+    const execFile = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: JSON.stringify(payload) })
+      .mockResolvedValueOnce({ stdout: USAGE_TEXT });
+    let clock = 0;
+    const list = makeList({ execFile, now: () => clock });
+    const first = await list.quota();
+
+    clock = 10_000;
+    const second = await list.quota();
+
+    expect(first.state).toBe('exhausted');
+    expect(second).toEqual({ state: 'ok' });
+    expect(execFile).toHaveBeenCalledTimes(2);
+  });
+
   test('reads unknown on a failed read and caches nothing', async () => {
     const execFile = vi
       .fn()
