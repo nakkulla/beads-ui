@@ -777,6 +777,19 @@ describe('spec conversation clicks', () => {
     expect(h.launcher.launch).not.toHaveBeenCalled();
   });
 
+  test('launches the fixed conversation runtime when the resolver yields no runner', async () => {
+    const h = fixture({
+      currentRunner: () => null,
+      conversationSettings: () => ({ fresh_runtime: 'codex' })
+    });
+
+    await h.authoring.launchForClick({ workspace: ROOT, bead_id: B });
+
+    expect(h.launcher.launch).toHaveBeenCalledWith(
+      expect.objectContaining({ runner: 'codex' })
+    );
+  });
+
   test('launches claude for an inherited claude runner', async () => {
     const h = fixture({ currentRunner: () => 'claude' });
 

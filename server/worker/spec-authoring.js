@@ -402,20 +402,20 @@ export function createSpecAuthoring(deps) {
    * @param {boolean} automatic
    */
   async function launch(root, bead_id, target, automatic) {
-    // Without a wired resolver the conversation keeps its claude default. A
-    // wired resolver that yields no registered runner (`null` is how dispatch
-    // resolution reports `unknown_runner`) is refused rather than run as
-    // claude (UI-6o70).
+    // Without a wired resolver the conversation keeps its claude default. When
+    // the conversation inherits a runner that is not registered (`null` is how
+    // dispatch resolution reports `unknown_runner`), it is refused rather than
+    // run as claude (UI-6o70); a fixed conversation runtime never inherits.
     const inherited = deps.currentRunner
       ? deps.currentRunner(root, target.issue)
       : 'claude';
-    if (inherited !== 'claude' && inherited !== 'codex') {
-      return refused(UNKNOWN_RUNNER);
-    }
     const runner = freshConversationRuntime(
       (deps.conversationSettings || getConversationSettings)(),
       inherited
     );
+    if (runner !== 'claude' && runner !== 'codex') {
+      return refused(UNKNOWN_RUNNER);
+    }
     const accounts = await resolveSessionLaunchOptions(
       deps.resolveSessionAccounts,
       root,

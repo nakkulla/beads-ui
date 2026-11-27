@@ -283,11 +283,14 @@ export function conversationLaunchFlags(runner, values, catalog = null) {
 
 /**
  * The runtime a FRESH conversation runs: the setting, or the inherited
- * provider when the setting is `inherit`.
+ * provider when the setting is `inherit`. The inherited value passes through
+ * as given, so a caller holding an unresolved runner (`null`) checks the
+ * result itself.
  *
+ * @template {string|null} T
  * @param {Pick<ConversationSettingValues, 'fresh_runtime'>} values
- * @param {ConversationRunner} inherited
- * @returns {ConversationRunner}
+ * @param {T} inherited
+ * @returns {ConversationRunner|T}
  */
 export function freshConversationRuntime(values, inherited) {
   return values.fresh_runtime === 'claude' || values.fresh_runtime === 'codex'
