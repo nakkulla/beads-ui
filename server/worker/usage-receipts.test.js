@@ -92,6 +92,8 @@ describe('attempt usage receipts', () => {
     }
   });
 
+  // Synthetic: no agy producer writes a receipt yet. Replace this fixture with
+  // real producer output once one exists (follow-up Bead UI-4clyv).
   test('reads an agy receipt from the attempt inbox', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-receipt-'));
     temp_roots.push(root);

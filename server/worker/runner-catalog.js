@@ -598,6 +598,42 @@ function mergeRunnerSection(runners, runner_name, section, warn) {
 }
 
 /**
+ * Drop every listed agy id that another active runner's `models` already
+ * carries, builtin or config-added. The builtin-first rule of
+ * {@link buildModelIndex} would otherwise let an agy id from the CLI list take
+ * a name a config file gave a Claude or Codex model, moving that model to agy.
+ *
+ * @param {Record<string, RunnerCatalogEntry>} runners
+ * @param {ReadonlyArray<string>} active
+ * @param {Record<string, Set<string>>} builtin_names
+ * @param {(message: string) => void} warn
+ */
+function dropAgyIdsTakenElsewhere(runners, active, builtin_names, warn) {
+  const agy = hasOwn(runners, 'agy') ? runners.agy : null;
+  const listed = hasOwn(builtin_names, 'agy') ? builtin_names.agy : null;
+  if (!agy || !listed) {
+    return;
+  }
+  for (const model_name of Object.keys(agy.models)) {
+    if (!listed.has(model_name)) {
+      continue;
+    }
+    const owner = active.find(
+      (runner_name) =>
+        runner_name !== 'agy' &&
+        hasOwn(runners, runner_name) &&
+        hasOwn(runners[runner_name].models, model_name)
+    );
+    if (owner === undefined) {
+      continue;
+    }
+    warn(`agy 모델 ${model_name} 무시: 모델명이 ${owner} 러너와 충돌합니다.`);
+    delete agy.models[model_name];
+    listed.delete(model_name);
+  }
+}
+
+/**
  * Build the model → runner index, enforcing global model-name uniqueness.
  * Builtin names (including the codex names generated from the CLI list and the
  * agy ids from `agy models`) are registered first so they always win; a
@@ -613,6 +649,7 @@ function mergeRunnerSection(runners, runner_name, section, warn) {
  * @returns {Record<string, string>}
  */
 function buildModelIndex(runners, active, builtin_names, warn) {
+  dropAgyIdsTakenElsewhere(runners, active, builtin_names, warn);
   /** @type {Record<string, string>} */
   const model_index = {};
 

@@ -841,6 +841,24 @@ describe('worker/runner-catalog agy ids from the agy list', () => {
     expect(catalog.runners.agy.models.sol).toBe(undefined);
   });
 
+  test('keeps a config-added claude model when a listed agy id takes its name', () => {
+    const warn = vi.fn();
+
+    const catalog = resolveCatalog({
+      overrides: { claude: { models: { 'gemini-4-neon-high': {} } } },
+      agy_names: ['gemini-4-neon-high', 'gemini-4-carbon-medium'],
+      warn
+    });
+
+    expect(modelRunner(catalog, 'gemini-4-neon-high')).toBe('claude');
+    expect(catalog.runners.claude.models['gemini-4-neon-high']).toBeDefined();
+    expect(catalog.runners.agy.models['gemini-4-neon-high']).toBe(undefined);
+    expect(modelRunner(catalog, 'gemini-4-carbon-medium')).toBe('agy');
+    expect(warn).toHaveBeenCalledWith(
+      'agy 모델 gemini-4-neon-high 무시: 모델명이 claude 러너와 충돌합니다.'
+    );
+  });
+
   test('gives an agy model no effort and only the default speed', () => {
     const catalog = resolveCatalog({
       agy_names: ['gemini-4-neon-high'],

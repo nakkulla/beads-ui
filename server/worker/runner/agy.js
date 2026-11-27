@@ -4,9 +4,10 @@
  * CLI (measured against the installed launcher, 2026-11-28):
  * `agy -p <prompt> --output-format stream-json --model <id>
  * --dangerously-skip-permissions`, and on the resume branch the same argv with
- * `--conversation <id>` appended. agy is always launched through the launcher
- * `~/.local/bin/agy`, so the builtin catalog command `agy` resolves there; a
- * `[runner.agy] command` override is taken verbatim.
+ * `--conversation <id>` appended. agy runs only through the launcher
+ * `~/.local/bin/agy`, which carries the paid-credit guard, so the catalog
+ * command (`[runner.agy] command` included) is never read; tests inject a path
+ * through `options.launcher`.
  *
  * agy has no system-prompt flag, so the preamble is prepended to the task
  * prompt — the pair still rides back out on the build result so the recording
@@ -37,13 +38,6 @@ import { builtinCatalog } from '../runner-catalog.js';
 import { workRecoveryReadinessEnv } from '../work-recovery-policy.js';
 import { applyPreamble, defaultTaskPrompt } from './preamble.js';
 import { runSession } from './session.js';
-
-/**
- * The builtin catalog command that stands for the launcher.
- *
- * @type {string}
- */
-const BUILTIN_COMMAND = 'agy';
 
 /**
  * Tools that ask the operator something. An unattended run cannot answer, so
@@ -452,7 +446,7 @@ function createNormalizer() {
 
 /**
  * Build the agy adapter spec. `catalog_entry` is the resolved catalog's agy
- * entry; the builtin command resolves to the launcher.
+ * entry; its `command` is ignored and the launcher always runs.
  *
  * @param {RunnerCatalogEntry} [catalog_entry]
  * @param {{ env?: Record<string, string|undefined>, launcher?: string }} [options]
@@ -461,10 +455,7 @@ function createNormalizer() {
 export function agySpec(catalog_entry, options = {}) {
   const entry = catalog_entry ?? builtinCatalog().agy;
   const routing_env = options.env || {};
-  const command =
-    entry.command === BUILTIN_COMMAND
-      ? (options.launcher ?? agyLauncherPath())
-      : entry.command;
+  const command = options.launcher ?? agyLauncherPath();
   return {
     name: 'agy',
     buildArgv(bead, _workspace, settings) {

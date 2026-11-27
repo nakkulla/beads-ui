@@ -17376,22 +17376,49 @@ describe('scheduler agy pre-run gate (UI-h0hwo Phase 2)', () => {
    */
   function agyModels(options = {}) {
     let ready = options.ready ?? true;
+    let moved = options.ready === false;
     let dropped = false;
+    let revision = 1;
+    /** @type {string[]} */
+    let listed = [AGY_MODEL];
     return {
-      names: () => (dropped ? [] : [AGY_MODEL]),
+      names: () => (dropped ? [] : listed),
       ready: () => ready && !dropped,
-      revision: () => (dropped ? 2 : 1),
+      revision: () => (dropped ? revision + 1 : revision),
       status: () => ({ source: 'list', read_at: 1 }),
       checkCredentials: vi.fn(() => {
-        if (options.ready === false) {
+        if (moved) {
           ready = false;
         }
-        return options.ready === false;
+        return moved;
       }),
       quota: vi.fn(options.quota || (async () => ({ state: 'ok' }))),
       /** Drop the list the way a moved credential fingerprint does. */
       drop: () => {
         dropped = true;
+      },
+      /** Move the credentials; the next `checkCredentials` drops the list. */
+      moveCredentials: () => {
+        moved = true;
+      },
+      /**
+       * Lose the list without moving the revision, the way a drop inside the
+       * quota read looks before the catalog rebuilds.
+       */
+      lose: () => {
+        ready = false;
+      },
+      /**
+       * Hold other ids from now on.
+       *
+       * @param {string[]} ids
+       * @param {{ bump?: boolean }} [change] - Whether the revision moves too.
+       */
+      replace: (ids, change = {}) => {
+        listed = ids;
+        if (change.bump) {
+          revision++;
+        }
       },
       stop: () => {}
     };
@@ -17528,6 +17555,119 @@ describe('scheduler agy pre-run gate (UI-h0hwo Phase 2)', () => {
     });
   });
 
+  test('gates a start-now agy launch on an exhausted Gemini bucket', async () => {
+    const models = agyModels({
+      quota: async () => ({
+        state: 'exhausted',
+        resets_at: RESET,
+        buckets: ['gemini-5h']
+      })
+    });
+    const env = agySetup(models);
+    seedQueue(env.store, ['A1']);
+    requestStartNow(WS, 'A1', Date.now());
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(models.quota).toHaveBeenCalledTimes(1);
+    expect(env.store.snapshot(WS).admission.A1).toMatchObject({
+      reason: 'provider_gate',
+      gate: { runner: 'agy', kind: 'usage_limit' }
+    });
+  });
+
+  test('refuses an agy launch whose model left the list during the quota read', async () => {
+    const models = agyModels();
+    models.quota.mockImplementation(async () => {
+      models.replace(['gemini-4-carbon-medium']);
+      return { state: 'ok' };
+    });
+    const env = agySetup(models);
+    seedQueue(env.store, ['A1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).admission.A1).toMatchObject({
+      reason: 'agy_model_unlisted'
+    });
+  });
+
+  test('refuses an agy launch whose quota read dropped the list', async () => {
+    const models = agyModels();
+    models.quota.mockImplementation(async () => {
+      models.lose();
+      return { state: 'unknown', reason: 'credentials_changed' };
+    });
+    const env = agySetup(models);
+    seedQueue(env.store, ['A1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).admission.A1).toMatchObject({
+      reason: 'agy_model_list_unavailable'
+    });
+  });
+
+  describe('manual resume of a paused agy attempt', () => {
+    /**
+     * A1 launched on agy and was paused by hand.
+     *
+     * @param {ReturnType<typeof agyModels>} models
+     */
+    async function pausedAgyEnv(models) {
+      const env = agySetup(models);
+      seedQueue(env.store, ['A1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+      env.runner.eventsFor('A1').emit('session_id', 'sid-agy');
+      await env.scheduler.pause(WS, attempt_id);
+      return { ...env, attempt_id };
+    }
+
+    test('refuses the resume once the credentials moved', async () => {
+      const models = agyModels();
+      const env = await pausedAgyEnv(models);
+      models.moveCredentials();
+
+      const result = await env.scheduler.resume(WS, env.attempt_id);
+
+      expect(result).toEqual({
+        ok: false,
+        reason: 'agy_model_list_unavailable'
+      });
+      expect(env.runner.spawnOrder).toEqual(['A1']);
+    });
+
+    test('holds the resume while a Gemini bucket is exhausted', async () => {
+      const models = agyModels();
+      const env = await pausedAgyEnv(models);
+      models.quota.mockImplementation(async () => ({
+        state: 'exhausted',
+        resets_at: RESET,
+        buckets: ['gemini-5h']
+      }));
+
+      const result = await env.scheduler.resume(WS, env.attempt_id);
+
+      expect(result).toEqual({ ok: false, reason: 'provider_held' });
+      expect(env.runner.spawnOrder).toEqual(['A1']);
+    });
+
+    test('resumes when the list and the quota allow it', async () => {
+      const models = agyModels();
+      const env = await pausedAgyEnv(models);
+
+      const result = await env.scheduler.resume(WS, env.attempt_id);
+
+      expect(result.ok).toBe(true);
+      expect(env.runner.spawnOrder).toEqual(['A1', 'A1']);
+      expect(models.quota).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('session-continuing retry rung', () => {
     beforeEach(() => {
       vi.useFakeTimers({ toFake: ['setTimeout'] });
@@ -17614,6 +17754,28 @@ describe('scheduler agy pre-run gate (UI-h0hwo Phase 2)', () => {
             attempt.status === 'running'
         )
       ).toEqual([]);
+    });
+
+    test('keeps the agy rung from launching once the list no longer holds its model', async () => {
+      const models = agyModels();
+      const env = await agyRetryEnv(models);
+      models.replace(['gemini-4-carbon-medium'], { bump: true });
+
+      env.clock.now += RETRY_DELAYS_MS[0];
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+      await flush();
+
+      const queue = env.store.snapshot(WS);
+      expect(env.runner.spawnOrder).toEqual(['A1']);
+      expect(
+        Object.values(queue.attempts).filter(
+          (/** @type {any} */ attempt) =>
+            attempt.resumed_from === env.attempt_id
+        )
+      ).toEqual([]);
+      expect(queue.admission.A1).toMatchObject({
+        reason: 'agy_model_unlisted'
+      });
     });
   });
 });

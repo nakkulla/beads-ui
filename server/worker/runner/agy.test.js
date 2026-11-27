@@ -99,15 +99,12 @@ describe('runner/agy argv', () => {
     expect(agyLauncherPath('/home/u')).toBe('/home/u/.local/bin/agy');
   });
 
-  test('keeps a configured command override verbatim', () => {
-    const spec = agySpec(
-      { command: '/opt/agy', models: {}, efforts: [] },
-      { launcher: LAUNCHER }
-    );
+  test('runs the launcher whatever command the catalog entry names', () => {
+    const spec = agySpec({ command: '/opt/agy', models: {}, efforts: [] });
 
     const built = spec.buildArgv(BEAD, WS, { model: 'gemini-4-neon-high' });
 
-    expect(built.command).toBe('/opt/agy');
+    expect(built.command).toBe(agyLauncherPath());
   });
 
   test('appends the conversation id on resume', () => {

@@ -527,6 +527,79 @@ describe('worker/agy-model-list pre-run quota', () => {
     expect(quota).toEqual({ state: 'ok' });
   });
 
+  test('judges a bucket that omits its fraction before a scheduled reset as exhausted', () => {
+    const payload = JSON.parse(USAGE_TEXT);
+    delete payload.command.data.groups[0].buckets[1].remaining_fraction;
+
+    const quota = judgeAgyQuota(payload);
+
+    expect(quota).toEqual({
+      state: 'exhausted',
+      resets_at: Date.parse('2026-11-27T16:52:46Z'),
+      buckets: ['gemini-5h']
+    });
+  });
+
+  test('ignores a bucket that omits its fraction with an epoch reset', () => {
+    const payload = JSON.parse(USAGE_TEXT);
+    const bucket = payload.command.data.groups[0].buckets[1];
+    delete bucket.remaining_fraction;
+    bucket.reset_time = '1970-01-01T00:00:00Z';
+
+    const quota = judgeAgyQuota(payload);
+
+    expect(quota).toEqual({ state: 'ok' });
+  });
+
+  test('drops the list when the credentials move during the quota read', async () => {
+    const execFile = vi.fn(async (_file, args) => {
+      if (args[0] === 'models') {
+        if (execFile.mock.calls.length > 1) {
+          throw new Error('models unavailable');
+        }
+        return { stdout: MODELS_TEXT };
+      }
+      moveCredential(0, 'token-b');
+      return { stdout: USAGE_TEXT };
+    });
+    const list = makeList({ execFile, now: () => 0 });
+    await list.refresh();
+
+    const quota = await list.quota();
+
+    expect(quota).toEqual({ state: 'unknown', reason: 'credentials_changed' });
+    expect(list.ready()).toBe(false);
+    expect(
+      execFile.mock.calls.filter((call) => call[1][0] === 'models')
+    ).toHaveLength(2);
+  });
+
+  test('detects credentials that moved before the quota is read', async () => {
+    const execFile = vi.fn(async (_file, args) => {
+      if (args[0] === 'models') {
+        if (execFile.mock.calls.length > 1) {
+          throw new Error('models unavailable');
+        }
+        return { stdout: MODELS_TEXT };
+      }
+      return { stdout: USAGE_TEXT };
+    });
+    const list = makeList({ execFile, now: () => 0 });
+    await list.refresh();
+    await list.quota();
+    moveCredential(1, 'scope-b');
+
+    await list.quota();
+
+    expect(list.ready()).toBe(false);
+    expect(
+      execFile.mock.calls.filter((call) => call[1][1] === '/usage')
+    ).toHaveLength(2);
+    expect(
+      execFile.mock.calls.filter((call) => call[1][0] === 'models')
+    ).toHaveLength(2);
+  });
+
   test('reads unknown when the payload has no groups', () => {
     const quota = judgeAgyQuota({ status: 'SUCCESS' });
 

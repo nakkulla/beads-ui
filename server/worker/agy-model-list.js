@@ -183,7 +183,18 @@ export function judgeAgyQuota(payload) {
   /** @type {number|null} */
   let resets_at = null;
   for (const bucket of group.buckets) {
-    const fraction = bucket?.remaining_fraction;
+    const reset = Date.parse(String(bucket?.reset_time ?? ''));
+    // `/usage` drops a zero `remaining_fraction` (omitempty; dotfiles
+    // `agy-statusline.py` reads the omitted field as 0), so a bucket with no
+    // fraction but a scheduled reset is exhausted. An epoch reset is the
+    // never-used bucket and stays unread.
+    const fraction =
+      typeof bucket === 'object' &&
+      bucket !== null &&
+      !('remaining_fraction' in bucket) &&
+      reset > 0
+        ? 0
+        : bucket?.remaining_fraction;
     if (typeof fraction !== 'number' || !Number.isFinite(fraction)) {
       continue;
     }
@@ -191,7 +202,6 @@ export function judgeAgyQuota(payload) {
       continue;
     }
     exhausted.push(String(bucket.id ?? bucket.name ?? 'bucket'));
-    const reset = Date.parse(String(bucket.reset_time ?? ''));
     if (Number.isFinite(reset) && (resets_at === null || reset > resets_at)) {
       resets_at = reset;
     }
@@ -530,6 +540,7 @@ export function createAgyModelList(options = {}) {
    */
   async function readQuotaOnce() {
     const started_generation = generation;
+    const started_fingerprint = fingerprint();
     /** @type {AgyQuota} */
     let value;
     try {
@@ -543,6 +554,18 @@ export function createAgyModelList(options = {}) {
       value = { state: 'unknown', reason: String(err) };
     }
     if (generation !== started_generation) {
+      return { state: 'unknown', reason: 'credentials_changed' };
+    }
+    // The credentials moved while `/usage` ran: the answer may belong to
+    // either account, so the list is dropped and the launch re-check refuses
+    // until a list for the new credentials lands.
+    const finished_fingerprint = fingerprint();
+    if (
+      finished_fingerprint !== started_fingerprint ||
+      (observed !== null && observed !== finished_fingerprint)
+    ) {
+      drop(finished_fingerprint);
+      void refresh();
       return { state: 'unknown', reason: 'credentials_changed' };
     }
     if (value.state !== 'unknown') {
@@ -665,6 +688,11 @@ export function createAgyModelList(options = {}) {
      * @returns {Promise<AgyQuota>}
      */
     quota() {
+      // A credential move since the last look drops the cache before it is
+      // reused, so an answer for the old account never gates the new one.
+      if (credentialsMoved()) {
+        void refresh();
+      }
       if (quota_cache && quotaCacheFresh(quota_cache)) {
         return Promise.resolve(quota_cache.value);
       }

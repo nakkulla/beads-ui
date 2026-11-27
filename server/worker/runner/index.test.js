@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { __setAgyModelListForTest } from '../agy-model-list.js';
+import { agyLauncherPath } from './agy.js';
 import { makeFixtureSpawn } from './fixture-spawn.js';
 import {
   RUNNERS,
@@ -185,7 +186,7 @@ describe('runner/index registry (worker-multi-provider-runner §B)', () => {
     }).done;
 
     expect(runner.name).toBe('agy');
-    expect(spawn_impl.captured.calls[0].command).toBe('/opt/agy');
+    expect(spawn_impl.captured.calls[0].command).toBe(agyLauncherPath());
     expect(v.success).toBe(true);
   });
 
