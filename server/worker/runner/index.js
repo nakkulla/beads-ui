@@ -29,8 +29,10 @@
  * @import { ResolvedCatalog, RunnerCatalogEntry } from '../runner-catalog.js'
  */
 import { getConfig } from '../../config.js';
+import { agyModelList } from '../agy-model-list.js';
 import { codexModelList } from '../codex-model-list.js';
 import { ACTIVE_RUNNERS, resolveCatalog } from '../runner-catalog.js';
+import { agySpec, spawnAgy } from './agy.js';
 import { claudeSpec, spawnClaude } from './claude.js';
 import { codexSpec, spawnCodex } from './codex.js';
 
@@ -54,13 +56,60 @@ export function isUnknownRunnerError(error) {
 }
 
 /** @type {ResolvedCatalog|null} */
+let cached_dispatch = null;
+/** @type {ResolvedCatalog|null} */
 let cached_catalog = null;
-/** The Codex name-table revision {@link cached_catalog} was built from. */
-let cached_codex_revision = -1;
+/** The `codex:agy` list revisions the cached catalogs were built from. */
+let cached_key = '';
+
+/**
+ * Resolve both cached catalogs again when either model list moved.
+ */
+function refreshCatalogs() {
+  const codex = codexModelList();
+  const agy = agyModelList();
+  const key = `${codex.revision()}:${agy.revision()}`;
+  if (!cached_dispatch || !cached_catalog || cached_key !== key) {
+    cached_key = key;
+    cached_dispatch = resolveCatalog({
+      overrides: getConfig().runner_overrides,
+      codex_names: codex.names(),
+      agy_names: agy.names()
+    });
+    cached_catalog = withoutAgy(cached_dispatch);
+  }
+  const status = codex.status();
+  cached_dispatch.codex_list = status;
+  cached_catalog.codex_list = status;
+}
+
+/**
+ * The catalog minus the agy runner and every model it owns.
+ *
+ * @param {ResolvedCatalog} catalog
+ * @returns {ResolvedCatalog}
+ */
+function withoutAgy(catalog) {
+  /** @type {Record<string, RunnerCatalogEntry>} */
+  const runners = {};
+  for (const [name, entry] of Object.entries(catalog.runners)) {
+    if (name !== 'agy') {
+      runners[name] = entry;
+    }
+  }
+  /** @type {Record<string, string>} */
+  const model_index = {};
+  for (const [model, runner] of Object.entries(catalog.model_index)) {
+    if (runner !== 'agy') {
+      model_index[model] = runner;
+    }
+  }
+  return { runners, model_index };
+}
 
 /**
  * The process-wide resolved catalog (builtin defaults + Codex CLI list names +
- * `[runner]` overrides).
+ * `[runner]` overrides) that every selectable and saved surface reads.
  *
  * Exported since UI-jrb3: the exec-setting enums and the WS snapshot decoration
  * need the SAME resolution the dispatch path uses, and a second `resolveCatalog`
@@ -69,30 +118,40 @@ let cached_codex_revision = -1;
  * Codex model list changes (UI-gpac §3.3), and `codex_list` carries where the
  * Codex names came from.
  *
+ * It carries no agy runner and no agy model (UI-h0hwo): agy opens to the
+ * pickers, presets and saved settings only in Phase 4, so until then nothing a
+ * user can choose or store may name it. {@link dispatchCatalog} is the same
+ * resolution with agy kept, for the launch path alone.
+ *
  * @returns {ResolvedCatalog}
  */
 export function runtimeCatalog() {
-  const list = codexModelList();
-  if (!cached_catalog || cached_codex_revision !== list.revision()) {
-    cached_codex_revision = list.revision();
-    cached_catalog = resolveCatalog({
-      overrides: getConfig().runner_overrides,
-      codex_names: list.names()
-    });
-  }
-  cached_catalog.codex_list = list.status();
-  return cached_catalog;
+  refreshCatalogs();
+  return /** @type {ResolvedCatalog} */ (cached_catalog);
 }
 
 /**
- * Drop the cached runtime catalog so the next {@link runtimeCatalog} call
- * re-reads the config file. Tests that point `BDUI_CONFIG_PATH` at a fixture
- * config need this on both sides of the override, or the process-wide cache
- * leaks one test's catalog into every later one.
+ * The launch-path catalog: {@link runtimeCatalog} plus the agy runner and the
+ * ids of the last agy model list. Swapped when either model list changes.
+ *
+ * @returns {ResolvedCatalog}
+ */
+export function dispatchCatalog() {
+  refreshCatalogs();
+  return /** @type {ResolvedCatalog} */ (cached_dispatch);
+}
+
+/**
+ * Drop the cached catalogs so the next {@link runtimeCatalog} or
+ * {@link dispatchCatalog} call re-reads the config file. Tests that point
+ * `BDUI_CONFIG_PATH` at a fixture config need this on both sides of the
+ * override, or the process-wide cache leaks one test's catalog into every
+ * later one.
  */
 export function __resetRuntimeCatalogForTest() {
+  cached_dispatch = null;
   cached_catalog = null;
-  cached_codex_revision = -1;
+  cached_key = '';
 }
 
 /**
@@ -112,6 +171,25 @@ function codexEntry(runner_name, deps) {
   const catalog = deps.catalog || runtimeCatalog();
   return Object.prototype.hasOwnProperty.call(catalog.runners, 'codex')
     ? catalog.runners.codex
+    : null;
+}
+
+/**
+ * The launch catalog's agy entry when `runner_name` asks for agy and the
+ * catalog carries it, else null. Read from {@link dispatchCatalog}, because
+ * {@link runtimeCatalog} never carries agy.
+ *
+ * @param {string|null|undefined} runner_name
+ * @param {{ catalog?: ResolvedCatalog }} deps
+ * @returns {RunnerCatalogEntry|null}
+ */
+function agyEntry(runner_name, deps) {
+  if (runner_name !== 'agy') {
+    return null;
+  }
+  const catalog = deps.catalog || dispatchCatalog();
+  return Object.prototype.hasOwnProperty.call(catalog.runners, 'agy')
+    ? catalog.runners.agy
     : null;
 }
 
@@ -139,6 +217,10 @@ export function adapterSpec(runner_name, deps = {}) {
   if (entry) {
     return codexSpec(entry);
   }
+  const agy_entry = agyEntry(runner_name, deps);
+  if (agy_entry) {
+    return agySpec(agy_entry);
+  }
   const catalog = deps.catalog || runtimeCatalog();
   const claude_entry = Object.prototype.hasOwnProperty.call(
     catalog.runners,
@@ -160,8 +242,35 @@ export function adapterSpec(runner_name, deps = {}) {
  * @returns {{ name: string, spawn: (bead: any, workspace: string, settings: any) => RunnerHandle }}
  */
 export function createRunner(runner_name, deps = {}) {
-  if (runner_name !== 'claude' && runner_name !== 'codex') {
+  if (
+    runner_name !== 'claude' &&
+    runner_name !== 'codex' &&
+    runner_name !== 'agy'
+  ) {
     throw unknownRunnerError(runner_name);
+  }
+  if (runner_name === 'agy') {
+    const agy_entry = agyEntry(runner_name, deps);
+    if (!agy_entry) {
+      throw unknownRunnerError(runner_name);
+    }
+    return {
+      name: 'agy',
+      /**
+       * @param {any} bead
+       * @param {string} workspace
+       * @param {any} settings
+       * @returns {RunnerHandle}
+       */
+      spawn(bead, workspace, settings) {
+        return spawnAgy(bead, workspace, settings, {
+          ...deps,
+          name: 'agy',
+          catalog_entry: agy_entry,
+          routing_env: {}
+        });
+      }
+    };
   }
   const codex_entry = codexEntry(runner_name, deps);
   if (codex_entry) {

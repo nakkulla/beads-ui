@@ -1,6 +1,15 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test } from 'vitest';
+import { __setAgyModelListForTest } from '../agy-model-list.js';
 import { makeFixtureSpawn } from './fixture-spawn.js';
-import { RUNNERS, UNKNOWN_RUNNER, adapterSpec, createRunner } from './index.js';
+import {
+  RUNNERS,
+  UNKNOWN_RUNNER,
+  __resetRuntimeCatalogForTest,
+  adapterSpec,
+  createRunner,
+  dispatchCatalog,
+  runtimeCatalog
+} from './index.js';
 
 /**
  * @returns {string}
@@ -45,17 +54,58 @@ function testCatalog() {
         command: 'codex',
         models: { sol: { id: 'gpt-5.6-sol' } },
         efforts: []
+      },
+      agy: {
+        command: '/opt/agy',
+        models: { 'gemini-4-neon-high': { id: 'gemini-4-neon-high' } },
+        efforts: [],
+        default_model: 'gemini-4-neon-high'
       }
     },
-    model_index: { opus: 'claude', sol: 'codex' }
+    model_index: {
+      opus: 'claude',
+      sol: 'codex',
+      'gemini-4-neon-high': 'agy'
+    }
   };
 }
+
+/**
+ * @returns {string[]}
+ */
+function agyLines() {
+  return [
+    JSON.stringify({ event: 'init', conversation_id: 'conv-1' }),
+    JSON.stringify({
+      event: 'result',
+      result: { conversation_id: 'conv-1', status: 'SUCCESS' }
+    })
+  ];
+}
+
+/**
+ * A stand-in process-wide agy list that reports `names` as read.
+ *
+ * @param {string[]} names
+ */
+function stubAgyList(names) {
+  return /** @type {any} */ ({
+    names: () => names,
+    revision: () => names.length,
+    stop: () => {}
+  });
+}
+
+afterEach(() => {
+  __setAgyModelListForTest(null);
+  __resetRuntimeCatalogForTest();
+});
 
 const WS = '/tmp/ws';
 
 describe('runner/index registry (worker-multi-provider-runner §B)', () => {
   test('exposes the catalog active runners as the adapter vocabulary', () => {
-    expect([...RUNNERS]).toEqual(['claude', 'codex']);
+    expect([...RUNNERS]).toEqual(['claude', 'codex', 'agy']);
   });
 
   test('resolves codex to the codex adapter', async () => {
@@ -83,7 +133,7 @@ describe('runner/index registry (worker-multi-provider-runner §B)', () => {
     expect(spawn_impl.captured.calls[0].command).toBe('/opt/codex');
   });
 
-  test.each(['ccx', 'nope', 'agy', 'gemini', undefined])(
+  test.each(['ccx', 'nope', 'gemini', undefined])(
     'refuses the unregistered runner name %s with unknown_runner',
     (name) => {
       const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
@@ -121,6 +171,44 @@ describe('runner/index registry (worker-multi-provider-runner §B)', () => {
 
     expect(create).toThrow(expect.objectContaining({ code: UNKNOWN_RUNNER }));
     expect(spawn_impl.captured.calls).toHaveLength(0);
+  });
+
+  test('resolves agy to the agy adapter', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: agyLines(), exit: 0 });
+    const runner = createRunner('agy', {
+      spawn_impl,
+      catalog: testCatalog()
+    });
+
+    const v = await runner.spawn({ id: 'UI-1', prompt: 'task' }, WS, {
+      model: 'gemini-4-neon-high'
+    }).done;
+
+    expect(runner.name).toBe('agy');
+    expect(spawn_impl.captured.calls[0].command).toBe('/opt/agy');
+    expect(v.success).toBe(true);
+  });
+
+  test('refuses agy with unknown_runner when the catalog drops the agy entry', () => {
+    const spawn_impl = makeFixtureSpawn({ lines: agyLines(), exit: 0 });
+    const catalog = testCatalog();
+    delete catalog.runners.agy;
+
+    const create = () => createRunner('agy', { spawn_impl, catalog });
+
+    expect(create).toThrow(expect.objectContaining({ code: UNKNOWN_RUNNER }));
+    expect(spawn_impl.captured.calls).toHaveLength(0);
+  });
+
+  test('parses agy output with the agy adapter spec', () => {
+    const spec = adapterSpec('agy', { catalog: testCatalog() });
+
+    const session_id = spec.extractSessionId?.({
+      event: 'init',
+      conversation_id: 'conv-9'
+    });
+
+    expect(session_id).toBe('conv-9');
   });
 
   test('refuses claude with unknown_runner when the catalog drops the claude entry', () => {
@@ -173,5 +261,47 @@ describe('runner/index registry (worker-multi-provider-runner §B)', () => {
       {}
     ).done;
     expect(v.success).toBe(true);
+  });
+});
+
+describe('runner/index agy catalog boundary (UI-h0hwo Phase 2)', () => {
+  test('keeps agy out of the runtime catalog', () => {
+    __setAgyModelListForTest(stubAgyList(['gemini-4-neon-high']));
+    __resetRuntimeCatalogForTest();
+
+    const catalog = runtimeCatalog();
+
+    expect(Object.keys(catalog.runners)).not.toContain('agy');
+    expect(Object.values(catalog.model_index)).not.toContain('agy');
+  });
+
+  test('carries the listed agy ids in the dispatch catalog', () => {
+    __setAgyModelListForTest(stubAgyList(['gemini-4-neon-high']));
+    __resetRuntimeCatalogForTest();
+
+    const catalog = dispatchCatalog();
+
+    expect(catalog.model_index['gemini-4-neon-high']).toBe('agy');
+    expect(catalog.runners.agy.default_model).toBe('gemini-4-neon-high');
+  });
+
+  test('swaps the dispatch catalog when the agy list changes', () => {
+    /** @type {string[]} */
+    let names = [];
+    __setAgyModelListForTest(
+      /** @type {any} */ ({
+        names: () => names,
+        revision: () => names.length,
+        stop: () => {}
+      })
+    );
+    __resetRuntimeCatalogForTest();
+    const before = dispatchCatalog();
+
+    names = ['gemini-4-carbon-high'];
+    const after = dispatchCatalog();
+
+    expect(before.model_index['gemini-4-carbon-high']).toBeUndefined();
+    expect(after.model_index['gemini-4-carbon-high']).toBe('agy');
   });
 });

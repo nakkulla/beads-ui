@@ -46,7 +46,7 @@ import {
   modelRunner,
   modelSpeedTiers
 } from './runner-catalog.js';
-import { runtimeCatalog } from './runner/index.js';
+import { dispatchCatalog } from './runner/index.js';
 
 /**
  * Hardcoded final fallback for `orchestration_model`: what dispatch runs when
@@ -59,17 +59,21 @@ import { runtimeCatalog } from './runner/index.js';
 export const ORCHESTRATION_MODEL_FALLBACK = 'opus';
 
 /**
- * Catalog for callers that pass no `catalog`: the process-wide RUNTIME catalog
- * (builtin + `[runner]` config overrides), the same one `createRunner`, the
- * enum table, and the WS snapshot resolve through (impl review 2026-08-10
- * finding 1). A builtin-only default here would let the store accept and the UI
- * offer a config-added model that dispatch then silently demotes to
- * `opus`/claude.
+ * Catalog for callers that pass no `catalog`: the process-wide DISPATCH catalog
+ * (builtin + `[runner]` config overrides + the listed agy ids), the same one
+ * `createRunner` resolves through (impl review 2026-08-10 finding 1). A
+ * builtin-only default here would let the store accept and the UI offer a
+ * config-added model that dispatch then silently demotes to `opus`/claude.
+ *
+ * The only caller is the launch path, so a Bead whose `model` names a listed
+ * agy id launches on agy even though no picker offers agy yet (UI-h0hwo Phase
+ * 2); the queue values it merges are still filtered through the runtime
+ * catalog, which carries no agy.
  *
  * @returns {ResolvedCatalog}
  */
 function defaultCatalog() {
-  return runtimeCatalog();
+  return dispatchCatalog();
 }
 
 /**
@@ -271,14 +275,19 @@ export function resolveExecSettings(input) {
   );
   const orchestration_model = model_pick.value ?? ORCHESTRATION_MODEL_FALLBACK;
   const runner = modelRunner(catalog, orchestration_model);
-  const effort_pick = model_pick.invalid
-    ? { value: undefined, invalid: false }
-    : pickOuterFailClosed(
-        modelOrchestrationEfforts(catalog, orchestration_model),
-        bead.effort,
-        defaults.orchestration_effort,
-        undefined
-      );
+  const model_efforts = modelOrchestrationEfforts(catalog, orchestration_model);
+  // A model with no effort vocabulary (an agy id carries its effort in the
+  // name) takes no effort at all, so a workspace effort chosen for another
+  // model is not a reason to refuse it.
+  const effort_pick =
+    model_pick.invalid || model_efforts.length === 0
+      ? { value: undefined, invalid: false }
+      : pickOuterFailClosed(
+          model_efforts,
+          bead.effort,
+          defaults.orchestration_effort,
+          undefined
+        );
   const orchestration_effort = effort_pick.value;
   const speed_pick = model_pick.invalid
     ? { value: 'default', invalid: false }

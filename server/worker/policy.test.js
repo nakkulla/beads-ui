@@ -627,6 +627,51 @@ describe('worker/policy default catalog = runtime catalog (impl review finding 1
   });
 });
 
+describe('worker/policy agy model resolution (UI-h0hwo Phase 2)', () => {
+  /**
+   * @returns {import('./runner-catalog.js').ResolvedCatalog}
+   */
+  function agyCatalog() {
+    return resolveCatalog({
+      agy_names: ['gemini-4-neon-high', 'gemini-4-carbon-medium'],
+      warn: () => {}
+    });
+  }
+
+  test('resolves a Bead agy model to the agy runner', () => {
+    const r = resolveExecSettings({
+      bead: { model: 'gemini-4-carbon-medium' },
+      defaults: {},
+      catalog: agyCatalog()
+    });
+
+    expect(r.orchestration_model).toBe('gemini-4-carbon-medium');
+    expect(r.runner).toBe('agy');
+    expect(r.invalid_reason).toBeUndefined();
+  });
+
+  test('drops a workspace effort for an agy model instead of refusing', () => {
+    const r = resolveExecSettings({
+      bead: { model: 'gemini-4-neon-high' },
+      defaults: { orchestration_model: 'opus', orchestration_effort: 'xhigh' },
+      catalog: agyCatalog()
+    });
+
+    expect(r.orchestration_effort).toBeUndefined();
+    expect(r.invalid_reason).toBeUndefined();
+  });
+
+  test('refuses an agy id the list does not carry', () => {
+    const r = resolveExecSettings({
+      bead: { model: 'gemini-4-argon-low' },
+      defaults: {},
+      catalog: agyCatalog()
+    });
+
+    expect(r.invalid_reason).toBe('invalid_orchestration_model');
+  });
+});
+
 describe('worker/policy 복잡 판정 invariance (UI-7nhi §6)', () => {
   test('resolves identical settings with and without the 복잡 judgement keys', () => {
     const bead = {

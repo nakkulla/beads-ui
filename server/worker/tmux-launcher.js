@@ -11,7 +11,7 @@ import { parse as parseToml } from 'smol-toml';
 import { runShell } from '../bd.js';
 import { conversationSettingsStore } from '../conversation-settings.js';
 import { debug } from '../logging.js';
-import { ACTIVE_RUNNERS } from './runner-catalog.js';
+import { SELECTABLE_RUNNERS } from './runner-catalog.js';
 import { runtimeCatalog } from './runner/index.js';
 
 const default_log = debug('worker:tmux-launcher');
@@ -209,13 +209,14 @@ export function markerWrapper(input) {
  * The COMMAND NAME comes from the runner catalog (codex-orchestration-parity
  * §4.2), the same resolution the headless dispatch argv is built from, so a
  * `[runner.codex] command` override reaches the interactive window too. An
- * unknown runner resolves nothing — it is never substituted with claude.
+ * unknown runner resolves nothing — it is never substituted with claude. agy
+ * resolves nothing either until its conversation launch opens (UI-h0hwo).
  *
  * @param {string} runner
  * @returns {string|null}
  */
 export function defaultResolveRunner(runner) {
-  if (!ACTIVE_RUNNERS.includes(runner)) {
+  if (!SELECTABLE_RUNNERS.includes(runner)) {
     return null;
   }
   /** @type {string} */
