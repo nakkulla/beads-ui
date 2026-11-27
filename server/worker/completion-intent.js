@@ -1026,6 +1026,12 @@ export function createCompletionIntentCoordinator(deps) {
       const root_bead_id =
         head && typeof head.bead_id === 'string' ? head.bead_id : null;
       if (!root_bead_id || !Object.hasOwn(intents, root_bead_id)) {
+        // A held plain row keeps its slot while the merge drain goes past it
+        // (UI-d7fy §3.3, UI-aui8 §3.3), so the completion behind it is the
+        // one the drain reaches next and is judged now.
+        if (head?.hold) {
+          continue;
+        }
         return;
       }
       const intent = intents[root_bead_id];

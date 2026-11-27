@@ -1380,9 +1380,9 @@ export function createMergeQueue(deps) {
   /**
    * Decide a base update whose answer was lost (UI-aui8 §3.2) from an
    * observation that read the PR head. An unmoved head means the update did
-   * not apply; a moved head means the PR is already past that request, so it
-   * is not sent again. The decided record is cleared, so a later observation
-   * judges afresh.
+   * not apply; a moved head means the PR is past that request, whoever moved
+   * it, so the request is never resent as it was. The decided record is
+   * cleared, and the gate judges the head it read like any other.
    *
    * @param {string} bead_id
    * @param {import('./queue-store.js').LostBaseUpdate} lost
@@ -3138,15 +3138,14 @@ export function createMergeQueue(deps) {
         return;
       }
       // A base update whose answer was lost is decided by this observation
-      // before any new one is sent (UI-aui8 §3.2): one that applied is this
-      // turn's update, as if its answer had come back.
+      // before any new one is sent (UI-aui8 §3.2). A moved head may be the
+      // author's push rather than the update, so it earns no exemption: a PR
+      // still BEHIND gets one update pinned to the head read now, and
+      // `expectedHeadOid` refuses it if the lost one moved the head first.
       if (lost_base_update) {
         const decided = decideLostBaseUpdate(bead_id, lost_base_update, result);
         if (decided === 'failed') {
           return;
-        }
-        if (decided === 'applied') {
-          base_update_attempted = true;
         }
       }
       // The poller's own cleanup of a MERGED PR holds the bead in flight: the

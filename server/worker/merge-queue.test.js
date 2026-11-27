@@ -5007,7 +5007,7 @@ describe('worker/merge-queue — GitHub connection wait (UI-aui8 §3.3–§3.6)'
       });
     });
 
-    test('does not update again once the next observation shows the lost update applied', async () => {
+    test('updates the moved head once when the next observation still reads it behind', async () => {
       const store = seedManual(['UI-1']);
       const updateBase = lostUpdate();
       const mq = driver(store, {
@@ -5019,7 +5019,11 @@ describe('worker/merge-queue — GitHub connection wait (UI-aui8 §3.3–§3.6)'
 
       await mq.kick();
 
-      expect(updateBase).toHaveBeenCalledTimes(1);
+      expect(updateBase).toHaveBeenCalledTimes(2);
+      expect(entryOf(store).hold.base_update).toEqual({
+        head_sha: MOVED_HEAD,
+        base_ref: 'main'
+      });
     });
 
     test('keeps the lost update undecided across a turn that could not reach GitHub', async () => {
@@ -5028,18 +5032,17 @@ describe('worker/merge-queue — GitHub connection wait (UI-aui8 §3.3–§3.6)'
       const mq = driver(store, {
         merge: vi.fn(),
         updateBase,
-        probeMergeability: scriptedProbe([
-          behind(HEAD),
-          PROBE_UNREACHABLE,
-          behind(MOVED_HEAD)
-        ])
+        probeMergeability: scriptedProbe([behind(HEAD), PROBE_UNREACHABLE])
       });
-      await mq.kick();
       await mq.kick();
 
       await mq.kick();
 
       expect(updateBase).toHaveBeenCalledTimes(1);
+      expect(entryOf(store).hold.base_update).toEqual({
+        head_sha: HEAD,
+        base_ref: 'main'
+      });
     });
 
     test('updates again once the next observation shows the lost update did not apply', async () => {

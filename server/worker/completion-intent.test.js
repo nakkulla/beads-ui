@@ -2422,6 +2422,60 @@ describe('worker/completion-intent lifecycle', () => {
     ]);
   });
 
+  test('observes the completion behind a held plain row', async () => {
+    const later = intent({
+      subject: { ...intent().subject, bead_id: 'UI-later' }
+    });
+    const onAction = vi.fn();
+    const coordinator = createCompletionIntentCoordinator({
+      workspace: '/repo',
+      store: {
+        snapshot: () => ({
+          auto_merge: true,
+          merge_queue: [
+            {
+              bead_id: 'UI-plain',
+              hold: { reason: 'github_unreachable', head_sha: null }
+            },
+            { bead_id: 'UI-later' }
+          ],
+          completion_intents: { 'UI-later': later }
+        })
+      },
+      observe: async () => ({ state: 'green' }),
+      onAction
+    });
+
+    await coordinator.reconcile();
+
+    expect(onAction.mock.calls).toEqual([
+      ['UI-later', { kind: 'merge_subject' }, later]
+    ]);
+  });
+
+  test('stops at an unheld plain row ahead of a completion', async () => {
+    const later = intent({
+      subject: { ...intent().subject, bead_id: 'UI-later' }
+    });
+    const observe = vi.fn(async () => ({ state: 'green' }));
+    const coordinator = createCompletionIntentCoordinator({
+      workspace: '/repo',
+      store: {
+        snapshot: () => ({
+          auto_merge: true,
+          merge_queue: [{ bead_id: 'UI-plain' }, { bead_id: 'UI-later' }],
+          completion_intents: { 'UI-later': later }
+        })
+      },
+      observe,
+      onAction: vi.fn()
+    });
+
+    await coordinator.reconcile();
+
+    expect(observe).not.toHaveBeenCalled();
+  });
+
   test('coalesces queue wakeups and stops its subscription', async () => {
     const events = new EventEmitter();
     const unsubscribe = vi.fn();
