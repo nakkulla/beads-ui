@@ -8,6 +8,7 @@
  * @property {string} [path]
  * @property {string} [result]
  * @property {boolean} [delegated]
+ * @property {'claude'} [delegated_runtime]
  * @property {boolean} [is_error]
  */
 
@@ -225,22 +226,28 @@ export function activityLabel(activity) {
         ? 'warn'
         : 'muted';
   if (activity && activity.kind === 'tool') {
+    // Only a Codex delegation result carries the parsed-command prefix and the
+    // `<tool> · 완료|실패` label; a Claude subagent's tool reads like the parent's.
+    const codex_delegated =
+      activity.delegated === true && activity.delegated_runtime !== 'claude';
     const display_command = unwrapShell(command.trim());
-    const parsed = result.match(/^(read|list_files|search|unknown)(?: | · |$)/);
+    const parsed = codex_delegated
+      ? result.match(/^(read|list_files|search|unknown)(?: | · |$)/)
+      : null;
     const is_shell = !tool || tool === 'Bash' || tool === 'shell';
     if (display_command && is_shell) {
       label = commandLabel(display_command);
       detail = commandDetail(display_command);
-    } else if (activity.delegated && parsed) {
+    } else if (parsed) {
       label = PARSED_LABELS[parsed[1]];
-    } else if (activity.delegated && exit) {
+    } else if (codex_delegated && exit) {
       label = tool.replace(/ · (완료|실패)$/, '') || label;
     } else if (tool) {
       label = tool;
       detail = command || file_path;
     }
     let summary = result;
-    if (activity.delegated && parsed) {
+    if (parsed) {
       summary = summary.replace(
         /^(read|list_files|search|unknown)(?: · | )?/,
         ''

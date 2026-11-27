@@ -654,9 +654,12 @@ function parseClaudeSystem(raw, state) {
  *
  * @param {Record<string, unknown>} raw
  * @param {Map<string, DisplayLine>} toolsById
+ * @param {DisplayLine[]} filled - Receives every earlier tool line this
+ * event's `tool_result` blocks back-filled; the back-fill itself returns no
+ * line.
  * @returns {DisplayLine[]}
  */
-function parseClaude(raw, toolsById) {
+function parseClaude(raw, toolsById, filled) {
   const parent_tool_use_id =
     typeof raw.parent_tool_use_id === 'string' &&
     raw.parent_tool_use_id.length > 0
@@ -704,6 +707,7 @@ function parseClaude(raw, toolsById) {
           if (c.is_error === true) {
             line.is_error = true;
           }
+          filled.push(line);
         }
       }
     }
@@ -969,15 +973,20 @@ function rawObjectOf(entry) {
  * reducer holds that pairing across pushes; the back-fill MUTATES the tool line
  * object it already returned, exactly as the batch parse does.
  *
- * @param {{ skip_delegated?: boolean }} [options] - `skip_delegated` drops
- * Claude subagent events outright (UI-2mpn §6.4). The server's activity overlay
- * sets it so a child's tool call never reports as the parent attempt's last
- * activity; the drawer leaves it off, because it folds those lines rather than
- * hiding them.
+ * @param {{ skip_delegated?: boolean, onToolResult?: (lines: DisplayLine[]) => void }} [options] - `skip_delegated`
+ * drops Claude subagent events outright (UI-2mpn §6.4). The server's activity
+ * overlay sets it on the parent stream so a child's line never folds into the
+ * parent's tool pairing; a launch stream leaves it off so the subagent's own
+ * lines reach the overlay as delegated activity (UI-k57cf §5.1). The drawer
+ * leaves it off, because it folds those lines rather than hiding them.
+ * `onToolResult` hears the tool lines an event's `tool_result` back-filled,
+ * which `push` cannot return because no NEW line was produced.
  * @returns {{ push: (event: unknown) => DisplayLine[] }}
  */
 export function createTranscriptReducer(options = {}) {
   const skip_delegated = options.skip_delegated === true;
+  const onToolResult =
+    typeof options.onToolResult === 'function' ? options.onToolResult : null;
   /** @type {Map<string, DisplayLine>} */
   const toolsById = new Map();
   /** @type {{ progress: DisplayLine | null }} */
@@ -1002,15 +1011,20 @@ export function createTranscriptReducer(options = {}) {
       if (raw.type === 'system' && !isDelegationMonitorSchema(raw.schema)) {
         return parseClaudeSystem(raw, state);
       }
+      /** @type {DisplayLine[]} */
+      const filled = [];
       const produced = isDelegationMonitorSchema(raw.schema)
         ? parseDelegationMonitor(raw)
         : isCodexShape(raw)
           ? parseCodex(raw)
-          : parseClaude(raw, toolsById);
+          : parseClaude(raw, toolsById, filled);
       if (produced.length > 0) {
         // Anything the session actually did ends the current thinking burst;
         // the next `thinking_tokens` tick then opens a fresh progress line.
         state.progress = null;
+      }
+      if (onToolResult && filled.length > 0) {
+        onToolResult(filled);
       }
       return produced;
     }

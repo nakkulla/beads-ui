@@ -51,6 +51,7 @@ import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { watchMobile } from '../../utils/viewport.js';
 import { createChipPopover } from '../chip-popover.js';
+import { TICK_MS, refreshTimeText } from '../time-text.js';
 import {
   chainOf,
   flipChainStepDir,
@@ -651,6 +652,14 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {number|null}
    */
   let finish_timer = null;
+  /**
+   * The 1s time-text ticker while the tab is loaded (UI-k57cf §5.2), the same
+   * one the monitor runs: it rewrites the `[data-ts]` text only and never
+   * renders, so an activity age keeps moving without a server event.
+   *
+   * @type {number|null}
+   */
+  let tick_timer = null;
   /** @type {string|null} Candidate whose queue-lane picker is open. */
   let place_menu_bead_id = null;
   /** @type {string|null} */
@@ -3151,6 +3160,21 @@ export function createWorkerView(mount_element, options = {}) {
     }
   }
 
+  function startTick() {
+    if (tick_timer === null) {
+      tick_timer = window.setInterval(() => {
+        refreshTimeText(mount_element, Date.now());
+      }, TICK_MS);
+    }
+  }
+
+  function stopTick() {
+    if (tick_timer !== null) {
+      window.clearInterval(tick_timer);
+      tick_timer = null;
+    }
+  }
+
   /**
    * 바인딩된 판정 칩의 클릭 하나 (UI-wg68 §5.3). 서버가 적용과 복원을 고르므로
    * 여기서는 CAS revision과 `root_dir`만 싣는다.
@@ -4619,6 +4643,7 @@ export function createWorkerView(mount_element, options = {}) {
   return {
     load() {
       adapter.ensureSessionDefaults();
+      startTick();
       doRender();
     },
     /**
@@ -4629,11 +4654,13 @@ export function createWorkerView(mount_element, options = {}) {
     pause() {
       stopGraceTimer();
       stopFinishTimer();
+      stopTick();
     },
     refreshSessionDefaults,
     destroy() {
       stopGraceTimer();
       stopFinishTimer();
+      stopTick();
       for (const off of unsubscribers.splice(0)) {
         try {
           off();

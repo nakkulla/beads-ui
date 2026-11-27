@@ -112,6 +112,21 @@ describe('activityLabel', () => {
     expect(formatted.tone).toBe('warn');
   });
 
+  test('keeps a claude subagent tool name and result under the delegation prefix', () => {
+    const formatted = activityLabel({
+      kind: 'tool',
+      tool: 'Read',
+      text: 'app/a.js',
+      path: 'app/a.js',
+      result: 'read 12 lines',
+      delegated: true,
+      delegated_runtime: 'claude'
+    });
+
+    expect(formatted.label).toBe('↳ 위임 · Read');
+    expect(formatted.detail).toBe('app/a.js · read 12 lines');
+  });
+
   test('uses warning tone for a paired tool error', () => {
     const formatted = activityLabel({
       kind: 'tool',
