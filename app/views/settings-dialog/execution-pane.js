@@ -86,7 +86,8 @@ import {
   orchestrationRuntimeInitial,
   orchestrationRuntimeOptions,
   presetKeysFor,
-  speedVisible
+  speedVisible,
+  writablePresetSettings
 } from './session-model.js';
 
 /** The `(기본)` sentinel a select uses for "no explicit value". */
@@ -1180,7 +1181,7 @@ export function createExecutionPane(mount_element, binding) {
     if (!state) {
       return;
     }
-    const settings = executionDraftSettings(profile);
+    const settings = writablePresetSettings(executionDraftSettings(profile));
     if (Object.keys(settings).length === 0) {
       notify('저장할 실행 설정이 없습니다 — 먼저 실행 값을 선택하세요');
       return;

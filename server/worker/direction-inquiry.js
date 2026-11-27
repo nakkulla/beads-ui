@@ -43,6 +43,7 @@ import {
   DEFAULT_START_TOLERANCE_MS,
   observeProcessIdentity
 } from './process-controller.js';
+import { UNKNOWN_RUNNER } from './runner/index.js';
 import { resolveSessionLaunchOptions } from './session-launch-accounts.js';
 import { qualifyAttemptSession } from './session-ref.js';
 import { conversationStopLabel } from './session-stall.js';
@@ -436,6 +437,23 @@ export function createDirectionInquiry(deps) {
   }
 
   /**
+   * The runner current execution settings name, without an attempt's own
+   * session to follow. A name that is no registered runner is null, never
+   * Claude (UI-6o70); with no resolver injected the lane default is claude.
+   *
+   * @param {string} workspace
+   * @param {any} issue
+   * @returns {'claude'|'codex'|null}
+   */
+  function currentRunnerOf(workspace, issue) {
+    if (typeof deps.currentRunner !== 'function') {
+      return 'claude';
+    }
+    const runner = deps.currentRunner(workspace, issue);
+    return runner === 'claude' || runner === 'codex' ? runner : null;
+  }
+
+  /**
    * Choose the attempt's own session, else a fresh session of the same
    * provider. The worktree must exist too: Claude resolves `--resume` by the
    * cwd's project, so the session cannot be reopened anywhere else.
@@ -444,15 +462,15 @@ export function createDirectionInquiry(deps) {
    * @param {any} issue
    * @param {any} attempt
    * @param {boolean} worktree_present
-   * @returns {{ session_id: string|null, runner: 'claude'|'codex', source: 'attempt'|'fresh', fallback_reason: string|null }}
+   * @returns {{ session_id: string|null, runner: 'claude'|'codex'|null, source: 'attempt'|'fresh', fallback_reason: string|null }}
+   * `runner` is null when the settings name no registered runner (UI-6o70).
    */
   function conversationTarget(workspace, issue, attempt, worktree_present) {
     const own = qualifyAttemptSession({
       attempt,
       options: deps.sessionRefOptions || {}
     });
-    const runner =
-      own.provider ?? deps.currentRunner?.(workspace, issue) ?? 'claude';
+    const runner = own.provider ?? currentRunnerOf(workspace, issue);
     if (own.ok && worktree_present) {
       return {
         session_id: own.session_id,
@@ -463,7 +481,7 @@ export function createDirectionInquiry(deps) {
     }
     // A fresh fallback takes the configured runtime (UI-jbl1 §3.4); the
     // attempt's own session above always keeps its runtime.
-    /** @type {'claude'|'codex'} */
+    /** @type {'claude'|'codex'|null} */
     let fresh_runner = runner;
     try {
       fresh_runner = freshConversationRuntime(
@@ -672,12 +690,16 @@ export function createDirectionInquiry(deps) {
       return { outcome: refusal('disabled', facts), title, repo, stop };
     }
     const worktree_present = existsSync(worktree);
-    const target = conversationTarget(
+    const chosen = conversationTarget(
       workspace,
       issue,
       attempt,
       worktree_present
     );
+    if (chosen.runner === null) {
+      return { outcome: refusal(UNKNOWN_RUNNER, facts), title, repo, stop };
+    }
+    const target = { ...chosen, runner: chosen.runner };
     if (target.session_id !== null) {
       const refused = runnerLivenessRefusal(attempt);
       if (refused !== null) {

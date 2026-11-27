@@ -60,6 +60,7 @@ import {
   operationIncidentFingerprint,
   selfRepairFailureIdentity
 } from './resolution-ladder.js';
+import { UNKNOWN_RUNNER } from './runner/index.js';
 import { sessionInquiryIdOf } from './session-inquiry/contract.js';
 import { resolveSessionLaunchOptions } from './session-launch-accounts.js';
 import {
@@ -1298,10 +1299,12 @@ export function failedDiscardOperation(queue, bead_id) {
  * @property {string|null} fallback_reason - Why the recorded session was not
  * forked; null on a fork.
  * @property {string|null} session_id
- * @property {'claude'|'codex'} runner - The provider the window actually runs.
+ * @property {'claude'|'codex'|null} runner - The provider the window actually runs.
  * A fork keeps the RECORDED session's provider, and so does the fresh fallback
  * a missing or unusable transcript forces (§4.1). Only a bead with no recorded
  * session at all follows current execution settings.
+ * null only on an `unknown_runner` refusal, when the settings name no
+ * registered runner (UI-6o70).
  * @property {string|null} command
  * @property {boolean} bridge_active
  * @property {import('./tmux-launcher.js').LaunchPlacement|null} placement -
@@ -1359,11 +1362,34 @@ export function createResolveSession(deps) {
   });
 
   /**
+   * The refusal of a launch whose runner is not a registered one: nothing is
+   * started and no Claude window stands in for it (UI-6o70).
+   *
+   * @param {{ mode: 'fork'|'fresh', source: 'attempt'|'session_ref'|'fresh', fallback_reason: string|null, session_id: string|null }} facts
+   * @returns {ResolveSessionOutcome}
+   */
+  function unknownRunnerOutcome(facts) {
+    return {
+      launched: false,
+      session: 'not_launched',
+      reason: UNKNOWN_RUNNER,
+      ...facts,
+      runner: null,
+      command: null,
+      bridge_active: launcher.bridgeActive(),
+      placement: null,
+      tmux_session: null,
+      tmux_window: null
+    };
+  }
+
+  /**
    * The runtime a FRESH conversation runs (UI-jbl1 §3.4): the setting, else
    * the provider this launch would have inherited.
    *
-   * @param {'claude'|'codex'} inherited
-   * @returns {'claude'|'codex'}
+   * @param {'claude'|'codex'|null} inherited - null when the current runner is
+   * not a registered one.
+   * @returns {'claude'|'codex'|null}
    */
   function freshRunner(inherited) {
     try {
@@ -1517,15 +1543,17 @@ export function createResolveSession(deps) {
    * @param {string} workspace
    * @param {string} bead_id
    * @param {any} attempt
-   * @returns {Promise<{ session_id: string|null, runner: 'claude'|'codex', source: 'attempt'|'session_ref'|'fresh', fallback_reason: string|null }>}
+   * @returns {Promise<{ session_id: string|null, runner: 'claude'|'codex'|null, source: 'attempt'|'session_ref'|'fresh', fallback_reason: string|null }>}
    */
   async function forkTarget(workspace, bead_id, attempt) {
     /**
      * The provider a launch with no usable source runs on: current execution
      * settings when they resolve, and otherwise this lane's own default tool.
+     * A runner the settings name but no registered runner is null, never
+     * Claude (UI-6o70).
      *
      * @param {any} issue
-     * @returns {'claude'|'codex'}
+     * @returns {'claude'|'codex'|null}
      */
     function currentRunner(issue) {
       if (typeof deps.currentRunner !== 'function') {
@@ -1533,7 +1561,7 @@ export function createResolveSession(deps) {
       }
       try {
         const runner = deps.currentRunner(workspace, issue);
-        return runner === 'codex' || runner === 'claude' ? runner : 'claude';
+        return runner === 'codex' || runner === 'claude' ? runner : null;
       } catch (err) {
         log('current runner resolution failed for %s: %o', bead_id, err);
         return 'claude';
@@ -1592,6 +1620,14 @@ export function createResolveSession(deps) {
       // takes the configured one (UI-jbl1 §3.4).
       const runner =
         session_id === null ? freshRunner(target.runner) : target.runner;
+      if (runner === null) {
+        return unknownRunnerOutcome({
+          mode: session_id === null ? 'fresh' : 'fork',
+          source,
+          fallback_reason,
+          session_id
+        });
+      }
       const cwd =
         runner === 'codex' && session_id !== null
           ? (codexSessionDirectory(session_id, deps.sessionRefOptions) ??
@@ -1731,17 +1767,26 @@ export function createResolveSession(deps) {
           ? input.repo
           : input.workspace;
       const row_key = repoOperationRowKey(input.operation_id);
-      /** @type {'claude'|'codex'} */
+      /** @type {'claude'|'codex'|null} */
       let inherited = 'claude';
       if (typeof deps.currentRunner === 'function') {
         try {
           const current = deps.currentRunner(input.workspace, null);
-          inherited = current === 'codex' ? 'codex' : 'claude';
+          inherited =
+            current === 'codex' || current === 'claude' ? current : null;
         } catch (err) {
           log('current runner resolution failed for %s: %o', row_key, err);
         }
       }
       const runner = freshRunner(inherited);
+      if (runner === null) {
+        return unknownRunnerOutcome({
+          mode: 'fresh',
+          source: 'fresh',
+          fallback_reason: 'repo_operation',
+          session_id: null
+        });
+      }
       const prompt = buildFailureEntry({
         failure: input.failure,
         worktree: null,

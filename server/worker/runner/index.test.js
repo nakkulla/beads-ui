@@ -123,6 +123,17 @@ describe('runner/index registry (worker-multi-provider-runner §B)', () => {
     expect(spawn_impl.captured.calls).toHaveLength(0);
   });
 
+  test('refuses claude with unknown_runner when the catalog drops the claude entry', () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
+    const catalog = testCatalog();
+    delete catalog.runners.claude;
+
+    const create = () => createRunner('claude', { spawn_impl, catalog });
+
+    expect(create).toThrow(expect.objectContaining({ code: UNKNOWN_RUNNER }));
+    expect(spawn_impl.captured.calls).toHaveLength(0);
+  });
+
   test('exposes claude outage classification through the registry', () => {
     const spec = adapterSpec('claude', { catalog: testCatalog() });
     const raw = [

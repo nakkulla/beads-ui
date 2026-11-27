@@ -541,7 +541,7 @@ describe('agy transcript projection (UI-6o70)', () => {
       source: 'MODEL',
       tool_calls: [{ name: 'run_command', args: { command: 'ls' } }]
     },
-    { type: 'GENERIC', source: 'SYSTEM', content: 'bookkeeping' },
+    { type: 'GENERIC', source: 'MODEL', content: 'bookkeeping' },
     { type: 'SYSTEM_MESSAGE', source: 'SYSTEM', content: 'system prompt' },
     { type: 'CHECKPOINT', source: 'SYSTEM', content: 'checkpoint' },
     { type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '' }

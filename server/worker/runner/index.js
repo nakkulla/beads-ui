@@ -187,12 +187,10 @@ export function createRunner(runner_name, deps = {}) {
     throw unknownRunnerError(runner_name);
   }
   const catalog = deps.catalog || runtimeCatalog();
-  const claude_entry = Object.prototype.hasOwnProperty.call(
-    catalog.runners,
-    'claude'
-  )
-    ? catalog.runners.claude
-    : undefined;
+  if (!Object.prototype.hasOwnProperty.call(catalog.runners, 'claude')) {
+    throw unknownRunnerError(runner_name);
+  }
+  const claude_entry = catalog.runners.claude;
   return {
     name: 'claude',
     /**

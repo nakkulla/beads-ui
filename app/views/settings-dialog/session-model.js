@@ -735,6 +735,41 @@ function presetIgnoredKeysFor(applies_to) {
 }
 
 /**
+ * The value list a preset save may store for each enumerated canonical key.
+ * A stored kv can hold a value only the read side accepts yet (`agy`, `neon`;
+ * UI-6o70), and the preset write would refuse the whole set over it.
+ */
+const PRESET_WRITE_VALUES = Object.freeze({
+  impl_runtime: IMPL_RUNTIMES,
+  spec_review_model: REVIEW_STEP_MODELS,
+  plan_review_model: PLAN_REVIEW_MODELS,
+  impl_review_model: REVIEW_STEP_MODELS
+});
+
+/**
+ * Drop the values a preset write cannot store, so a save keeps every other
+ * key instead of failing as a whole (UI-6o70).
+ *
+ * @param {Record<string, string>} settings - Canonical preset settings.
+ * @returns {Record<string, string>}
+ */
+export function writablePresetSettings(settings) {
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const [key, value] of Object.entries(settings)) {
+    const allowed = Object.hasOwn(PRESET_WRITE_VALUES, key)
+      ? PRESET_WRITE_VALUES[
+          /** @type {keyof typeof PRESET_WRITE_VALUES} */ (key)
+        ]
+      : null;
+    if (allowed === null || allowed.includes(value)) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/**
  * Preview what applying a preset would change, key by key.
  *
  * The comparison set is the one the SERVER replaces for that profile, not the
