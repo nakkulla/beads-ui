@@ -1642,6 +1642,62 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     });
   });
 
+  test.each(['bead', 'repo-operation'])(
+    'refuses the %s conversation with unknown_runner when the settings name no registered runner',
+    async (kind) => {
+      const { resolver, tmux } = makeLauncher({
+        metadata: {},
+        currentRunner: () => null
+      });
+
+      const outcome =
+        kind === 'bead'
+          ? await resolver.resolve({
+              workspace: REPO,
+              repo: REPO,
+              bead_id: BEAD,
+              failure: FAILURE
+            })
+          : await resolver.resolveRepoOperation({
+              workspace: REPO,
+              operation_id: 'op-1',
+              failure: FAILURE
+            });
+
+      expect({
+        launched: outcome.launched,
+        reason: outcome.reason,
+        runner: outcome.runner,
+        opened: tmux.calls.some((call) => call[0] === 'open')
+      }).toEqual({
+        launched: false,
+        reason: 'unknown_runner',
+        runner: null,
+        opened: false
+      });
+    }
+  );
+
+  test('opens the fixed conversation runtime when the settings name no registered runner', async () => {
+    const { resolver } = makeLauncher({
+      metadata: {},
+      currentRunner: () => null,
+      settings: { fresh_runtime: 'codex' }
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect({ launched: outcome.launched, runner: outcome.runner }).toEqual({
+      launched: true,
+      runner: 'codex'
+    });
+  });
+
   test('runs the measured codex interactive fork argv', async () => {
     const { tmux, resolver } = makeLauncher({
       metadata: { session_ref: `codex:${SESSION_ID}@${HOST}` },

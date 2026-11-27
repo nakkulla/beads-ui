@@ -19,7 +19,11 @@
  * @import { ResolvedCatalog } from './worker/runner-catalog.js'
  * @typedef {(value: string) => boolean} SessionDefaultFormat
  */
-import { WORKSPACE_KV_KEYS, sessionDefaultEnums } from './worker/exec-enums.js';
+import {
+  WORKSPACE_KV_KEYS,
+  sessionDefaultEnums,
+  storedSessionDefaultEnums
+} from './worker/exec-enums.js';
 
 /** The single `bd kv` key holding every workspace session default. */
 export const SESSION_DEFAULTS_KV_KEY = 'workflow_session_defaults';
@@ -136,7 +140,7 @@ export function normalizeSessionDefaults(raw, options = {}) {
   if (!isRecord(raw)) {
     return { values, warnings };
   }
-  const enums = sessionDefaultEnums(options.catalog);
+  const enums = storedSessionDefaultEnums(options.catalog);
   for (const [key, value] of Object.entries(raw)) {
     if (key === 'schema') {
       continue;

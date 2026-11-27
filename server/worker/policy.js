@@ -35,10 +35,10 @@
  * @import { ResolvedCatalog } from './runner-catalog.js'
  */
 import {
-  PLAN_REVIEW_MODELS,
   REVIEW_EFFORTS,
   REVIEW_SPEEDS,
-  REVIEW_STEP_MODELS,
+  STORED_PLAN_REVIEW_MODELS,
+  STORED_REVIEW_STEP_MODELS,
   validateImplSettings
 } from './exec-enums.js';
 import {
@@ -57,9 +57,6 @@ import { runtimeCatalog } from './runner/index.js';
  * MIRROR: app/views/detail-panel/exec-settings.js DEFAULT_LABELS.
  */
 export const ORCHESTRATION_MODEL_FALLBACK = 'opus';
-
-/** Runner the hardcoded model fallback belongs to. */
-const RUNNER_FALLBACK = 'claude';
 
 /**
  * Catalog for callers that pass no `catalog`: the process-wide RUNTIME catalog
@@ -207,9 +204,13 @@ function normalizeImplLayer(layer, catalog) {
  * `invalid_reason` rather than silently selecting a lower-layer value.
  *
  * The returned `runner` is the reverse lookup of the resolved orchestration
- * model, never an independently-set key. The nine review keys are plain enum
- * picks — their consumer is the workflow skill inside the session, not the
- * worker launcher — with `plan_review_model` on the narrower vocabulary.
+ * model, never an independently-set key. A model no registered runner owns
+ * yields `runner: null` and `invalid_reason: 'unknown_runner'` — never a
+ * silent Claude fallback (UI-6o70), which would run the work on an account and
+ * model nobody chose. The nine review keys are plain enum picks over the
+ * stored vocabularies (a durable `neon` reads back) — their consumer is the
+ * workflow skill inside the session, not the worker launcher — with
+ * `plan_review_model` on the narrower vocabulary.
  *
  * `stamped_keys` is always EMPTY: no dispatch copies a resolved default onto a
  * Bead any more. It is retained so terminal cleanup of attempts recorded before
@@ -228,7 +229,7 @@ function normalizeImplLayer(layer, catalog) {
  *   orchestration_model: string,
  *   orchestration_effort: string|undefined,
  *   orchestration_speed: string,
- *   runner: string,
+ *   runner: string|null,
  *   spec_review_model: string|undefined,
  *   spec_review_effort: string|undefined,
  *   spec_review_speed: string|undefined,
@@ -269,7 +270,7 @@ export function resolveExecSettings(input) {
     ORCHESTRATION_MODEL_FALLBACK
   );
   const orchestration_model = model_pick.value ?? ORCHESTRATION_MODEL_FALLBACK;
-  const runner = modelRunner(catalog, orchestration_model) ?? RUNNER_FALLBACK;
+  const runner = modelRunner(catalog, orchestration_model);
   const effort_pick = model_pick.invalid
     ? { value: undefined, invalid: false }
     : pickOuterFailClosed(
@@ -295,19 +296,19 @@ export function resolveExecSettings(input) {
         : 'default'
     : (speed_pick.value ?? 'default');
   const spec_review_model = pickBead(
-    REVIEW_STEP_MODELS,
+    STORED_REVIEW_STEP_MODELS,
     bead.spec_review_model
   );
   const spec_review_effort = pickBead(REVIEW_EFFORTS, bead.spec_review_effort);
   const spec_review_speed = pickBead(REVIEW_SPEEDS, bead.spec_review_speed);
   const plan_review_model = pickBead(
-    PLAN_REVIEW_MODELS,
+    STORED_PLAN_REVIEW_MODELS,
     bead.plan_review_model
   );
   const plan_review_effort = pickBead(REVIEW_EFFORTS, bead.plan_review_effort);
   const plan_review_speed = pickBead(REVIEW_SPEEDS, bead.plan_review_speed);
   const impl_review_model = pickBead(
-    REVIEW_STEP_MODELS,
+    STORED_REVIEW_STEP_MODELS,
     bead.impl_review_model
   );
   const impl_review_effort = pickBead(REVIEW_EFFORTS, bead.impl_review_effort);
@@ -316,7 +317,7 @@ export function resolveExecSettings(input) {
   const impl_validation = validateImplSettings(bead_impl.values, {
     catalog,
     active_writer: false,
-    controller_runtime: runner
+    controller_runtime: runner ?? undefined
   });
   const impl_runtime = impl_validation.ok
     ? impl_validation.impl_runtime
@@ -352,13 +353,15 @@ export function resolveExecSettings(input) {
     impl_effort,
     invalid_reason: model_pick.invalid
       ? 'invalid_orchestration_model'
-      : effort_pick.invalid
-        ? 'illegal_orchestration_effort'
-        : speed_pick.invalid
-          ? 'illegal_orchestration_speed'
-          : impl_validation.ok
-            ? undefined
-            : impl_validation.reason,
+      : runner === null
+        ? 'unknown_runner'
+        : effort_pick.invalid
+          ? 'illegal_orchestration_effort'
+          : speed_pick.invalid
+            ? 'illegal_orchestration_speed'
+            : impl_validation.ok
+              ? undefined
+              : impl_validation.reason,
     stamped_keys
   };
 }

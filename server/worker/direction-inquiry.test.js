@@ -769,6 +769,22 @@ describe('direction-inquiry fresh fallback', () => {
     });
   });
 
+  test('refuses with unknown_runner when the settings name no registered runner', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { inquiry, tmux } = makeInquiry({
+      tmux: launchingHub(),
+      readAttempt: async () => attempt({ runner: null }),
+      currentRunner: () => null,
+      store: { recordInteractiveSession }
+    });
+
+    const outcome = await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(outcome?.reason).toBe('unknown_runner');
+    expect(tmux.names()).not.toContain('open');
+    expect(recordInteractiveSession).not.toHaveBeenCalled();
+  });
+
   test('uses the current runner when the attempt names none', async () => {
     const currentRunner = vi.fn(() => /** @type {const} */ ('codex'));
     const recordInteractiveSession = vi.fn();

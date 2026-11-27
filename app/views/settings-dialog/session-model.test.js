@@ -45,7 +45,8 @@ import {
   presetKeysFor,
   presetKvKeysFor,
   speedVisible,
-  workerUrlMessage
+  workerUrlMessage,
+  writablePresetSettings
 } from './session-model.js';
 
 const PROJECTION = {
@@ -568,6 +569,25 @@ describe('narrowImplTarget', () => {
       impl_runtime: 'claude',
       impl_model: 'opus',
       impl_effort: 'high'
+    });
+  });
+});
+
+describe('writablePresetSettings', () => {
+  test('drops stored-only agy and neon values and keeps every other key', () => {
+    const settings = {
+      impl_runtime: 'agy',
+      impl_model: 'opus',
+      spec_review_model: 'neon',
+      plan_review_model: 'neon',
+      impl_review_model: 'codex'
+    };
+
+    const writable = writablePresetSettings(settings);
+
+    expect(writable).toEqual({
+      impl_model: 'opus',
+      impl_review_model: 'codex'
     });
   });
 });

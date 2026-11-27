@@ -184,6 +184,7 @@ afterEach(() => {
   fs.rmSync(path.join(home_dir, '.claude'), { recursive: true, force: true });
   fs.rmSync(path.join(home_dir, 'state'), { recursive: true, force: true });
   fs.rmSync(path.join(home_dir, '.hermes'), { recursive: true, force: true });
+  fs.rmSync(path.join(home_dir, '.gemini'), { recursive: true, force: true });
   fs.rmSync(path.join(home_dir, 'codex-default'), {
     recursive: true,
     force: true
@@ -997,5 +998,81 @@ describe('get-session-refs', () => {
 
     expect(messages(socket)[0].error.code).toBe('bad_request');
     expect(bd.runBdJsonProjectedInWorkspace).not.toHaveBeenCalled();
+  });
+});
+
+describe('subscribe-session-log agy session_ref (UI-6o70)', () => {
+  const AGY_ID = 'c0ffee00-1234-4abc-8def-0123456789ab';
+
+  /**
+   * Write an agy conversation transcript where the resolver looks for it.
+   *
+   * @param {string} contents
+   */
+  function writeAgyTranscript(contents) {
+    const dir = path.join(
+      home_dir,
+      '.gemini',
+      'antigravity-cli',
+      'brain',
+      AGY_ID,
+      '.system_generated',
+      'logs'
+    );
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'transcript_full.jsonl');
+    fs.writeFileSync(file, contents);
+    fs.utimesSync(file, MTIME_SEC, MTIME_SEC);
+  }
+
+  test('snapshots an agy transcript as user and assistant events', async () => {
+    const socket = fakeSocket();
+    writeAgyTranscript(
+      [
+        JSON.stringify({ type: 'USER_INPUT', content: 'hello agy' }),
+        JSON.stringify({ type: 'PLANNER_RESPONSE', content: 'hello back' })
+      ].join('\n') + '\n'
+    );
+    bdShows({ session_ref: `agy:${AGY_ID}@${HOST}` });
+
+    await handleSubscribeSessionLog(
+      socket,
+      subscribeRequest({
+        id: 'c1',
+        attempt_id: `session:agy:${AGY_ID}`,
+        session_ref: { bead_id: 'UI-1', provider: 'agy', session_id: AGY_ID }
+      })
+    );
+
+    const snapshot = pushOf(socket, 'session-log-snapshot').payload;
+    expect(snapshot.lines).toEqual([
+      { type: 'user', message: { content: 'hello agy' } },
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'hello back' }] }
+      }
+    ]);
+    expect(snapshot.last_event_at).toBe(MTIME_SEC * 1000);
+  });
+
+  test('names agy among the accepted providers when refusing a request', async () => {
+    const socket = fakeSocket();
+
+    await handleSubscribeSessionLog(
+      socket,
+      subscribeRequest({
+        id: 'c1',
+        attempt_id: `session:gemini:${SESSION_ID}`,
+        session_ref: {
+          bead_id: 'UI-1',
+          provider: 'gemini',
+          session_id: SESSION_ID
+        }
+      })
+    );
+
+    expect(messages(socket)[0].error.message).toContain(
+      'claude|codex|hermes|agy'
+    );
   });
 });

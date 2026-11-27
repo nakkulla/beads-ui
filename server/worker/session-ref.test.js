@@ -5,6 +5,7 @@ import {
   parseSessionRef,
   qualifyInteractiveForkSource,
   qualifySessionFork,
+  recordedSessionProvider,
   resolveSessionFile,
   sessionRefViews
 } from './session-ref.js';
@@ -666,5 +667,117 @@ describe('qualifySessionFork (UI-p206 §3)', () => {
       provider: 'claude',
       session_id: 'sid-new'
     });
+  });
+});
+
+describe('agy session_ref items (UI-6o70)', () => {
+  const AGY_ID = 'c0ffee00-1234-4abc-8def-0123456789ab';
+  const AGY_FILE = `/home/u/.gemini/antigravity-cli/brain/${AGY_ID}/.system_generated/logs/transcript_full.jsonl`;
+
+  test('parses an agy item into an agy entry', () => {
+    const value = `agy:${AGY_ID}@boxA`;
+
+    const result = parseSessionRef(value);
+
+    expect(result).toEqual([
+      { index: 0, provider: 'agy', session_id: AGY_ID, host: 'boxA' }
+    ]);
+  });
+
+  test('marks the newest agy item as the current session', () => {
+    const metadata = {
+      session_ref: `claude:sid-a@elsewhere; agy:${AGY_ID}@elsewhere`
+    };
+    const options = {
+      home_dir: '/home/u',
+      hostname: 'box',
+      fs: /** @type {any} */ (fakeFs({}))
+    };
+
+    const result = sessionRefViews(metadata, options);
+
+    expect(result.map((view) => [view.provider, view.current])).toEqual([
+      ['claude', false],
+      ['agy', true]
+    ]);
+  });
+
+  test('builds the agy conversation resume command', () => {
+    const options = {
+      home_dir: '/home/u',
+      hostname: 'box',
+      fs: /** @type {any} */ (fakeFs({}))
+    };
+
+    const result = sessionRefViews(
+      { session_ref: `agy:${AGY_ID}@elsewhere` },
+      options
+    );
+
+    expect(result[0].resume_command).toBe(`agy --conversation '${AGY_ID}'`);
+  });
+
+  test('locates the agy transcript under the antigravity brain directory', () => {
+    const file_system = fakeFs({ files: { [AGY_FILE]: 1900 } });
+
+    const result = resolveSessionFile(
+      { index: 0, provider: 'agy', session_id: AGY_ID, host: 'box' },
+      {
+        home_dir: '/home/u',
+        hostname: 'box',
+        fs: /** @type {any} */ (file_system)
+      }
+    );
+
+    expect(result).toEqual({
+      locality: 'local',
+      file: AGY_FILE,
+      last_event_at: 1900
+    });
+  });
+
+  test('reports missing for a dot-segment agy id without probing the disk', () => {
+    const file_system = fakeFs({});
+
+    const result = resolveSessionFile(
+      { index: 0, provider: 'agy', session_id: '..', host: 'box' },
+      {
+        home_dir: '/home/u',
+        hostname: 'box',
+        fs: /** @type {any} */ (file_system)
+      }
+    );
+
+    expect(result).toEqual({
+      locality: 'missing',
+      file: null,
+      last_event_at: null
+    });
+    expect(file_system.statSync).not.toHaveBeenCalled();
+  });
+
+  test('keeps an agy item out of the fork source while no agy runner exists', () => {
+    const file_system = fakeFs({ files: { [AGY_FILE]: 1900 } });
+    const options = {
+      home_dir: '/home/u',
+      hostname: 'box',
+      fs: /** @type {any} */ (file_system)
+    };
+
+    const result = qualifySessionFork(
+      { session_ref: `agy:${AGY_ID}@box` },
+      null,
+      options
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'no_session_ref' });
+  });
+
+  test('reports no recorded provider when the current item is agy', () => {
+    const metadata = { session_ref: `claude:sid-a@box; agy:${AGY_ID}@box` };
+
+    const result = recordedSessionProvider(metadata);
+
+    expect(result).toBe(null);
   });
 });

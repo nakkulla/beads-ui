@@ -205,7 +205,13 @@ import {
   judgeCodexHookLoad,
   monitorGuardEvents
 } from './runner/guard-events.js';
-import { RUNNERS, adapterSpec, runtimeCatalog } from './runner/index.js';
+import {
+  RUNNERS,
+  UNKNOWN_RUNNER,
+  adapterSpec,
+  isUnknownRunnerError,
+  runtimeCatalog
+} from './runner/index.js';
 import { applyPreamble, defaultTaskPrompt } from './runner/preamble.js';
 import { terminalResultOf } from './runner/session.js';
 import { attemptCostUsage } from './session-cost.js';
@@ -18078,7 +18084,18 @@ export function createScheduler(deps) {
       resume_session_id
     } = input;
 
-    const runner = deps.makeRunner(runner_name);
+    /** @type {ReturnType<typeof deps.makeRunner>} */
+    let runner;
+    try {
+      runner = deps.makeRunner(runner_name);
+    } catch (error) {
+      if (isUnknownRunnerError(error)) {
+        log('launch refused for %s: %s', attempt_id, UNKNOWN_RUNNER);
+        await finalizeLaunchRefusal(input, UNKNOWN_RUNNER, false);
+        return { ok: false, reason: UNKNOWN_RUNNER };
+      }
+      throw error;
+    }
     const started_at = now();
     const receipt_inbox = usage_receipts.ensureUsageReceiptInbox(
       workspace,

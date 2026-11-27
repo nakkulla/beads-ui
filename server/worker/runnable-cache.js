@@ -960,7 +960,11 @@ export function createRunnableCache(options = {}) {
       }
       const refs = parseSessionRef(metadataOf(entry.row).session_ref);
       const current = refs[refs.length - 1];
-      if (!current || current.provider === 'hermes') {
+      if (
+        !current ||
+        current.provider === 'hermes' ||
+        current.provider === 'agy'
+      ) {
         continue;
       }
       const location = resolveSessionFile(current);

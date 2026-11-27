@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { makeFixtureSpawn } from './fixture-spawn.js';
-import { RUNNERS, adapterSpec, createRunner } from './index.js';
+import { RUNNERS, UNKNOWN_RUNNER, adapterSpec, createRunner } from './index.js';
 
 /**
  * @returns {string}
@@ -83,21 +83,21 @@ describe('runner/index registry (worker-multi-provider-runner §B)', () => {
     expect(spawn_impl.captured.calls[0].command).toBe('/opt/codex');
   });
 
-  test('falls back to claude for an unknown runner name', async () => {
-    for (const name of ['ccx', 'nope', undefined]) {
+  test.each(['ccx', 'nope', 'agy', 'gemini', undefined])(
+    'refuses the unregistered runner name %s with unknown_runner',
+    (name) => {
       const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
-      const runner = createRunner(/** @type {any} */ (name), {
-        spawn_impl,
-        catalog: testCatalog()
-      });
 
-      const v = await runner.spawn({ id: 'UI-1' }, WS, {}).done;
+      const create = () =>
+        createRunner(/** @type {any} */ (name), {
+          spawn_impl,
+          catalog: testCatalog()
+        });
 
-      expect(runner.name).toBe('claude');
-      expect(spawn_impl.captured.calls[0].command).toBe('claude');
-      expect(v.success).toBe(true);
+      expect(create).toThrow(expect.objectContaining({ code: UNKNOWN_RUNNER }));
+      expect(spawn_impl.captured.calls).toHaveLength(0);
     }
-  });
+  );
 
   test('resolves claude to the claude adapter', async () => {
     const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
@@ -112,16 +112,26 @@ describe('runner/index registry (worker-multi-provider-runner §B)', () => {
     expect(v.success).toBe(true);
   });
 
-  test('falls back to claude when the catalog drops the codex entry', async () => {
+  test('refuses codex with unknown_runner when the catalog drops the codex entry', () => {
     const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
     const catalog = testCatalog();
     delete catalog.runners.codex;
-    const runner = createRunner('codex', { spawn_impl, catalog });
 
-    const v = await runner.spawn({ id: 'UI-1' }, WS, {}).done;
+    const create = () => createRunner('codex', { spawn_impl, catalog });
 
-    expect(runner.name).toBe('claude');
-    expect(v.success).toBe(true);
+    expect(create).toThrow(expect.objectContaining({ code: UNKNOWN_RUNNER }));
+    expect(spawn_impl.captured.calls).toHaveLength(0);
+  });
+
+  test('refuses claude with unknown_runner when the catalog drops the claude entry', () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()], exit: 0 });
+    const catalog = testCatalog();
+    delete catalog.runners.claude;
+
+    const create = () => createRunner('claude', { spawn_impl, catalog });
+
+    expect(create).toThrow(expect.objectContaining({ code: UNKNOWN_RUNNER }));
+    expect(spawn_impl.captured.calls).toHaveLength(0);
   });
 
   test('exposes claude outage classification through the registry', () => {
