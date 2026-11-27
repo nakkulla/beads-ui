@@ -1814,8 +1814,23 @@ describe('worker/attach construction + live loop (F1)', () => {
       verify: okVerify,
       resolveBase: okBase('main', 'b'.repeat(40)),
       completionActionDriver,
+      // A closed PR is a refusal the root hands back; a failed first read
+      // would hold the root on its unread head instead (UI-aui8 §3.6).
       gh: /** @type {any} */ ({
-        prDetail: vi.fn(async () => ({ state: 'error', reason: 'unreadable' }))
+        prDetail: vi.fn(async () => ({
+          state: 'ok',
+          data: {
+            number: 1,
+            url: 'https://github.com/o/r/pull/1',
+            state: 'CLOSED',
+            mergeable: 'MERGEABLE',
+            merge_state_status: 'CLEAN',
+            head_ref: 'UI-root',
+            head_sha: 'a'.repeat(40),
+            base_ref: 'main',
+            merged_sha: null
+          }
+        }))
       }),
       spawn_impl: makeFixtureSpawn({ lines: [] })
     });
@@ -5285,6 +5300,96 @@ describe('worker/attach base-update result wiring (UI-vzyh §2)', () => {
     expect(entry).toHaveLength(1);
     expect(entry[0].authority?.source).toBe('manual');
     expect(entry[0].hold).toBeUndefined();
+  });
+});
+
+describe('worker/attach GitHub hold push wiring (UI-aui8 §3.8)', () => {
+  test('names the queued PR in the hold push when no PR read has succeeded', async () => {
+    const head = 'a'.repeat(40);
+    const base_sha = 'd'.repeat(40);
+    const runtime = createWorkerRuntime();
+    const githubHold = vi.fn(async () => {});
+    const notify = new Proxy(
+      { githubHold },
+      {
+        get: (target, key) => {
+          if (key in target) {
+            return /** @type {any} */ (target)[key];
+          }
+          if (key === 'then') {
+            return undefined;
+          }
+          if (key === 'enabled' || key === 'codexCreditNotice') {
+            return () => false;
+          }
+          return async () => false;
+        }
+      }
+    );
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      notify,
+      bd: {
+        ...fakeBd(),
+        readIssue: async () => ({
+          id: 'UI-1',
+          metadata: { route: 'quick_fix' }
+        })
+      },
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      resolveBase: okBase('main', base_sha),
+      gitRun: async (/** @type {string[]} */ args) =>
+        args[0] === 'show' && args[1]?.endsWith(':repo-ops/config.toml')
+          ? { code: 128, stdout: '', stderr: 'missing' }
+          : { code: 0, stdout: '', stderr: '' },
+      gh: /** @type {any} */ ({
+        checkAvailability: async () => ({ state: 'ok', data: true }),
+        prDetail: vi.fn(async () => ({
+          state: 'error',
+          reason: 'gh_failed',
+          failure_class: 'auth'
+        })),
+        updateBranch: vi.fn(),
+        mergeSquash: vi.fn(),
+        closePr: vi.fn()
+      })
+    });
+    runtime.queueStore.appendAttempt(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'att-UI-1',
+        bead_id: 'UI-1',
+        repo: WS,
+        target_base: 'main',
+        base_oid: base_sha,
+        runner: 'codex',
+        verify_result: {
+          pr_url: 'https://github.com/o/r/pull/304',
+          pr_number: 304
+        }
+      }
+    });
+    runtime.queueStore.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'att-UI-1',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    runtime.queueStore.enqueueMergeManual(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1', head_sha: head, target_base: 'main' }]
+    });
+
+    await att.mergeQueue.kick();
+
+    expect(githubHold).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bead_id: 'UI-1',
+        reason: 'github_head_unreadable',
+        pr_url: 'https://github.com/o/r/pull/304'
+      })
+    );
   });
 });
 

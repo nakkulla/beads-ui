@@ -302,6 +302,53 @@ describe('resolveTargetBase five-step validation', () => {
     }
   );
 
+  test.each([
+    {
+      failure_class: 'rate_limit',
+      code: 128,
+      stderr:
+        "fatal: unable to access 'https://github.com/o/r/': The requested URL returned error: 429"
+    },
+    {
+      failure_class: 'network',
+      code: 128,
+      stderr:
+        "fatal: unable to access 'https://github.com/o/r/': The requested URL returned error: 503"
+    },
+    { failure_class: 'network', code: 124, stderr: '' },
+    {
+      failure_class: 'auth',
+      code: 128,
+      stderr: 'Permission denied (publickey).'
+    },
+    {
+      failure_class: 'unknown',
+      code: 128,
+      stderr: "fatal: couldn't find remote ref ilsun/dev"
+    }
+  ])(
+    'carries the $failure_class GitHub class of a failed fetch (exit $code)',
+    async (input) => {
+      writeDeclaration('base = "ilsun/dev"\n');
+      const git = gitRunner({
+        ...HEALTHY,
+        fetch: { code: input.code, stderr: input.stderr }
+      });
+
+      const result = await resolveTargetBase({
+        repo,
+        gitRun: git.run,
+        delay: async () => {}
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        step: 'fetch',
+        failure_class: input.failure_class
+      });
+    }
+  );
+
   test('fails when the remote branch does not exist', async () => {
     writeDeclaration('base = "ilsun/dv"\n');
     const git = gitRunner({ ...HEALTHY, 'rev-parse': { code: 1, stdout: '' } });

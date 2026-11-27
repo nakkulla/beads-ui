@@ -80,6 +80,7 @@
     "app/utils/spec-after-blocker.js",
     "app/utils/token-usage.js",
     "app/utils/failure-sentences.js",
+    "app/utils/github-wait.js",
     "app/utils/account-display-name.js",
     "app/utils/active-login-return.js",
     "app/utils/quickfix-lane.js",

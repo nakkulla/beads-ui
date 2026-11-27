@@ -123,7 +123,10 @@ import {
   placePlanFromPopup,
   planPlaceLanesOf
 } from './plan-place.js';
-import { prWaitRowsOf as projectPrWaitRows } from './pr-wait-row.js';
+import {
+  mergeQueueRefusalText,
+  prWaitRowsOf as projectPrWaitRows
+} from './pr-wait-row.js';
 import {
   providerResumeDialogTemplate,
   providerResumeDraft,
@@ -158,6 +161,7 @@ export { mergeStepView } from './merge-steps.js';
 export {
   autoResolutionBadge,
   mergeFailureText,
+  mergeQueueRefusalText,
   mergeWaitingText,
   prStatusBadge,
   receiptBadgeCodes,
@@ -428,25 +432,6 @@ export function activityBadge(gate_badge, activity) {
     }
   }
   return { label: gate_badge, live: false };
-}
-
-/**
- * Human text for a rejected manual merge-queue placement.
- *
- * @param {unknown} reason
- * @returns {string}
- */
-export function mergeQueueRefusalText(reason) {
-  if (reason === 'lane_occupied') {
-    return '실행 레인에 남아 있어 머지 대상이 아닙니다';
-  }
-  if (reason === 'shelved') {
-    return '보관된 PR이라 머지 큐에 넣지 않습니다 — [보관 해제] 뒤 다시 누르세요';
-  }
-  const base = '머지 큐에 넣지 못했습니다 (이미 대기 중이거나 대상 아님)';
-  return typeof reason === 'string' && reason.length > 0
-    ? `${base}: ${reason}`
-    : base;
 }
 
 /**
@@ -1286,7 +1271,11 @@ export function createWorkerView(mount_element, options = {}) {
     }
     // Not applied and not a CAS conflict: the row is already queued (a no-op) or
     // it is no longer a lane member the server will merge.
-    showToast(mergeQueueRefusalText(res.reason), 'error', 2400);
+    showToast(
+      mergeQueueRefusalText(res.reason, res.failure_class),
+      'error',
+      2400
+    );
   }
 
   /**

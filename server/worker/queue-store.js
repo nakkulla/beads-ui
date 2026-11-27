@@ -1153,6 +1153,25 @@
  * was dispatched for this hold (2026-08-28 auto-review-dispatch spec §3.1):
  * `'slot'` is ADR 0015's workspace slot fence. Absent means nothing is waiting,
  * which is what every legacy hold round-trips to.
+ * @property {string} [failure_class] - A GitHub hold's last failure class
+ * (`network` / `rate_limit` / `auth` / `unknown`, UI-aui8 §3.3). Absent on
+ * every review hold and every legacy hold.
+ * @property {string} [wait_point] - A GitHub hold's last failure point
+ * (`gate_read` / `verify_recheck` / `merge_command` / `merge_confirm` /
+ * `resolution`, UI-aui8 §3.2).
+ * @property {number} [notified_at] - When the hold's one Discord notification
+ * was claimed (UI-aui8 §3.8) — written BEFORE the send, so a restart never
+ * sends it twice.
+ * @property {LostBaseUpdate} [base_update] - The base update whose answer was
+ * lost (UI-aui8 §3.2), kept until an observation decides whether it applied.
+ */
+/**
+ * The head and base a queue-owned base update was sent for when its answer
+ * never came back (UI-aui8 §3.2).
+ *
+ * @typedef {Object} LostBaseUpdate
+ * @property {string} head_sha
+ * @property {string|null} base_ref
  */
 /**
  * @typedef {'waiting'|'yielded'|'ready'} ResolutionWaitState
@@ -1392,6 +1411,11 @@ import nodeCrypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
+import {
+  GITHUB_FAILURE_CLASS_LABELS,
+  GITHUB_WAIT_POINT_LABELS,
+  isGithubHold
+} from '../../app/utils/github-wait.js';
 import {
   defaultProviderLimitPolicy,
   normalizeProviderLimitPolicyEntry
@@ -3276,6 +3300,38 @@ function normalizeMergeAuthority(value) {
   return authority;
 }
 
+/** The failure classes a GitHub hold may carry (UI-aui8 §3.1). */
+const GITHUB_FAILURE_CLASSES = new Set(
+  Object.keys(GITHUB_FAILURE_CLASS_LABELS)
+);
+
+/** The wait points a GitHub hold may carry (UI-aui8 §3.2). */
+const GITHUB_WAIT_POINTS = new Set(Object.keys(GITHUB_WAIT_POINT_LABELS));
+
+/**
+ * Read a GitHub hold's lost base update (UI-aui8 §3.2); null when the value
+ * is absent or its shape cannot be trusted.
+ *
+ * @param {unknown} value
+ * @returns {LostBaseUpdate|null}
+ */
+function normalizeLostBaseUpdate(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.head_sha !== 'string' ||
+    !/^[0-9a-f]{40}$/i.test(value.head_sha)
+  ) {
+    return null;
+  }
+  return {
+    head_sha: value.head_sha.toLowerCase(),
+    base_ref:
+      typeof value.base_ref === 'string' && value.base_ref.length > 0
+        ? value.base_ref
+        : null
+  };
+}
+
 /**
  * @param {unknown} value
  * @returns {MergeHold|null}
@@ -3291,13 +3347,27 @@ function normalizeMergeHold(value) {
   ) {
     return null;
   }
+  const base_update = normalizeLostBaseUpdate(value.base_update);
   return {
     reason: value.reason,
     head_sha: value.head_sha.toLowerCase(),
     since: value.since,
     // Only the one defined wait survives, and only by being SET, so a legacy
     // hold round-trips byte-identical (the `via` rule above).
-    ...(value.auto_review_wait === 'slot' ? { auto_review_wait: 'slot' } : {})
+    ...(value.auto_review_wait === 'slot' ? { auto_review_wait: 'slot' } : {}),
+    // The GitHub hold's fields (UI-aui8 §3.3, §3.8) follow the same rule: an
+    // unknown value is dropped, an absent one stays absent.
+    ...(GITHUB_FAILURE_CLASSES.has(String(value.failure_class))
+      ? { failure_class: String(value.failure_class) }
+      : {}),
+    ...(GITHUB_WAIT_POINTS.has(String(value.wait_point))
+      ? { wait_point: String(value.wait_point) }
+      : {}),
+    ...(typeof value.notified_at === 'number' &&
+    Number.isFinite(value.notified_at)
+      ? { notified_at: value.notified_at }
+      : {}),
+    ...(base_update === null ? {} : { base_update })
   };
 }
 
@@ -14281,8 +14351,11 @@ export function createQueueStore(options = {}) {
             // A fresh authority is a fresh judgment: whatever the gate was
             // holding the old one on is re-decided from this head (UI-d7fy
             // §3.3), and a stale reason must not outlive the authority it was
-            // taken against.
-            delete existing.hold;
+            // taken against. A GitHub hold (UI-aui8 §3.3) is not a verdict on
+            // the authority: only the queue's next decided turn ends it.
+            if (!isGithubHold(existing.hold)) {
+              delete existing.hold;
+            }
             changed += 1;
             continue;
           }
@@ -14392,6 +14465,10 @@ export function createQueueStore(options = {}) {
             : now();
         attempt.control = null;
         attempt.finished_at = at;
+        // A GitHub hold (UI-aui8 §3.3) is the merge queue's own record of a
+        // GitHub failure, not a review verdict: a review session settling
+        // never clears or rewrites it.
+        const github_hold = isGithubHold(entry.hold);
         if (input.outcome === 'current') {
           attempt.status = 'done';
           attempt.cause = null;
@@ -14400,7 +14477,9 @@ export function createQueueStore(options = {}) {
               input.final_head_sha
             ).toLowerCase();
           }
-          delete entry.hold;
+          if (!github_hold) {
+            delete entry.hold;
+          }
           delete entry.review_dispatch;
           return true;
         }
@@ -14409,22 +14488,25 @@ export function createQueueStore(options = {}) {
           typeof input.cause === 'string' && input.cause.length > 0
             ? input.cause
             : 'receipt_not_current';
-        const prior = entry.hold ?? null;
-        // A caller with no verdict of its own (a session that died before it
-        // could be judged) leaves the hold exactly as the gate last stated it;
-        // only a fresh judgment replaces the reason.
-        const hold_reason =
-          typeof input.hold_reason === 'string' && input.hold_reason.length > 0
-            ? input.hold_reason
-            : (prior?.reason ?? 'review_receipt_missing');
-        const head_sha = isSha(input.final_head_sha)
-          ? String(input.final_head_sha).toLowerCase()
-          : (entry.authority.requested_head_sha ?? '');
-        entry.hold = {
-          reason: hold_reason,
-          head_sha,
-          since: prior && prior.reason === hold_reason ? prior.since : at
-        };
+        if (!github_hold) {
+          const prior = entry.hold ?? null;
+          // A caller with no verdict of its own (a session that died before it
+          // could be judged) leaves the hold exactly as the gate last stated
+          // it; only a fresh judgment replaces the reason.
+          const hold_reason =
+            typeof input.hold_reason === 'string' &&
+            input.hold_reason.length > 0
+              ? input.hold_reason
+              : (prior?.reason ?? 'review_receipt_missing');
+          const head_sha = isSha(input.final_head_sha)
+            ? String(input.final_head_sha).toLowerCase()
+            : (entry.authority.requested_head_sha ?? '');
+          entry.hold = {
+            reason: hold_reason,
+            head_sha,
+            since: prior && prior.reason === hold_reason ? prior.since : at
+          };
+        }
         const claim = entry.review_dispatch ?? null;
         if (claim && claim.attempt_id === input.attempt_id) {
           entry.review_dispatch = {
@@ -14583,8 +14665,19 @@ export function createQueueStore(options = {}) {
      * write on every repeat would bump the revision, emit `queue-changed`, and
      * drive the drain that re-judges it — forever.
      *
+     * A GitHub hold (UI-aui8 §3.3, §3.6) also carries its last `failure_class`
+     * and `wait_point`, both taken exactly as passed, and the `notified_at`
+     * marker (§3.8). `notified_at` follows the `auto_review_wait` rule — an
+     * omitted value preserves the stored one — but only while the reason is
+     * unchanged: a new reason is a new hold, and a new hold has not notified.
+     * The lost `base_update` (§3.2) follows the same rule as `notified_at`,
+     * and `null` clears it.
+     * `since` may be passed for a hold whose start predates this write (the
+     * post-merge confirm wait, §3.5); a refresh of the same reason still keeps
+     * the stored `since`.
+     *
      * @param {string} workspace
-     * @param {{ bead_id: string, hold: { reason: string, head_sha: string|null, auto_review_wait?: 'slot'|null }|null, at: number }} input
+     * @param {{ bead_id: string, hold: { reason: string, head_sha: string|null, auto_review_wait?: 'slot'|null, failure_class?: string|null, wait_point?: string|null, notified_at?: number|null, since?: number|null, base_update?: LostBaseUpdate|null }|null, at: number }} input
      * @returns {QueueOpResult}
      */
     setMergeHold(workspace, input) {
@@ -14611,6 +14704,7 @@ export function createQueueStore(options = {}) {
         if (typeof reason !== 'string' || reason.length === 0) {
           return false;
         }
+        const same_reason = !!prior && prior.reason === reason;
         const prior_wait = prior?.auto_review_wait ?? null;
         const auto_review_wait =
           input.hold.auto_review_wait === undefined
@@ -14618,24 +14712,59 @@ export function createQueueStore(options = {}) {
             : input.hold.auto_review_wait === 'slot'
               ? 'slot'
               : null;
+        const failure_class = GITHUB_FAILURE_CLASSES.has(
+          String(input.hold.failure_class)
+        )
+          ? String(input.hold.failure_class)
+          : null;
+        const wait_point = GITHUB_WAIT_POINTS.has(String(input.hold.wait_point))
+          ? String(input.hold.wait_point)
+          : null;
+        const prior_notified = same_reason
+          ? (prior?.notified_at ?? null)
+          : null;
+        const notified_at =
+          input.hold.notified_at === undefined
+            ? prior_notified
+            : typeof input.hold.notified_at === 'number' &&
+                Number.isFinite(input.hold.notified_at)
+              ? input.hold.notified_at
+              : null;
+        const prior_update = same_reason ? (prior?.base_update ?? null) : null;
+        const base_update =
+          input.hold.base_update === undefined
+            ? prior_update
+            : normalizeLostBaseUpdate(input.hold.base_update);
         if (
           prior &&
-          prior.reason === reason &&
+          same_reason &&
           prior.head_sha === head_sha &&
-          prior_wait === auto_review_wait
+          prior_wait === auto_review_wait &&
+          (prior.failure_class ?? null) === failure_class &&
+          (prior.wait_point ?? null) === wait_point &&
+          (prior.notified_at ?? null) === notified_at &&
+          JSON.stringify(prior_update) === JSON.stringify(base_update)
         ) {
           return false;
         }
+        const at =
+          typeof input.at === 'number' && Number.isFinite(input.at)
+            ? input.at
+            : now();
+        const fresh_since =
+          typeof input.hold.since === 'number' &&
+          Number.isFinite(input.hold.since)
+            ? input.hold.since
+            : at;
         entry.hold = {
           reason,
           head_sha,
-          since:
-            prior && prior.reason === reason
-              ? prior.since
-              : typeof input.at === 'number' && Number.isFinite(input.at)
-                ? input.at
-                : now(),
-          ...(auto_review_wait === null ? {} : { auto_review_wait })
+          since: prior && same_reason ? prior.since : fresh_since,
+          ...(auto_review_wait === null ? {} : { auto_review_wait }),
+          ...(failure_class === null ? {} : { failure_class }),
+          ...(wait_point === null ? {} : { wait_point }),
+          ...(notified_at === null ? {} : { notified_at }),
+          ...(base_update === null ? {} : { base_update })
         };
         return true;
       });
@@ -15762,8 +15891,11 @@ export function createQueueStore(options = {}) {
      * user saw, the enroller passes none (it is a server-owned mutation, like
      * every other scheduler/driver write).
      *
+     * An entry's `observed_at` is when its head was observed; a head observed
+     * no later than an exclusion was recorded does not clear it (UI-aui8 §3.4).
+     *
      * @param {string} workspace
-     * @param {{ expected_revision?: number|null, entries: Array<{ bead_id: string, external?: boolean, head_sha: string, target_base?: string, foreign_rearm?: boolean, completion?: { source_attempt_id: string, target_base: string, subject: CompletionSubject } }>, present_ids?: string[] }} input
+     * @param {{ expected_revision?: number|null, entries: Array<{ bead_id: string, external?: boolean, head_sha: string, observed_at?: number, target_base?: string, foreign_rearm?: boolean, completion?: { source_attempt_id: string, target_base: string, subject: CompletionSubject } }>, present_ids?: string[] }} input
      * @returns {QueueOpResult}
      */
     enqueueMergeAuto(workspace, input) {
@@ -15923,6 +16055,15 @@ export function createQueueStore(options = {}) {
           if (skip) {
             if (skip.head_sha === entry.head_sha) {
               // Same head that already failed — the exclusion still holds.
+              continue;
+            }
+            if (
+              typeof entry.observed_at === 'number' &&
+              entry.observed_at <= skip.at
+            ) {
+              // The head was observed no later than the exclusion was decided,
+              // and that decision read GitHub itself (the third moved
+              // recheck's head, UI-aui8 §3.4) — this older head proves no move.
               continue;
             }
             // The branch moved, so whatever failed last time is not what would

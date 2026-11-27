@@ -184,3 +184,121 @@ describe('worker/attach — enqueueWorkerManualMerge (UI-58w8 §1)', () => {
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 });
+
+describe('worker/attach — enqueueWorkerManualMerge GitHub refusal (UI-aui8 §3.10)', () => {
+  const UNREACHABLE_PROBE = {
+    ok: false,
+    kind: 'blocked',
+    reason: 'github_unreachable',
+    failure_class: 'network',
+    wait_point: 'gate_read',
+    head_sha: null,
+    base_ref: null,
+    external: false
+  };
+
+  test('refuses a click GitHub could not answer with the connection wait', async () => {
+    const store = seedLane();
+    registerAttachment(UNREACHABLE_PROBE);
+
+    const result = await enqueueWorkerManualMerge(WS, {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot(WS).revision
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      conflict: false,
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read'
+    });
+  });
+
+  test('queues nothing while GitHub is unreachable', async () => {
+    const store = seedLane();
+    registerAttachment(UNREACHABLE_PROBE);
+
+    await enqueueWorkerManualMerge(WS, {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot(WS).revision
+    });
+
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('refuses a permanent GitHub failure with its class', async () => {
+    const store = seedLane();
+    registerAttachment({
+      ok: false,
+      kind: 'blocked',
+      reason: 'gh_failed:auth',
+      failure_class: 'auth',
+      head_unread: true,
+      head_sha: null,
+      base_ref: null,
+      external: false
+    });
+
+    const result = await enqueueWorkerManualMerge(WS, {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot(WS).revision
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      conflict: false,
+      reason: 'gh_failed:auth',
+      failure_class: 'auth'
+    });
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('refuses a permanent GitHub failure on a read identity with its class', async () => {
+    const store = seedLane();
+    registerAttachment({
+      ok: false,
+      kind: 'blocked',
+      reason: 'gh_failed:auth',
+      failure_class: 'auth',
+      head_sha: HEAD,
+      base_ref: 'main',
+      external: false
+    });
+
+    const result = await enqueueWorkerManualMerge(WS, {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot(WS).revision
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'gh_failed:auth',
+      failure_class: 'auth'
+    });
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('keeps the identity refusal for a probe GitHub did not decide', async () => {
+    const store = seedLane();
+    registerAttachment({
+      ok: false,
+      kind: 'blocked',
+      reason: 'pr_ref_unknown',
+      head_sha: null,
+      base_ref: null,
+      external: false
+    });
+
+    const result = await enqueueWorkerManualMerge(WS, {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot(WS).revision
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'pr_identity_unreadable'
+    });
+    expect(result).not.toHaveProperty('failure_class');
+  });
+});

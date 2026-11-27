@@ -52,8 +52,8 @@ afterEach(() => {
 });
 
 describe('timing settings table', () => {
-  test('lists the sixteen keys with ladder rung counts', () => {
-    expect(Object.keys(TIMING_FIELDS)).toHaveLength(16);
+  test('lists the seventeen keys with ladder rung counts', () => {
+    expect(Object.keys(TIMING_FIELDS)).toHaveLength(17);
     expect(TIMING_FIELDS.env_retry_delays_seconds.rungs).toBe(3);
     expect(TIMING_FIELDS.completion_retry_delays_seconds.rungs).toBe(3);
     expect(TIMING_FIELDS.auto_resume_retry_delays_seconds.rungs).toBe(4);
@@ -100,7 +100,8 @@ describe('timing settings reads', () => {
       list_poll_interval_seconds: 30,
       merge_resolution_wait_seconds: 1800,
       merge_unconfirmed_poll_seconds: 60,
-      merge_unconfirmed_wait_seconds: 1800
+      merge_unconfirmed_wait_seconds: 1800,
+      merge_github_wait_notify_seconds: 1800
     });
     expect(warnings).toEqual([]);
   });

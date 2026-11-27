@@ -642,6 +642,38 @@ describe('worker/merge-gate — shared ancestry probe (UI-vzyh §2)', () => {
     expect(state).toBe('probe_error');
   });
 
+  test('bounds the head fetch at the per-call GitHub ceiling (UI-aui8 §3.1)', async () => {
+    const h = probeWith((args) => ({ code: args[0] === 'rev-parse' ? 1 : 0 }));
+
+    await h.probe(OLD_SHA, SHA);
+
+    expect(h.gitRun).toHaveBeenCalledWith(
+      ['fetch', '--no-tags', 'origin', SHA],
+      {
+        cwd: '/r',
+        timeout_ms: 60_000
+      }
+    );
+  });
+
+  test('reports the GitHub class of a head fetch that failed (UI-aui8 §3.1)', async () => {
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) =>
+      args[0] === 'fetch'
+        ? {
+            code: 128,
+            stdout: '',
+            stderr:
+              'fatal: unable to access https://github.com/o/r/: Could not resolve host: github.com'
+          }
+        : { code: 1, stdout: '', stderr: '' }
+    );
+    const report = vi.fn();
+
+    await createAncestryProbe({ gitRun, repo: '/r' })(OLD_SHA, SHA, report);
+
+    expect(report).toHaveBeenCalledWith('network');
+  });
+
   test('reports probe_error when merge-base itself fails', async () => {
     const h = probeWith((args) => ({
       code: args[0] === 'merge-base' ? 128 : 0

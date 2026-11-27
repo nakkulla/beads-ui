@@ -20,7 +20,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseOriginRepo } from './gh.js';
+import {
+  GH_CALL_TIMEOUT_MS,
+  classifyGithubFailure,
+  parseOriginRepo
+} from './gh.js';
 import { branchForBead } from './worktree.js';
 
 /**
@@ -88,7 +92,7 @@ const SHA40_RE = /^[0-9a-f]{40}$/i;
  */
 
 /**
- * @typedef {(args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>} GitRun
+ * @typedef {(args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>} GitRun
  */
 
 /**
@@ -578,9 +582,13 @@ export async function fetchForeignBase(foreign, remote, gitRun) {
  * refspec, so `refs/remotes/<remote>/<base>` names exactly the fetched tip the
  * verify candidate is checked against.
  *
+ * The fetch is bounded per call and a failed fetch carries its GitHub failure
+ * class (UI-aui8 §3.1) — never the raw output — so the merge queue can tell a
+ * connection wait from a permanent failure.
+ *
  * @param {BoundForeignTarget} target
  * @param {GitRun} gitRun
- * @returns {Promise<{ ok: true, sha: string }|{ ok: false }>}
+ * @returns {Promise<{ ok: true, sha: string }|{ ok: false, failure_class: import('./gh.js').GithubFailureClass }>}
  */
 export async function fetchForeignBaseTip(target, gitRun) {
   const tracking = `refs/remotes/${target.remote}/${target.base}`;
@@ -592,21 +600,24 @@ export async function fetchForeignBaseTip(target, gitRun) {
         target.remote,
         `+refs/heads/${target.base}:${tracking}`
       ],
-      { cwd: target.path }
+      { cwd: target.path, timeout_ms: GH_CALL_TIMEOUT_MS }
     );
     if (fetched.code !== 0) {
-      return { ok: false };
+      return {
+        ok: false,
+        failure_class: classifyGithubFailure(fetched.stderr, fetched.code)
+      };
     }
     const rev = await gitRun(['rev-parse', `${tracking}^{commit}`], {
       cwd: target.path
     });
     const sha = rev.stdout.trim();
     if (rev.code !== 0 || !SHA40_RE.test(sha)) {
-      return { ok: false };
+      return { ok: false, failure_class: 'unknown' };
     }
     return { ok: true, sha: sha.toLowerCase() };
   } catch {
-    return { ok: false };
+    return { ok: false, failure_class: 'unknown' };
   }
 }
 
@@ -667,13 +678,18 @@ export async function candidateTreeOf(repo, base_sha, head_sha, gitRun) {
  * Make sure a commit is present in the target checkout, fetching it from the
  * bound remote (by sha, then by the PR's pull ref) when it is not.
  *
+ * Each fetch is bounded per call, and an absent commit carries the GitHub
+ * class of the last fetch that failed (UI-aui8 §3.1) — never its output.
+ *
  * @param {BoundForeignTarget} target
  * @param {string} sha
  * @param {number|null} pr_number
  * @param {GitRun} gitRun
- * @returns {Promise<boolean>}
+ * @returns {Promise<{ ok: true }|{ ok: false, failure_class?: import('./gh.js').GithubFailureClass }>}
  */
 export async function ensureForeignCommit(target, sha, pr_number, gitRun) {
+  /** @type {import('./gh.js').GithubFailureClass|null} */
+  let failure_class = null;
   /** @param {string[]} args */
   const run = async (args) => {
     try {
@@ -682,19 +698,36 @@ export async function ensureForeignCommit(target, sha, pr_number, gitRun) {
       return null;
     }
   };
+  /** @param {string} ref */
+  const fetchRef = async (ref) => {
+    try {
+      const fetched = await gitRun(['fetch', '--no-tags', target.remote, ref], {
+        cwd: target.path,
+        timeout_ms: GH_CALL_TIMEOUT_MS
+      });
+      if (fetched.code !== 0) {
+        failure_class = classifyGithubFailure(fetched.stderr, fetched.code);
+      }
+    } catch {
+      // A runner that threw names no GitHub class.
+    }
+  };
   const present = async () =>
     (await run(['cat-file', '-e', `${sha}^{commit}`])) === 0;
   if (await present()) {
-    return true;
+    return { ok: true };
   }
-  await run(['fetch', '--no-tags', target.remote, sha]);
+  await fetchRef(sha);
   if (await present()) {
-    return true;
+    return { ok: true };
   }
   if (Number.isInteger(pr_number)) {
-    await run(['fetch', '--no-tags', target.remote, `pull/${pr_number}/head`]);
+    await fetchRef(`pull/${pr_number}/head`);
   }
-  return present();
+  if (await present()) {
+    return { ok: true };
+  }
+  return failure_class === null ? { ok: false } : { ok: false, failure_class };
 }
 
 /**
@@ -935,7 +968,8 @@ function prConflicting(pr) {
  * An observation it cannot complete is `{ ok: false, reason }`, never a pass.
  *
  * @param {{ target: BoundForeignTarget, pr: { number?: number|null, base_ref?: string, head_sha?: string, mergeable?: string, merge_state_status?: string }, gitRun: GitRun, resolveRepoOps: (input: { repo: string, sha: string, gitRun: GitRun }) => Promise<any> }} input
- * @returns {Promise<{ ok: true, handoff: string|null, base_sha: string|null, verify_script_path: string|null }|{ ok: false, reason: string }>}
+ * @returns {Promise<{ ok: true, handoff: string|null, base_sha: string|null, verify_script_path: string|null }|{ ok: false, reason: string, failure_class?: import('./gh.js').GithubFailureClass }>}
+ * A failed base or PR head fetch carries its GitHub class (UI-aui8 §3.1).
  */
 export async function judgeForeignPreMerge(input) {
   const { target, pr, gitRun } = input;
@@ -957,7 +991,11 @@ export async function judgeForeignPreMerge(input) {
   }
   const tip = await fetchForeignBaseTip(target, gitRun);
   if (!tip.ok) {
-    return { ok: false, reason: 'base_fetch_failed' };
+    return {
+      ok: false,
+      reason: 'base_fetch_failed',
+      failure_class: tip.failure_class
+    };
   }
   /** @type {any} */
   let policy;
@@ -982,16 +1020,21 @@ export async function judgeForeignPreMerge(input) {
     };
   }
   const head = typeof pr.head_sha === 'string' ? pr.head_sha : '';
-  if (
-    !SHA40_RE.test(head) ||
-    !(await ensureForeignCommit(
-      target,
-      head,
-      typeof pr.number === 'number' ? pr.number : null,
-      gitRun
-    ))
-  ) {
+  if (!SHA40_RE.test(head)) {
     return { ok: false, reason: 'verify_head_sha_unobserved' };
+  }
+  const ensured = await ensureForeignCommit(
+    target,
+    head,
+    typeof pr.number === 'number' ? pr.number : null,
+    gitRun
+  );
+  if (!ensured.ok) {
+    return {
+      ok: false,
+      reason: 'verify_head_sha_unobserved',
+      ...(ensured.failure_class ? { failure_class: ensured.failure_class } : {})
+    };
   }
   const tree = await candidateTreeOf(target.path, tip.sha, head, gitRun);
   if (tree === null) {

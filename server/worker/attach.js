@@ -30,6 +30,7 @@ import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { sessionGuardedAttempt } from '../../app/utils/active-attempts.js';
+import { isGithubHold } from '../../app/utils/github-wait.js';
 import {
   execLaneOf,
   workerLabels
@@ -82,6 +83,7 @@ import {
   queryDiscoveredFromDependents
 } from './foreign-blocker-status.js';
 import { createForeignHandoffAnnouncer } from './foreign-handoff.js';
+import { isTransientGithubFailure } from './gh.js';
 import { readPushLog } from './guard-hook.js';
 import {
   observationVerifyPolicy,
@@ -96,7 +98,7 @@ import {
   notifyWaitReasons
 } from './notify.js';
 import { createPrActions } from './pr-actions.js';
-import { createPrPoller } from './pr-poller.js';
+import { createPrPoller, resolvePrRef } from './pr-poller.js';
 import { createProcessController } from './process-controller.js';
 import { checkProtectedPaths } from './protected-paths.js';
 import { createProviderHealth } from './provider-health.js';
@@ -2215,6 +2217,30 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         prActions.resumeMigratedClosure(bead_id)
     });
 
+  // The one push of a merge-queue GitHub hold (UI-aui8 §3.6, §3.8). The merge
+  // queue and the completion driver write the same hold record and its
+  // marker, so both send through this one sender. A hold entered on the first
+  // PR read has no observed PR yet, so the PR the queue itself records names it.
+  const announceGithubHold = (
+    /** @type {import('./merge-queue.js').GithubHoldNotice} */ notice
+  ) => {
+    const ws_key = keyFor(workspace_root);
+    const observed_url =
+      runtime.prObservations.get(ws_key, notice.bead_id)?.pr?.url || null;
+    return notify.githubHold({
+      ...notice,
+      pr_url:
+        observed_url ||
+        resolvePrRef(
+          runtime.queueStore.snapshot(ws_key),
+          notice.bead_id,
+          runtime.externalPrs.get(ws_key, notice.bead_id)
+        )?.url ||
+        null,
+      repo
+    });
+  };
+
   // The sequential merge driver (UI-5v7d §2). It is the ONLY caller of
   // `prActions.merge()` for a queued item, so it is built with the same actions
   // instance every click routes into — a click queues, this merges. Started by
@@ -2226,21 +2252,29 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       workspace: keyFor(workspace_root),
       store: runtime.queueStore,
       timeline,
-      merge: (/** @type {string} */ bead_id) =>
-        prActions.merge(bead_id, { allow_conflict_resolution: false }),
+      merge: (
+        /** @type {string} */ bead_id,
+        /** @type {{ retry_failed_cleanup?: boolean }} */ merge_options = {}
+      ) =>
+        prActions.merge(bead_id, {
+          ...merge_options,
+          allow_conflict_resolution: false
+        }),
       probeMergeability: (/** @type {string} */ bead_id) =>
         prActions.probeMergeability(bead_id),
       dispatchConflict: (
         /** @type {string} */ bead_id,
         /** @type {{ head_sha: string, base_ref: string|null, head_ref: string|null }} */ approved,
         /** @type {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha: string, base_ref: string, head_ref: string }} */ resolution_wait,
-        /** @type {{ continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }|undefined} */ continuation
+        /** @type {{ continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }|undefined} */ continuation,
+        /** @type {(() => boolean)|undefined} */ decided
       ) =>
         prActions.dispatchConflict(
           bead_id,
           approved,
           resolution_wait,
-          continuation
+          continuation,
+          decided
         ),
       // Whether a still-dirty head already contains its base tip (UI-p49g
       // §4.1) — the evidence that separates a session's failed resolution from
@@ -2344,6 +2378,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       prepare: refreshExternalPrs,
       subscribeQueueChanged: onQueueChanged,
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
+      announceGithubHold,
       log
     });
 
@@ -2390,6 +2425,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       notify,
       // The automatic failure conversation (UI-jbl1 §3.1).
       failureConversation: runtime.failureConversation,
+      announceGithubHold,
       log
     });
   completionActionDriver = resolvedCompletionActionDriver;
@@ -2517,11 +2553,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       // standing so an ordinary `bd update` costs no merge pass: without a hold
       // there is nothing here for the queue to re-judge, and with one the PR
       // observation pass would otherwise be the upper bound on how long the row
-      // waits after the receipt lands.
+      // waits after the receipt lands. A GitHub hold (UI-aui8 §3.3) waits on
+      // GitHub, not on the Bead, so it is the poller pass's to re-judge.
       try {
         const held = (
           runtime.queueStore.snapshot(keyFor(workspace_root)).merge_queue || []
-        ).some((/** @type {any} */ entry) => !!entry.hold);
+        ).some(
+          (/** @type {any} */ entry) =>
+            !!entry.hold && !isGithubHold(entry.hold)
+        );
         if (held) {
           Promise.resolve(mergeQueue.kick()).catch((err) => {
             log(
@@ -4160,6 +4200,49 @@ export function workerMergeEffectInFlight(workspace_root, bead_id) {
 }
 
 /**
+ * Whether a click-time probe was decided by a permanent GitHub failure
+ * (UI-aui8 §3.10): such a click is refused with its class even when the
+ * first read pinned the PR identity.
+ *
+ * @param {any} probe - The click-time mergeability probe, or null.
+ * @returns {boolean}
+ */
+function permanentGithubProbe(probe) {
+  return (
+    !!probe &&
+    typeof probe.reason === 'string' &&
+    typeof probe.failure_class === 'string' &&
+    !isTransientGithubFailure(probe.failure_class)
+  );
+}
+
+/**
+ * The refusal of a `[머지]` click whose probe pinned no PR identity, or that
+ * a permanent GitHub failure decided. A probe a GitHub failure decided
+ * carries that failure's reason, class and wait point (UI-aui8 §3.10); any
+ * other unreadable identity is the plain `pr_identity_unreadable`.
+ *
+ * @param {any} probe - The click-time mergeability probe, or null.
+ * @returns {{ reason: string, failure_class?: string, wait_point?: string }}
+ */
+function unreadableIdentityRefusal(probe) {
+  if (
+    !probe ||
+    typeof probe.reason !== 'string' ||
+    typeof probe.failure_class !== 'string'
+  ) {
+    return { reason: 'pr_identity_unreadable' };
+  }
+  return {
+    reason: probe.reason,
+    failure_class: probe.failure_class,
+    ...(typeof probe.wait_point === 'string'
+      ? { wait_point: probe.wait_point }
+      : {})
+  };
+}
+
+/**
  * Queue a manual [머지] click as a durable per-item continuation authority
  * (UI-58w8 §1). The authority binds the head/base THIS click observed, so the
  * identity comes from one fresh authoritative probe — never a cached badge —
@@ -4168,9 +4251,14 @@ export function workerMergeEffectInFlight(workspace_root, bead_id) {
  * authority authorizes. Without an attachment there is nothing to observe
  * through, which is the same unreadable-identity refusal.
  *
+ * A probe GitHub could not answer keeps its own reason and class (UI-aui8
+ * §3.10): the connection wait when the failure was transient and no identity
+ * was read, the class-named reason for a permanent failure. A transient
+ * failure after the identity was read queues like any blocked probe.
+ *
  * @param {string} workspace_root
  * @param {{ bead_id: string, expected_revision: number }} input
- * @returns {Promise<import('./queue-store.js').QueueOpResult & { reason?: string }>}
+ * @returns {Promise<import('./queue-store.js').QueueOpResult & { reason?: string, failure_class?: string, wait_point?: string }>}
  */
 export async function enqueueWorkerManualMerge(workspace_root, input) {
   const key = keyFor(workspace_root);
@@ -4210,11 +4298,15 @@ export async function enqueueWorkerManualMerge(workspace_root, input) {
     probe && typeof probe.base_ref === 'string' && probe.base_ref.length > 0
       ? probe.base_ref
       : null;
-  if (head_sha === null || target_base === null) {
+  if (
+    head_sha === null ||
+    target_base === null ||
+    permanentGithubProbe(probe)
+  ) {
     return {
       ok: false,
       conflict: false,
-      reason: 'pr_identity_unreadable',
+      ...unreadableIdentityRefusal(probe),
       queue: store.snapshot(key)
     };
   }

@@ -17,7 +17,9 @@
  * before any effect; that effect boundary owns target-base/head freshness.
  *
  * @import { PrObservationEntry, VerifyObservation } from './pr-observations.js'
+ * @import { GithubFailureClass } from './gh.js'
  */
+import { GH_CALL_TIMEOUT_MS, classifyGithubFailure } from './gh.js';
 
 /**
  * `spec_id_missing` is deliberately distinct from `missing`: a review receipt
@@ -47,7 +49,10 @@
  */
 
 /**
- * @typedef {(receipt_sha: string, head_sha: string) => Promise<AncestryState>} AncestryProbe
+ * `report` hears the GitHub class of every object fetch that failed (UI-aui8
+ * §3.1), so a gate can tell a connection wait from an unprovable ancestry.
+ *
+ * @typedef {(receipt_sha: string, head_sha: string, report?: (failure_class: GithubFailureClass) => void) => Promise<AncestryState>} AncestryProbe
  */
 
 /**
@@ -145,9 +150,10 @@ export function verifyReceiptMatches(receipt, expected) {
  * which would read as "not an ancestor" and refuse a perfectly fresh receipt.
  * So the probe FETCHES the exact SHA first and answers only from an object it
  * proved is present. Anything it cannot prove is `probe_error`, never a
- * verdict.
+ * verdict. The fetch is bounded per call and a failed one names its GitHub
+ * class to the caller's `report` (UI-aui8 §3.1).
  *
- * @param {{ gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>, repo: string, remote?: string }} deps
+ * @param {{ gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, repo: string, remote?: string }} deps
  * @returns {AncestryProbe}
  */
 export function createAncestryProbe(deps) {
@@ -177,16 +183,27 @@ export function createAncestryProbe(deps) {
 
   /**
    * @param {string} sha
+   * @param {((failure_class: GithubFailureClass) => void)|undefined} report
    */
-  async function ensure(sha) {
+  async function ensure(sha, report) {
     if (await present(sha)) {
       return true;
     }
-    await run(['fetch', '--no-tags', remote, sha]);
+    try {
+      const fetched = await deps.gitRun(['fetch', '--no-tags', remote, sha], {
+        cwd: deps.repo,
+        timeout_ms: GH_CALL_TIMEOUT_MS
+      });
+      if (typeof fetched.code === 'number' && fetched.code !== 0 && report) {
+        report(classifyGithubFailure(fetched.stderr, fetched.code));
+      }
+    } catch {
+      // A runner that threw names no GitHub class; presence decides below.
+    }
     return present(sha);
   }
 
-  return async function probeAncestry(receipt_sha, head_sha) {
+  return async function probeAncestry(receipt_sha, head_sha, report) {
     const receipt = String(receipt_sha || '').toLowerCase();
     const head = String(head_sha || '').toLowerCase();
     if (!SHA40_RE.test(receipt) || !SHA40_RE.test(head)) {
@@ -195,7 +212,7 @@ export function createAncestryProbe(deps) {
     if (receipt === head) {
       return 'equal';
     }
-    if (!(await ensure(head)) || !(await ensure(receipt))) {
+    if (!(await ensure(head, report)) || !(await ensure(receipt, report))) {
       return 'probe_error';
     }
     const code = await run(['merge-base', '--is-ancestor', receipt, head]);

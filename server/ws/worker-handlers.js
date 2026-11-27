@@ -39,6 +39,7 @@ import {
   sessionGuardedBeadIds,
   sessionOwnershipMaterial
 } from '../../app/utils/active-attempts.js';
+import { githubReasonText } from '../../app/utils/github-wait.js';
 import { sessionPreferredReason } from '../../app/utils/session-preferred.js';
 import {
   EXEC_LANE_KEY,
@@ -6805,14 +6806,47 @@ export async function handleWorkerMergeQueueAdd(ws, req) {
     result.ok && Array.isArray(result.queue.merge_queue)
       ? result.queue.merge_queue.length
       : before;
-  recordUserAction(key, p.bead_id, 'merge_queue_add', '[머지] 클릭');
+  recordUserAction(
+    key,
+    p.bead_id,
+    'merge_queue_add',
+    mergeClickSummary(/** @type {any} */ (result))
+  );
+  // A GitHub refusal also carries its class and wait point (UI-aui8 §3.10),
+  // so either tab can phrase the notice without asking again.
+  const refusal = /** @type {any} */ (result);
   replyMergeQueue(ws, req, key, result, {
     bead_id: p.bead_id,
     queued: Math.max(0, after - before),
-    ...(typeof (/** @type {any} */ (result).reason) === 'string'
-      ? { reason: /** @type {any} */ (result).reason }
+    ...(typeof refusal.reason === 'string' ? { reason: refusal.reason } : {}),
+    ...(typeof refusal.failure_class === 'string'
+      ? { failure_class: refusal.failure_class }
+      : {}),
+    ...(typeof refusal.wait_point === 'string'
+      ? { wait_point: refusal.wait_point }
       : {})
   });
+}
+
+/**
+ * The history summary of one `[머지]` click (UI-aui8 §3.10): queued, or
+ * refused with its Korean reason. A GitHub refusal reads as its wait or class
+ * phrase, a stale snapshot as the queue having moved, and any other refusal
+ * keeps its reason code.
+ *
+ * @param {{ ok: boolean, conflict?: boolean, reason?: string, failure_class?: string }} result
+ * @returns {string}
+ */
+function mergeClickSummary(result) {
+  if (result.ok) {
+    return '[머지] 클릭 — 큐 등록';
+  }
+  const reason = result.conflict
+    ? '큐가 바뀜'
+    : (githubReasonText(result.reason, result.failure_class) ??
+      result.reason ??
+      '이미 대기 중이거나 대상 아님');
+  return `[머지] 클릭 — 거부: ${reason}`;
 }
 
 /**

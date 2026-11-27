@@ -1273,6 +1273,61 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
   });
 
+  test('waits for GitHub when the ancestry probe cannot fetch the head (UI-aui8 §3.1)', async () => {
+    const h = makeActions({
+      details: [prOf({ head_sha: 'a'.repeat(40) })],
+      bdSpecId: 'docs/spec.md',
+      bdMetadata: {
+        route: 'spec_backed',
+        spec_review: `codex@${'b'.repeat(40)}`,
+        impl_review: `self@${'c'.repeat(40)}`
+      },
+      implReviewAncestry: 'probe_error'
+    });
+    const answer = /** @type {any} */ (h.gitRun.getMockImplementation());
+    h.gitRun.mockImplementation(async (/** @type {string[]} */ args) =>
+      args[0] === 'fetch'
+        ? {
+            code: 128,
+            stdout: '',
+            stderr:
+              'fatal: unable to access https://github.com/o/r/: Could not resolve host: github.com'
+          }
+        : answer(args)
+    );
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read',
+      head_sha: 'a'.repeat(40)
+    });
+  });
+
+  test('waits for GitHub when the verify candidate cannot fetch the PR head (UI-aui8 §3.1)', async () => {
+    const operations = failedVerifyOperations();
+    operations.ensureVerify = vi.fn(async () => ({
+      ok: false,
+      code: 'github_unreachable',
+      failure_class: 'network'
+    }));
+    const h = makeActions({ repoOperations: operations });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      action: 'refused',
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read',
+      head_sha: 'sha-aaa'
+    });
+  });
+
   test('refuses a merge whose gh call fails, and never cleans up', async () => {
     const h = makeActions({ mergeFails: true });
 
@@ -2570,6 +2625,40 @@ describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6
     expect(
       h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual([BEAD]);
+  });
+
+  test('writes the GitHub hold end line when the observed cleanup takes a held queue row (UI-aui8 §3.9)', async () => {
+    const merge_sha = 'c'.repeat(40);
+    /** @type {any[]} */
+    const lines = [];
+    const h = makeActions({
+      details: [prOf({ state: 'MERGED', merge_sha })],
+      timeline: { append: (/** @type {any} */ line) => lines.push(line) }
+    });
+    h.store.enqueueMergeManual(WS, {
+      expected_revision: h.store.snapshot(WS).revision,
+      entries: [
+        { bead_id: BEAD, head_sha: 'a'.repeat(40), target_base: 'main' }
+      ]
+    });
+    h.store.setMergeHold(WS, {
+      bead_id: BEAD,
+      hold: {
+        reason: 'github_unreachable',
+        head_sha: 'a'.repeat(40),
+        failure_class: 'network',
+        wait_point: 'gate_read',
+        since: 500
+      },
+      at: 500
+    });
+
+    await h.actions.cleanupObservedMerge(BEAD, merge_sha);
+
+    expect(h.store.snapshot(WS).merge_queue).toEqual([]);
+    expect(lines.map((line) => line.seq)).toContain(
+      'gh-github_unreachable-500-end'
+    );
   });
 
   test('never auto-retries a cleanup that already failed', async () => {
@@ -7120,7 +7209,10 @@ describe('pinned foreign PR target (UI-k467 §3.4–§3.6)', () => {
    * A harness whose bd carries the three pins, whose gh answers ONLY through
    * the pinned slug, and whose git models the bound target checkout.
    *
-   * @param {{ pr?: Partial<import('./gh.js').PrDetail>, after?: Partial<import('./gh.js').PrDetail>, policy?: (sha: string) => any, containment?: number, post_merge_jobs?: boolean, remote_head?: string|null, verify_receipt?: any, tips?: string[], metadata?: Record<string, string> }} [opts]
+   * @param {{ pr?: Partial<import('./gh.js').PrDetail>, after?: Partial<import('./gh.js').PrDetail>, policy?: (sha: string) => any, containment?: number, post_merge_jobs?: boolean, remote_head?: string|null, verify_receipt?: any, tips?: string[], metadata?: Record<string, string>, fetch_stderr?: string, head_fetch_stderr?: string }} [opts]
+   * - `fetch_stderr` fails every `git fetch` in the target with that output.
+   * - `head_fetch_stderr` leaves the PR head absent from the target and fails
+   *   every fetch of it with that output; the base fetch still succeeds.
    */
   function makeForeign(opts = {}) {
     const store = seedStore();
@@ -7206,6 +7298,17 @@ describe('pinned foreign PR target (UI-k467 §3.4–§3.6)', () => {
         stdout,
         stderr: ''
       });
+      if (args[0] === 'fetch' && typeof opts.fetch_stderr === 'string') {
+        return { code: 1, stdout: '', stderr: opts.fetch_stderr };
+      }
+      if (typeof opts.head_fetch_stderr === 'string') {
+        if (args[0] === 'cat-file' && args.at(-1) === `${HEAD}^{commit}`) {
+          return { code: 1, stdout: '', stderr: '' };
+        }
+        if (args[0] === 'fetch' && !String(args[3]).startsWith('+refs/')) {
+          return { code: 128, stdout: '', stderr: opts.head_fetch_stderr };
+        }
+      }
       if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') {
         return ok(`${TARGET_PATH}\n`);
       }
@@ -7690,8 +7793,57 @@ describe('pinned foreign PR target (UI-k467 §3.4–§3.6)', () => {
 
     const r = await h.actions.merge(BEAD);
 
-    expect(r.reason).toBe('verify_candidate_stale');
+    expect(r.reason).toBe('verify_candidate_moved');
     expect(h.foreign.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('refuses with the connection wait when the foreign base fetch cannot reach GitHub (UI-aui8 §3.2)', async () => {
+    const h = makeForeign({
+      fetch_stderr:
+        'fatal: unable to access https://github.com/acme/research-repo-template/: Could not resolve host: github.com'
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read'
+    });
+    expect(h.foreign.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('refuses with the connection wait when the foreign head fetch cannot reach GitHub (UI-aui8 §3.1)', async () => {
+    const h = makeForeign({
+      head_fetch_stderr:
+        'fatal: unable to access https://github.com/acme/research-repo-template/: Could not resolve host: github.com'
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read',
+      head_sha: HEAD
+    });
+  });
+
+  test('names the class when the foreign base fetch fails with auth (UI-aui8 §3.6)', async () => {
+    const h = makeForeign({
+      fetch_stderr:
+        'fatal: Authentication failed for https://github.com/acme/research-repo-template/'
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'base_fetch_failed:auth',
+      failure_class: 'auth'
+    });
   });
 
   /**
@@ -8650,5 +8802,695 @@ describe('worker/pr-actions — deploy condition wait recheck (dotfiles-rnyd9)',
 
     expect(env.operations.ensureDeploy).not.toHaveBeenCalled();
     expect(env.notify.needsHuman).toHaveBeenCalledOnce();
+  });
+});
+
+describe('worker/pr-actions — GitHub failures at merge time (UI-aui8 §3.2, §3.6)', () => {
+  const BASE_OK = {
+    ok: /** @type {const} */ (true),
+    base: 'main',
+    declared: false,
+    remote: 'origin',
+    remote_ref: 'refs/remotes/origin/main',
+    base_oid: 'a'.repeat(40),
+    local_only: false
+  };
+
+  /**
+   * A base fetch that failed with the given GitHub class.
+   *
+   * @param {string} failure_class
+   */
+  function baseDown(failure_class) {
+    return {
+      ok: /** @type {const} */ (false),
+      step: 'fetch',
+      base: 'main',
+      detail: 'remote:origin;attempts:3;exit:128;category:network',
+      failure_class
+    };
+  }
+
+  /**
+   * A base resolver answering the given results in order, the last repeated.
+   *
+   * @param {...any} results
+   */
+  function baseReads(...results) {
+    let i = 0;
+    return async () => results[Math.min(i++, results.length - 1)];
+  }
+
+  /**
+   * A failed `gh` read of the given class.
+   *
+   * @param {string} failure_class
+   */
+  function ghDown(failure_class) {
+    return { state: 'error', reason: 'gh_failed', failure_class };
+  }
+
+  test('refuses with the connection wait at gate_read when the first PR read fails with network', async () => {
+    const h = makeActions({ details: [ghDown('network')] });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      action: 'refused',
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read'
+    });
+    expect(r.head_unread).toBeUndefined();
+  });
+
+  test('carries the GitHub class when the conflict dispatch re-probe cannot reach GitHub', async () => {
+    const h = makeActions({ details: [ghDown('rate_limit')] });
+
+    const r = await h.actions.dispatchConflict(BEAD, {
+      head_sha: 'sha-aaa',
+      base_ref: 'main'
+    });
+
+    expect(r).toMatchObject({
+      ok: false,
+      action: 'refused',
+      reason: 'github_unreachable',
+      failure_class: 'rate_limit'
+    });
+    expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
+  });
+
+  test('consumes the caller resolution before the resolver starts', async () => {
+    const h = makeActions({
+      details: [prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })]
+    });
+    const decided = vi.fn(() => true);
+
+    await h.actions.dispatchConflict(
+      BEAD,
+      { head_sha: 'sha-aaa', base_ref: 'main' },
+      null,
+      undefined,
+      decided
+    );
+
+    expect(decided).toHaveBeenCalledTimes(1);
+    expect(h.scheduler.resolveConflict).toHaveBeenCalledTimes(1);
+    expect(decided.mock.invocationCallOrder[0]).toBeLessThan(
+      h.scheduler.resolveConflict.mock.invocationCallOrder[0]
+    );
+  });
+
+  test('starts no resolver when the caller resolution cannot be consumed', async () => {
+    const h = makeActions({
+      details: [prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })]
+    });
+
+    const r = await h.actions.dispatchConflict(
+      BEAD,
+      { head_sha: 'sha-aaa', base_ref: 'main' },
+      null,
+      undefined,
+      () => false
+    );
+
+    expect(r).toMatchObject({ ok: false, action: 'refused' });
+    expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
+  });
+
+  test('refuses with the connection wait when the UNKNOWN re-query fails with rate_limit', async () => {
+    const h = makeActions({
+      details: [prOf({ mergeable: 'UNKNOWN' }), ghDown('rate_limit')]
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      reason: 'github_unreachable',
+      failure_class: 'rate_limit',
+      wait_point: 'gate_read'
+    });
+  });
+
+  test('keeps the first-read head and base when the UNKNOWN re-query fails with network', async () => {
+    const h = makeActions({
+      details: [prOf({ mergeable: 'UNKNOWN' }), ghDown('network')]
+    });
+
+    const probe = await h.actions.probeMergeability(BEAD);
+
+    expect(probe).toMatchObject({
+      reason: 'github_unreachable',
+      head_sha: 'sha-aaa',
+      base_ref: 'main'
+    });
+    expect(probe.head_unread).toBeUndefined();
+  });
+
+  test('names the class of an UNKNOWN re-query that fails with auth', async () => {
+    const h = makeActions({
+      details: [prOf({ mergeable: 'UNKNOWN' }), ghDown('auth')]
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'gh_failed:auth',
+      failure_class: 'auth',
+      head_sha: 'sha-aaa'
+    });
+    expect(r.head_unread).toBeUndefined();
+  });
+
+  test('classifies a missing gh binary on the gate read as unknown', async () => {
+    const h = makeActions({
+      details: [{ state: 'error', reason: 'gh_missing' }]
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      reason: 'gh_missing',
+      failure_class: 'unknown',
+      head_unread: true
+    });
+  });
+
+  test('refuses with the connection wait when the gate base fetch fails with network', async () => {
+    const h = makeActions({ resolveBase: baseReads(baseDown('network')) });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read'
+    });
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('names the auth class and the unread head when the first PR read fails with auth', async () => {
+    const h = makeActions({ details: [ghDown('auth')] });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'gh_failed:auth',
+      failure_class: 'auth',
+      head_unread: true
+    });
+    expect(r.wait_point).toBeUndefined();
+  });
+
+  test('reports the connection wait from the mergeability probe when the PR read fails with rate_limit', async () => {
+    const h = makeActions({ details: [ghDown('rate_limit')] });
+
+    const probe = await h.actions.probeMergeability(BEAD);
+
+    expect(probe).toMatchObject({
+      ok: false,
+      kind: 'blocked',
+      reason: 'github_unreachable',
+      failure_class: 'rate_limit',
+      wait_point: 'gate_read'
+    });
+  });
+
+  /**
+   * A worker attempt that recorded no `target_base`, so the base gate reads
+   * the declaration with one more base fetch after the gate's own.
+   */
+  function declarationStore() {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a1', bead_id: BEAD }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'a1',
+      patch: {
+        repo: REPO,
+        session_id: 'sess-1',
+        finished_at: 10,
+        verify_result: /** @type {any} */ ({
+          ok: true,
+          pr_url: 'https://github.com/o/r/pull/304',
+          pr_number: 304
+        })
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: BEAD,
+      attempt_id: 'a1',
+      patch: { status: 'done' }
+    });
+    return store;
+  }
+
+  test('refuses with the connection wait when the expected-base fetch after the gate read fails with network', async () => {
+    const h = makeActions({
+      store: declarationStore(),
+      resolveBase: baseReads(BASE_OK, baseDown('network'))
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read',
+      head_sha: 'sha-aaa'
+    });
+  });
+
+  test('holds a MERGED PR for the connection when the expected-base fetch fails with rate_limit', async () => {
+    const h = makeActions({
+      store: declarationStore(),
+      details: [prOf({ state: 'MERGED', merged_sha: 'c'.repeat(40) })],
+      resolveBase: baseReads(baseDown('rate_limit'))
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      reason: 'github_unreachable',
+      failure_class: 'rate_limit',
+      head_sha: 'sha-aaa'
+    });
+  });
+
+  test('reports the connection wait from the mergeability probe when the expected-base fetch fails with network', async () => {
+    const h = makeActions({
+      store: declarationStore(),
+      resolveBase: baseReads(BASE_OK, baseDown('network'))
+    });
+
+    const probe = await h.actions.probeMergeability(BEAD);
+
+    expect(probe).toMatchObject({
+      ok: false,
+      kind: 'blocked',
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      head_sha: 'sha-aaa',
+      base_ref: 'main'
+    });
+  });
+
+  test('names the class of a permanent gate base fetch failure in the refusal', async () => {
+    const h = makeActions({ resolveBase: baseReads(baseDown('auth')) });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'base_unresolved:fetch:auth',
+      failure_class: 'auth'
+    });
+  });
+
+  test('names the class of a permanent expected-base fetch failure in the refusal', async () => {
+    const h = makeActions({
+      store: declarationStore(),
+      resolveBase: baseReads(BASE_OK, baseDown('auth'))
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'base_unresolved:fetch:auth',
+      failure_class: 'auth',
+      head_sha: 'sha-aaa'
+    });
+  });
+
+  test('names the class of a permanent base update failure', async () => {
+    const h = makeActions({ updateBranchResult: ghDown('auth') });
+
+    const result = await h.actions.updateBase(BEAD);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'update_branch_failed:auth',
+      result_head_sha: null,
+      failure_class: 'auth'
+    });
+  });
+
+  test('refuses with the connection wait at verify_recheck when the pre-merge PR re-read fails with network', async () => {
+    const h = makeActions({ details: [prOf(), ghDown('network')] });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'verify_recheck',
+      head_sha: 'sha-aaa'
+    });
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('refuses with the connection wait at verify_recheck when the pre-merge base re-read fails with network', async () => {
+    const h = makeActions({
+      resolveBase: baseReads(BASE_OK, baseDown('network'))
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      reason: 'github_unreachable',
+      wait_point: 'verify_recheck'
+    });
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('holds for the connection when one re-read is transient and the other saw a moved head', async () => {
+    const h = makeActions({
+      details: [prOf(), prOf({ head_sha: 'sha-bbb' })],
+      resolveBase: baseReads(BASE_OK, baseDown('rate_limit'))
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      reason: 'github_unreachable',
+      failure_class: 'rate_limit',
+      wait_point: 'verify_recheck'
+    });
+  });
+
+  test('names the permanent class when one re-read is permanent and the other transient', async () => {
+    const h = makeActions({
+      details: [prOf(), ghDown('auth')],
+      resolveBase: baseReads(BASE_OK, baseDown('network'))
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      reason: 'verify_candidate_unreadable:auth',
+      failure_class: 'auth',
+      head_sha: 'sha-aaa'
+    });
+    expect(r.wait_point).toBeUndefined();
+  });
+
+  test('refuses as verify_candidate_moved with the new head when the head moved before the merge command', async () => {
+    const h = makeActions({ details: [prOf(), prOf({ head_sha: 'sha-bbb' })] });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      reason: 'verify_candidate_moved',
+      head_sha: 'sha-bbb'
+    });
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('refuses as verify_candidate_moved when the base tip moved before the merge command', async () => {
+    const h = makeActions({
+      resolveBase: baseReads(BASE_OK, { ...BASE_OK, base_oid: 'e'.repeat(40) })
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      reason: 'verify_candidate_moved',
+      head_sha: 'sha-aaa'
+    });
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('refuses as verify_candidate_moved when the PR base branch was renamed before the merge command', async () => {
+    const h = makeActions({
+      details: [prOf(), prOf({ base_ref: 'develop' })]
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r.reason).toBe('verify_candidate_moved');
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('refuses with the connection wait at merge_command when the merge command fails with rate_limit', async () => {
+    const h = makeActions();
+    h.gh.mergeSquash.mockResolvedValueOnce(
+      /** @type {any} */ (ghDown('rate_limit'))
+    );
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'github_unreachable',
+      failure_class: 'rate_limit',
+      wait_point: 'merge_command',
+      head_sha: 'sha-aaa'
+    });
+  });
+
+  test('names the class in merge_failed when the merge command fails with unknown', async () => {
+    const h = makeActions();
+    h.gh.mergeSquash.mockResolvedValueOnce(
+      /** @type {any} */ (ghDown('unknown'))
+    );
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      reason: 'merge_failed:unknown',
+      failure_class: 'unknown',
+      head_sha: 'sha-aaa'
+    });
+  });
+
+  test('cleans up without a second merge when the rejudge after a failed merge command sees MERGED', async () => {
+    const h = makeActions({
+      details: [
+        prOf(),
+        prOf(),
+        prOf({ state: 'MERGED', merged_sha: 'c'.repeat(40) })
+      ]
+    });
+    h.gh.mergeSquash.mockResolvedValueOnce(
+      /** @type {any} */ (ghDown('network'))
+    );
+    await h.actions.merge(BEAD);
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: true, action: 'already_merged' });
+    expect(h.gh.mergeSquash).toHaveBeenCalledOnce();
+    expect(
+      h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([BEAD]);
+  });
+
+  test('reports a failed cleanup without retrying it when the rejudge passes retry_failed_cleanup false', async () => {
+    const store = seedStore({
+      cleanup_failed: { [BEAD]: { step: 'branch_cleanup', reason: 'boom' } }
+    });
+    const h = makeActions({
+      store,
+      details: [prOf({ state: 'MERGED', merged_sha: 'c'.repeat(40) })]
+    });
+
+    const r = await h.actions.merge(BEAD, { retry_failed_cleanup: false });
+
+    expect(r).toMatchObject({
+      ok: false,
+      action: 'already_merged',
+      reason: 'boom',
+      cleanup_step: 'branch_cleanup'
+    });
+    expect(
+      h.calls.filter((c) => !c.startsWith('gh:') && !c.startsWith('bd:read'))
+    ).toEqual([]);
+  });
+
+  test('marks the reported cleanup failure as the earlier one when the rejudge does not rerun it', async () => {
+    const store = seedStore({
+      cleanup_failed: { [BEAD]: { step: 'branch_cleanup', reason: 'boom' } }
+    });
+    const h = makeActions({
+      store,
+      details: [prOf({ state: 'MERGED', merged_sha: 'c'.repeat(40) })]
+    });
+
+    const r = await h.actions.merge(BEAD, { retry_failed_cleanup: false });
+
+    expect(r.prior_cleanup_failure).toBe(true);
+  });
+
+  test('answers unreachable when the containment fetch cannot reach GitHub', async () => {
+    const h = makeActions();
+    h.gitRun.mockImplementationOnce(async () => ({
+      code: 128,
+      stdout: '',
+      stderr:
+        'fatal: unable to access https://github.com/o/r/: Could not resolve host: github.com'
+    }));
+
+    const r = await h.actions.baseContained(BEAD, {
+      base_ref: 'main',
+      head_ref: BEAD,
+      head_sha: 'a'.repeat(40)
+    });
+
+    expect(r).toBe('unreachable');
+  });
+
+  test('answers null when the containment fetch fails with auth', async () => {
+    const h = makeActions();
+    h.gitRun.mockImplementationOnce(async () => ({
+      code: 128,
+      stdout: '',
+      stderr: 'git@github.com: Permission denied (publickey).'
+    }));
+
+    const r = await h.actions.baseContained(BEAD, {
+      base_ref: 'main',
+      head_ref: BEAD,
+      head_sha: 'a'.repeat(40)
+    });
+
+    expect(r).toBeNull();
+  });
+
+  test('answers the connection wait when the completion gate PR read fails with network (§3.7)', async () => {
+    const h = makeActions({ details: [ghDown('network')] });
+
+    const r = await h.actions.completionGate(BEAD);
+
+    expect(r).toEqual({
+      ok: false,
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read'
+    });
+  });
+
+  test('answers the connection wait when the completion gate base pin fails with rate_limit (§3.7)', async () => {
+    const h = makeActions({ resolveBase: baseReads(baseDown('rate_limit')) });
+
+    const r = await h.actions.completionGate(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'github_unreachable',
+      failure_class: 'rate_limit',
+      wait_point: 'gate_read'
+    });
+  });
+
+  test('names the class of a completion gate PR read that fails with auth (§3.7)', async () => {
+    const h = makeActions({ details: [ghDown('auth')] });
+
+    const r = await h.actions.completionGate(BEAD);
+
+    expect(r).toMatchObject({
+      ok: false,
+      reason: 'gh_failed:auth',
+      failure_class: 'auth'
+    });
+  });
+});
+
+describe('merge queue — GitHub unreachable while merging (UI-aui8)', () => {
+  const HEAD = 'a'.repeat(40);
+  const OTHER = 'UI-2';
+
+  /** A repo-ops coordinator whose `[verify]` is satisfied without a run. */
+  function configuredOperations() {
+    return {
+      hasConfig: vi.fn(async () => ({
+        ok: true,
+        present: true,
+        verify_script_path: VERIFY_SCRIPT_PATH
+      })),
+      ensureVerify: vi.fn(async () => ({ ok: true, inert: true })),
+      ensureDeploy: vi.fn(async () => ({ ok: true, inert: true })),
+      waitForTerminal: vi.fn(),
+      waitForDeployTerminal: vi.fn(async () => ({ state: 'succeeded' })),
+      verifyReceipt: vi.fn(),
+      findExactDeployOperation: vi.fn(async () => null),
+      deploymentEvidence: vi.fn(async () => ({ state: 'succeeded' }))
+    };
+  }
+
+  /**
+   * Put a second `pr_wait` bead behind the harness bead and queue both.
+   *
+   * @param {any} store
+   */
+  function queueBoth(store) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'a2',
+        bead_id: OTHER,
+        repo: REPO,
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        runner: 'claude'
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: OTHER,
+      attempt_id: 'a2',
+      patch: { status: 'done' }
+    });
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: BEAD }, { bead_id: OTHER }]
+    });
+  }
+
+  test('holds the item in its slot when the pre-merge PR re-read fails with network', async () => {
+    const env = makeActions({
+      repoOperations: configuredOperations(),
+      details: [
+        prOf({ head_sha: HEAD }),
+        { state: 'error', reason: 'gh_failed', failure_class: 'network' }
+      ]
+    });
+    queueBoth(env.store);
+    const mergeOther = vi.fn(async (/** @type {string} */ bead_id) => {
+      env.store.moveToDone(WS, { bead_id, attempt_id: 'a2' });
+      return /** @type {const} */ ({
+        ok: true,
+        action: 'merged',
+        reason: null
+      });
+    });
+    const mq = createMergeQueue({
+      workspace: WS,
+      store: env.store,
+      merge: (/** @type {string} */ id) =>
+        id === BEAD ? env.actions.merge(id) : mergeOther(id),
+      observePr: async () => ({ state: 'OPEN', error: null }),
+      headSha: () => HEAD
+    });
+
+    await mq.kick();
+
+    const after = env.store.snapshot(WS);
+    expect(after.merge_queue.map((/** @type {any} */ e) => e.bead_id)).toEqual([
+      BEAD
+    ]);
+    expect(after.merge_queue[0].hold).toMatchObject({
+      reason: 'github_unreachable'
+    });
+    expect(after.auto_merge_skips[BEAD]).toBeUndefined();
+    expect(mq.state().failures[BEAD]).toBeUndefined();
+    expect(mergeOther).toHaveBeenCalledWith(OTHER);
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
   });
 });

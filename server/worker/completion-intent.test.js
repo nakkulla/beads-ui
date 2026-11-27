@@ -2388,6 +2388,96 @@ describe('worker/completion-intent lifecycle', () => {
     );
   });
 
+  test('observes the completion behind a root whose observation waits for GitHub', async () => {
+    const root = intent();
+    const later = intent({
+      subject: { ...intent().subject, bead_id: 'UI-later' }
+    });
+    const wait = {
+      state: /** @type {const} */ ('github_wait'),
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'gate_read'
+    };
+    const onAction = vi.fn();
+    const coordinator = createCompletionIntentCoordinator({
+      workspace: '/repo',
+      store: {
+        snapshot: () => ({
+          auto_merge: true,
+          merge_queue: [{ bead_id: 'UI-root' }, { bead_id: 'UI-later' }],
+          completion_intents: { 'UI-root': root, 'UI-later': later }
+        })
+      },
+      observe: async (bead_id) =>
+        bead_id === 'UI-root' ? wait : { state: 'green' },
+      onAction
+    });
+
+    await coordinator.reconcile();
+
+    expect(onAction.mock.calls).toEqual([
+      ['UI-root', { kind: 'github_wait', fact: wait }, root],
+      ['UI-later', { kind: 'merge_subject' }, later]
+    ]);
+  });
+
+  test('observes the completion behind a held plain row', async () => {
+    const later = intent({
+      subject: { ...intent().subject, bead_id: 'UI-later' }
+    });
+    const onAction = vi.fn();
+    const coordinator = createCompletionIntentCoordinator({
+      workspace: '/repo',
+      store: {
+        snapshot: () => ({
+          auto_merge: true,
+          merge_queue: [
+            {
+              bead_id: 'UI-plain',
+              hold: { reason: 'github_unreachable', head_sha: null }
+            },
+            { bead_id: 'UI-later' }
+          ],
+          completion_intents: { 'UI-later': later }
+        })
+      },
+      observe: async () => ({ state: 'green' }),
+      onAction
+    });
+
+    await coordinator.reconcile();
+
+    expect(onAction.mock.calls).toEqual([
+      ['UI-later', { kind: 'merge_subject' }, later]
+    ]);
+  });
+
+  test('stops at an unheld plain row ahead of a completion', async () => {
+    const later = intent({
+      subject: { ...intent().subject, bead_id: 'UI-later' }
+    });
+    const observe = vi.fn(async () => ({
+      state: /** @type {const} */ ('green')
+    }));
+    const coordinator = createCompletionIntentCoordinator({
+      workspace: '/repo',
+      store: {
+        snapshot: () => ({
+          auto_merge: true,
+          merge_queue: [{ bead_id: 'UI-plain' }, { bead_id: 'UI-later' }],
+          completion_intents: { 'UI-later': later }
+        })
+      },
+      observe,
+      onAction: vi.fn()
+    });
+
+    await coordinator.reconcile();
+
+    expect(observe).not.toHaveBeenCalled();
+  });
+
   test('coalesces queue wakeups and stops its subscription', async () => {
     const events = new EventEmitter();
     const unsubscribe = vi.fn();
@@ -7472,5 +7562,700 @@ describe('deploy condition wait in the completion cleanup (dotfiles-rnyd9)', () 
         queue.completion_intents['UI-root']
       ]
     ]);
+  });
+});
+
+/**
+ * A completion gate that could not reach GitHub (UI-aui8 §3.2).
+ *
+ * @param {Record<string, unknown>} [patch]
+ * @returns {any}
+ */
+function unreachableGate(patch = {}) {
+  return {
+    ok: false,
+    reason: 'github_unreachable',
+    failure_class: 'network',
+    wait_point: 'gate_read',
+    ...patch
+  };
+}
+
+/**
+ * A merge turn that could not reach GitHub at `wait_point`.
+ *
+ * @param {string} wait_point
+ * @param {string} [failure_class]
+ * @returns {any}
+ */
+function unreachableMerge(wait_point, failure_class = 'network') {
+  return {
+    ok: false,
+    action: 'refused',
+    reason: 'github_unreachable',
+    failure_class,
+    wait_point,
+    head_sha: 'a'.repeat(40)
+  };
+}
+
+/**
+ * The root's merge-queue row, where the connection wait is recorded.
+ *
+ * @param {ReturnType<typeof createQueueStore>} store
+ * @returns {any}
+ */
+function rootRow(store) {
+  return store
+    .snapshot(DRIVER_WS)
+    .merge_queue.find(
+      (/** @type {any} */ entry) => entry.bead_id === 'UI-root'
+    );
+}
+
+/**
+ * The `seq` of every GitHub hold start or end line a timeline spy received.
+ *
+ * @param {{ mock: { calls: any[][] } }} append
+ * @returns {string[]}
+ */
+function githubHoldLines(append) {
+  return append.mock.calls
+    .map((call) => call[0]?.seq)
+    .filter(
+      (/** @type {unknown} */ seq) =>
+        typeof seq === 'string' && seq.startsWith('gh-')
+    );
+}
+
+/**
+ * Put the seeded root into its merge turn.
+ *
+ * @param {ReturnType<typeof seededCompletionStore>} store
+ * @param {string|null} [op_id]
+ */
+function startMergeTurn(store, op_id = null) {
+  store.prepareCompletionOp(DRIVER_WS, {
+    root_bead_id: 'UI-root',
+    phase: 'merging',
+    op: mergeOperation(op_id)
+  });
+}
+
+describe('worker/completion-intent — GitHub connection wait (UI-aui8 §3.7)', () => {
+  test('waits on GitHub instead of needs_human when the observed gate cannot reach it', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store, {
+      prActions: { completionGate: vi.fn(async () => unreachableGate()) },
+      now: () => 100
+    });
+
+    const { action } = await driveOnce(store, driver);
+
+    expect(action).toMatchObject({ kind: 'github_wait' });
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'gating',
+      active_op: null,
+      terminal_reason: null
+    });
+  });
+
+  test('puts the observed connection wait on the root row with its class and point', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store, {
+      prActions: {
+        completionGate: vi.fn(async () =>
+          unreachableGate({ failure_class: 'rate_limit' })
+        )
+      },
+      now: () => 100
+    });
+
+    await driveOnce(store, driver);
+
+    expect(rootRow(store).hold).toMatchObject({
+      reason: 'github_unreachable',
+      failure_class: 'rate_limit',
+      wait_point: 'gate_read',
+      head_sha: 'a'.repeat(40),
+      since: 100
+    });
+  });
+
+  test('keeps since across observations that fail with another class', async () => {
+    const store = seededCompletionStore();
+    let clock = 100;
+    let gate = unreachableGate();
+    const driver = actionDriver(store, {
+      prActions: { completionGate: vi.fn(async () => gate) },
+      now: () => clock
+    });
+    await driveOnce(store, driver);
+    clock = 200;
+    gate = unreachableGate({ failure_class: 'rate_limit' });
+
+    await driveOnce(store, driver);
+
+    expect(rootRow(store).hold).toMatchObject({
+      failure_class: 'rate_limit',
+      since: 100
+    });
+  });
+
+  test('writes one start line across repeated observations on the connection wait', async () => {
+    const { store, driver, append, completionGate } = holdHarness();
+    completionGate.mockImplementation(async () => unreachableGate());
+    await driveOnce(store, driver);
+
+    await driveOnce(store, driver);
+
+    expect(githubHoldLines(append)).toEqual(['gh-github_unreachable-100']);
+  });
+
+  test('ends the connection wait when the next gate verdict reaches GitHub', async () => {
+    const { store, driver, append, completionGate } = holdHarness();
+    completionGate.mockImplementationOnce(async () => unreachableGate());
+    completionGate.mockImplementationOnce(async () =>
+      redGate({
+        verdict: { enabled: false, tier: 'verify', reason: 'verify_missing' },
+        evidence: {}
+      })
+    );
+    await driveOnce(store, driver);
+
+    const { action } = await driveOnce(store, driver);
+
+    expect(action).toMatchObject({ kind: 'gate' });
+    expect(rootRow(store).hold).toBeUndefined();
+    expect(githubHoldLines(append)).toEqual([
+      'gh-github_unreachable-100',
+      'gh-github_unreachable-100-end'
+    ]);
+  });
+
+  test('ends the connection wait before the root stops for a person', async () => {
+    const { store, driver, append, completionGate } = holdHarness();
+    completionGate.mockImplementationOnce(async () => unreachableGate());
+    completionGate.mockImplementationOnce(
+      async () => /** @type {any} */ ({ ok: false, reason: 'gh_failed:auth' })
+    );
+    await driveOnce(store, driver);
+
+    await driveOnce(store, driver);
+
+    expect(store.snapshot(DRIVER_WS).completion_intents['UI-root'].phase).toBe(
+      'needs_human'
+    );
+    expect(githubHoldLines(append)).toEqual([
+      'gh-github_unreachable-100',
+      'gh-github_unreachable-100-end'
+    ]);
+  });
+
+  /**
+   * A completion gate whose first PR read failed permanently before it read
+   * the head (UI-aui8 §3.6).
+   *
+   * @returns {any}
+   */
+  function headUnreadGate() {
+    return {
+      ok: false,
+      reason: 'gh_failed:auth',
+      failure_class: 'auth',
+      head_unread: true
+    };
+  }
+
+  test('puts the root on the head-unreadable hold when the observed gate never read the head', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store, {
+      prActions: { completionGate: vi.fn(async () => headUnreadGate()) },
+      now: () => 100
+    });
+
+    await driveOnce(store, driver);
+
+    expect(rootRow(store).hold).toMatchObject({
+      reason: 'github_head_unreadable',
+      failure_class: 'auth',
+      wait_point: 'gate_read'
+    });
+  });
+
+  test('keeps the intent gating when the observed gate never read the head', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store, {
+      prActions: { completionGate: vi.fn(async () => headUnreadGate()) },
+      now: () => 100
+    });
+
+    await driveOnce(store, driver);
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'gating',
+      terminal_reason: null
+    });
+  });
+
+  test('keeps the merge operation and phase when the merge turn cannot reach GitHub', async () => {
+    const store = seededCompletionStore();
+    startMergeTurn(store);
+    const completionGate = vi.fn();
+    const driver = actionDriver(store, {
+      prActions: { completionGate },
+      now: () => 100
+    });
+
+    await driver.onMergeResult(
+      'UI-root',
+      'UI-root',
+      unreachableMerge('merge_command', 'rate_limit')
+    );
+
+    expect(completionGate).not.toHaveBeenCalled();
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'merging',
+      active_op: { kind: 'merge_subject', status: 'prepared' },
+      terminal_reason: null
+    });
+  });
+
+  test('puts the merge-turn connection wait on the root row with its class and point', async () => {
+    const store = seededCompletionStore();
+    startMergeTurn(store);
+    const driver = actionDriver(store, { now: () => 100 });
+
+    await driver.onMergeResult(
+      'UI-root',
+      'UI-root',
+      unreachableMerge('merge_command', 'rate_limit')
+    );
+
+    expect(rootRow(store).hold).toMatchObject({
+      reason: 'github_unreachable',
+      failure_class: 'rate_limit',
+      wait_point: 'merge_command',
+      since: 100
+    });
+  });
+
+  test('waits on GitHub when the re-judgment of a moved candidate cannot reach it', async () => {
+    const store = seededCompletionStore();
+    startMergeTurn(store);
+    const driver = actionDriver(store, {
+      prActions: { completionGate: vi.fn(async () => unreachableGate()) },
+      now: () => 100
+    });
+
+    await driver.onMergeResult('UI-root', 'UI-root', {
+      ok: false,
+      action: 'refused',
+      reason: 'verify_candidate_moved',
+      head_sha: 'c'.repeat(40)
+    });
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'gating',
+      active_op: null,
+      terminal_reason: null
+    });
+    expect(rootRow(store).hold).toMatchObject({
+      reason: 'github_unreachable',
+      wait_point: 'gate_read',
+      head_sha: 'c'.repeat(40)
+    });
+  });
+
+  test('waits on GitHub when the read that pins a merged root cleanup cannot reach it', async () => {
+    const store = seededCompletionStore();
+    startMergeTurn(store);
+    const driver = actionDriver(store, {
+      prActions: { completionGate: vi.fn(async () => unreachableGate()) },
+      now: () => 100
+    });
+
+    await driver.onMergeResult('UI-root', 'UI-root', {
+      ok: true,
+      action: 'merged',
+      reason: null
+    });
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({ phase: 'gating', terminal_reason: null });
+    expect(rootRow(store).hold).toMatchObject({
+      reason: 'github_unreachable',
+      wait_point: 'gate_read'
+    });
+  });
+
+  test('hands the earlier failed cleanup to a person instead of entering the cleanup again', async () => {
+    const store = seededCompletionStore();
+    startMergeTurn(store);
+    const driver = actionDriver(store, { now: () => 100 });
+
+    await driver.onMergeResult('UI-root', 'UI-root', {
+      ok: false,
+      action: 'already_merged',
+      reason: 'remote_branch_delete_failed',
+      cleanup_step: 'branch_cleanup',
+      head_sha: 'a'.repeat(40),
+      prior_cleanup_failure: true
+    });
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: { reason: 'cleanup_failed:remote_branch_delete_failed' }
+    });
+  });
+
+  // With no queue row there is nowhere to keep the wait and no observation
+  // that would reach the root again, so it stops for a person instead.
+  test('stops for a person instead of stranding a waiting root that has no queue row', async () => {
+    const store = seededCompletionStore();
+    startMergeTurn(store);
+    store.dequeueMerge(DRIVER_WS, 'UI-root');
+    const driver = actionDriver(store, {
+      prActions: { completionGate: vi.fn(async () => unreachableGate()) },
+      now: () => 100
+    });
+
+    await driver.onMergeResult('UI-root', 'UI-root', {
+      ok: true,
+      action: 'merged',
+      reason: null
+    });
+
+    expect(store.snapshot(DRIVER_WS).completion_intents['UI-root'].phase).toBe(
+      'needs_human'
+    );
+  });
+
+  test('ends the completion intent on the third consecutive moved candidate', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store, {
+      prActions: {
+        completionGate: vi.fn(async () =>
+          redGate({
+            verdict: { enabled: true, tier: 'ready', reason: null },
+            evidence: {}
+          })
+        )
+      }
+    });
+    const moved = {
+      ok: false,
+      action: 'refused',
+      reason: 'verify_candidate_moved',
+      head_sha: 'c'.repeat(40)
+    };
+
+    for (const op_id of ['op-1', 'op-2', 'op-3']) {
+      startMergeTurn(store, op_id);
+      await driver.onMergeResult('UI-root', 'UI-root', moved);
+    }
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: { reason: 'retry_exhausted:verify_candidate_moved' }
+    });
+  });
+
+  test('restarts the moved count after another merge result', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store, {
+      prActions: {
+        completionGate: vi.fn(async () =>
+          redGate({
+            verdict: { enabled: true, tier: 'ready', reason: null },
+            evidence: {}
+          })
+        )
+      }
+    });
+    const moved = {
+      ok: false,
+      action: 'refused',
+      reason: 'verify_candidate_moved',
+      head_sha: 'c'.repeat(40)
+    };
+    const results = [
+      moved,
+      moved,
+      { ok: false, action: 'refused', reason: 'pr_not_mergeable' },
+      moved,
+      moved
+    ];
+
+    for (const [turn, result] of results.entries()) {
+      startMergeTurn(store, `op-${turn}`);
+      await driver.onMergeResult('UI-root', 'UI-root', result);
+    }
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({ phase: 'gating', terminal_reason: null });
+  });
+
+  test('restarts the moved count when the root yields to the connection wait', async () => {
+    const store = seededCompletionStore();
+    const driver = actionDriver(store, {
+      prActions: {
+        completionGate: vi.fn(async () =>
+          redGate({
+            verdict: { enabled: true, tier: 'ready', reason: null },
+            evidence: {}
+          })
+        )
+      }
+    });
+    const moved = {
+      ok: false,
+      action: 'refused',
+      reason: 'verify_candidate_moved',
+      head_sha: 'c'.repeat(40)
+    };
+    startMergeTurn(store, 'op-1');
+    await driver.onMergeResult('UI-root', 'UI-root', moved);
+    startMergeTurn(store, 'op-2');
+    await driver.onMergeResult('UI-root', 'UI-root', moved);
+    startMergeTurn(store, 'op-3');
+    await driver.onMergeResult(
+      'UI-root',
+      'UI-root',
+      unreachableMerge('verify_recheck')
+    );
+
+    await driver.onMergeResult('UI-root', 'UI-root', moved);
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({ phase: 'gating', terminal_reason: null });
+  });
+
+  test('restarts the moved count when an observation yields to the connection wait', async () => {
+    const store = seededCompletionStore();
+    const completionGate = vi.fn(async () =>
+      redGate({
+        verdict: { enabled: true, tier: 'ready', reason: null },
+        evidence: {}
+      })
+    );
+    const driver = actionDriver(store, {
+      prActions: { completionGate },
+      now: () => 100
+    });
+    const moved = {
+      ok: false,
+      action: 'refused',
+      reason: 'verify_candidate_moved',
+      head_sha: 'c'.repeat(40)
+    };
+    startMergeTurn(store, 'op-1');
+    await driver.onMergeResult('UI-root', 'UI-root', moved);
+    startMergeTurn(store, 'op-2');
+    await driver.onMergeResult('UI-root', 'UI-root', moved);
+    completionGate.mockImplementationOnce(async () => unreachableGate());
+    await driveOnce(store, driver);
+    startMergeTurn(store, 'op-3');
+
+    await driver.onMergeResult('UI-root', 'UI-root', moved);
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({ phase: 'gating', terminal_reason: null });
+  });
+
+  test('does not kick the merge queue for a merging root that waits on GitHub', async () => {
+    const store = seededCompletionStore();
+    startMergeTurn(store);
+    store.setMergeHold(DRIVER_WS, {
+      bead_id: 'UI-root',
+      hold: {
+        reason: 'github_unreachable',
+        head_sha: 'a'.repeat(40),
+        auto_review_wait: null,
+        failure_class: 'network',
+        wait_point: 'merge_command'
+      },
+      at: 100
+    });
+    const kickMerge = vi.fn();
+    const driver = actionDriver(store, { kickMerge });
+
+    await driver.onAction(
+      'UI-root',
+      { kind: 'reconcile_op' },
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    );
+
+    expect(kickMerge).not.toHaveBeenCalled();
+  });
+
+  test('keeps a merging root in its merge turn when the merge queue cannot reach GitHub', async () => {
+    const store = seededCompletionStore();
+    startMergeTurn(store);
+    const completionGate = vi.fn();
+    const driver = actionDriver(store, { prActions: { completionGate } });
+    const merge_queue = createMergeQueue({
+      workspace: DRIVER_WS,
+      store,
+      merge: async () => unreachableMerge('merge_command'),
+      observePr: async () => ({ state: 'OPEN', error: null }),
+      headSha: () => 'a'.repeat(40),
+      onCompletionResult: driver.onMergeResult
+    });
+
+    await merge_queue.kick();
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'merging',
+      active_op: { kind: 'merge_subject', status: 'prepared' },
+      terminal_reason: null
+    });
+    expect(merge_queue.state().failures).toEqual({});
+  });
+
+  test('keeps a merging root on the connection wait when the merge confirm runs out on a transient read', async () => {
+    const store = seededCompletionStore();
+    startMergeTurn(store);
+    let clock = 0;
+    const driver = actionDriver(store);
+    const merge_queue = createMergeQueue({
+      workspace: DRIVER_WS,
+      store,
+      merge: async () => ({
+        ok: true,
+        action: 'merge_unconfirmed',
+        reason: 'merge_pending'
+      }),
+      observePr: async () => ({
+        state: null,
+        error: 'gh_failed',
+        failure_class: 'network'
+      }),
+      headSha: () => 'a'.repeat(40),
+      onCompletionResult: driver.onMergeResult,
+      now: () => clock,
+      setTimer: (/** @type {() => void} */ fn, /** @type {number} */ ms) => {
+        clock += ms;
+        void Promise.resolve().then(fn);
+        return 1;
+      },
+      clearTimer: () => {},
+      unconfirmed_poll_ms: 10,
+      unconfirmed_wait_ms: 100
+    });
+
+    await merge_queue.kick();
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({ phase: 'merging', terminal_reason: null });
+    expect(rootRow(store).hold).toMatchObject({
+      reason: 'github_unreachable',
+      wait_point: 'merge_confirm',
+      failure_class: 'network'
+    });
+  });
+
+  test('merges the waiting root without a click once the next turn reaches GitHub', async () => {
+    const store = seededCompletionStore();
+    startMergeTurn(store);
+    let turns = 0;
+    const merge = vi.fn(async () => {
+      turns += 1;
+      if (turns === 1) {
+        return unreachableMerge('merge_command');
+      }
+      store.moveToDone(DRIVER_WS, { bead_id: 'UI-root' });
+      return { ok: true, action: 'merged', reason: null };
+    });
+    const driver = actionDriver(store);
+    const merge_queue = createMergeQueue({
+      workspace: DRIVER_WS,
+      store,
+      merge,
+      observePr: async () => ({ state: 'MERGED', error: null }),
+      headSha: () => 'a'.repeat(40),
+      onCompletionResult: driver.onMergeResult
+    });
+    await merge_queue.kick();
+
+    await merge_queue.kick();
+
+    expect(merge).toHaveBeenCalledTimes(2);
+    expect(store.snapshot(DRIVER_WS)).toMatchObject({
+      merge_queue: [],
+      completion_intents: { 'UI-root': { phase: 'completed' } }
+    });
+  });
+
+  test('notifies the observed connection wait once it has stood the notify setting (§3.8)', async () => {
+    const store = seededCompletionStore();
+    const announce = vi.fn();
+    let clock = 100;
+    const driver = actionDriver(store, {
+      prActions: { completionGate: vi.fn(async () => unreachableGate()) },
+      announceGithubHold: announce,
+      now: () => clock
+    });
+    await driveOnce(store, driver);
+    clock = 100 + 30 * 60 * 1000;
+
+    await driveOnce(store, driver);
+
+    expect(announce.mock.calls).toEqual([
+      [
+        {
+          bead_id: 'UI-root',
+          reason: 'github_unreachable',
+          since: 100,
+          head_sha: 'a'.repeat(40),
+          failure_class: 'network',
+          wait_point: 'gate_read'
+        }
+      ]
+    ]);
+  });
+
+  test('sends nothing for a root whose wait the merge queue already notified (§3.8)', async () => {
+    const store = seededCompletionStore();
+    store.setMergeHold(DRIVER_WS, {
+      bead_id: 'UI-root',
+      hold: {
+        reason: 'github_unreachable',
+        head_sha: 'a'.repeat(40),
+        failure_class: 'network',
+        wait_point: 'merge_command',
+        notified_at: 50
+      },
+      at: 10
+    });
+    const announce = vi.fn();
+    const driver = actionDriver(store, {
+      prActions: { completionGate: vi.fn(async () => unreachableGate()) },
+      announceGithubHold: announce,
+      now: () => 10 + 30 * 60 * 1000
+    });
+
+    await driveOnce(store, driver);
+
+    expect(announce).not.toHaveBeenCalled();
   });
 });

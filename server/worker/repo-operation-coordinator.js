@@ -15,6 +15,7 @@ import {
   recoveryWords,
   reportedFailureSummary
 } from '../../app/utils/failure-sentences.js';
+import { GITHUB_UNREACHABLE } from '../../app/utils/github-wait.js';
 import { debug } from '../logging.js';
 import { acquireDeployLock } from './deploy-lock.js';
 import { scriptSummary } from './failure-class.js';
@@ -27,6 +28,7 @@ import {
   readForeignCandidateOwner,
   writeForeignCandidateOwner
 } from './foreign-target.js';
+import { classifyGithubFailure, isTransientGithubFailure } from './gh.js';
 import {
   classifyOperationRecovery,
   repairHandoffDescription
@@ -1829,7 +1831,10 @@ export function createRepoOperationCoordinator(deps) {
     ) {
       return {
         ok: false,
-        code: materialized.code || 'verify_candidate_mismatch'
+        code: materialized.code || 'verify_candidate_mismatch',
+        ...(materialized.failure_class
+          ? { failure_class: materialized.failure_class }
+          : {})
       };
     }
     // materialize는 await다 — 그 사이 사용자가 opt-out을 켰다면 작업을 사전기록
@@ -4455,7 +4460,15 @@ function createVerifyCheckout(deps) {
           { cwd: input.repo, timeout_ms: 120_000 }
         );
         if (fetched.code !== 0) {
-          return { ok: false, code: 'verify_candidate_mismatch' };
+          // A transient GitHub failure is the merge queue's connection wait,
+          // not a candidate that differs from what the gate saw (UI-aui8 §3.1).
+          const failure_class = classifyGithubFailure(
+            fetched.stderr,
+            fetched.code
+          );
+          return isTransientGithubFailure(failure_class)
+            ? { ok: false, code: GITHUB_UNREACHABLE, failure_class }
+            : { ok: false, code: 'verify_candidate_mismatch' };
         }
         head = await deps.gitRun(['cat-file', '-e', commit], {
           cwd: input.repo

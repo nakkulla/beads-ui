@@ -16260,6 +16260,25 @@ describe('worker/queue-store — review_dispatch 정규화 (2026-08-28 auto-revi
     expect(entry.hold).toMatchObject({ reason: 'review_receipt_missing' });
     expect(entry.hold?.auto_review_wait).toBeUndefined();
   });
+
+  test('round-trips the lost base update of a GitHub hold (UI-aui8 §3.2)', () => {
+    seedRow({
+      hold: {
+        reason: 'github_unreachable',
+        head_sha: HEAD,
+        since: 4,
+        wait_point: 'resolution',
+        base_update: { head_sha: HEAD.toUpperCase(), base_ref: 'main' }
+      }
+    });
+
+    const entry = createQueueStore().snapshot(WS).merge_queue[0];
+
+    expect(entry.hold?.base_update).toEqual({
+      head_sha: HEAD,
+      base_ref: 'main'
+    });
+  });
 });
 
 describe('waiting attempt records (선행 대기 계층 §4.5)', () => {

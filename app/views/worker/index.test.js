@@ -12926,6 +12926,364 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
 
     expect(window.localStorage.getItem('bdui.worker.shelved-open')).toBe('1');
   });
+
+  describe('GitHub 연결 대기 (UI-aui8 §3.9, §3.10)', () => {
+    const SINCE = Date.UTC(2026, 10, 25, 3, 4);
+    const WAIT_HOLD = {
+      reason: 'github_unreachable',
+      failure_class: 'network',
+      wait_point: 'verify_recheck'
+    };
+
+    /**
+     * A one-row lane whose queued item carries a GitHub hold under a live
+     * manual authority.
+     *
+     * @param {Record<string, any>} hold
+     * @param {Record<string, any>} [over] - More queue fields, such as a
+     * completion record.
+     */
+    function heldLane(hold, over = {}) {
+      return laneOf(['RD-1'], {
+        ...over,
+        merge_queue: [
+          {
+            bead_id: 'RD-1',
+            resolution_rounds: 0,
+            authority: {
+              id: 'authority-1',
+              source: 'manual',
+              granted_at: 1,
+              requested_head_sha: 'a'.repeat(40),
+              target_base: 'main'
+            },
+            hold: { head_sha: 'a'.repeat(40), since: SINCE, ...hold }
+          }
+        ],
+        merge_queue_state: { active: null, failures: {} }
+      });
+    }
+
+    /**
+     * @param {HTMLElement} mount
+     * @returns {HTMLElement}
+     */
+    function badgeOf(mount) {
+      return /** @type {HTMLElement} */ (
+        rowOf(mount, 'RD-1').querySelector('.worker-mini__badge')
+      );
+    }
+
+    test('draws the connection wait as a live badge', () => {
+      const { mount } = mountLane(heldLane(WAIT_HOLD));
+
+      const badge = badgeOf(mount);
+
+      expect([
+        badge.textContent?.trim(),
+        badge.classList.contains('worker-mini__badge--activity')
+      ]).toEqual(['GitHub 연결 대기', true]);
+    });
+
+    test('draws the connection wait without the warning colour', () => {
+      const { mount } = mountLane(heldLane(WAIT_HOLD));
+
+      const row = rowOf(mount, 'RD-1');
+
+      expect(row.querySelector('.worker-mini__badge--alert')).toBeNull();
+    });
+
+    test('puts the start time, failure point and class in the badge tooltip', () => {
+      const { mount } = mountLane(heldLane(WAIT_HOLD));
+
+      const title =
+        badgeOf(mount).querySelector('[title]')?.getAttribute('title') || '';
+
+      expect(title.split('\n')).toEqual([
+        `대기 시작 ${formatTimestampLocal(SINCE)}`,
+        '마지막 실패 지점: 머지 직전 재확인',
+        '분류: 네트워크'
+      ]);
+    });
+
+    test('keeps [취소] as the only control of a waiting row', () => {
+      const { mount } = mountLane(heldLane(WAIT_HOLD));
+
+      const row = rowOf(mount, 'RD-1');
+
+      expect([
+        row.querySelector('.worker-mini__merge'),
+        /** @type {HTMLButtonElement|null} */ (
+          row.querySelector('.worker-mini__merge-cancel')
+        )?.disabled
+      ]).toEqual([null, false]);
+    });
+
+    test('draws the connection wait on a completion root held in its merge turn', () => {
+      const { mount } = mountLane(
+        heldLane(
+          { ...WAIT_HOLD, wait_point: 'merge_command' },
+          {
+            completion_status: {
+              'RD-1': {
+                root_bead_id: 'RD-1',
+                phase: 'merging',
+                subject_role: 'root',
+                subject_bead_id: 'RD-1',
+                active_attempt_id: 'a1',
+                failure_stage: null,
+                failure_reason: null,
+                terminal_reason: null
+              }
+            }
+          }
+        )
+      );
+
+      const badge = badgeOf(mount);
+
+      expect([
+        badge.textContent?.trim(),
+        badge.classList.contains('worker-mini__badge--activity')
+      ]).toEqual(['GitHub 연결 대기', true]);
+    });
+
+    /**
+     * A completion root in its merge turn, held on GitHub, with the driver
+     * working on whichever item `active` names.
+     *
+     * @param {string|null} active
+     */
+    function heldMergingLane(active) {
+      const lane = heldLane(
+        { ...WAIT_HOLD, wait_point: 'merge_command' },
+        {
+          completion_status: {
+            'RD-1': {
+              root_bead_id: 'RD-1',
+              phase: 'merging',
+              subject_role: 'root',
+              subject_bead_id: 'RD-1',
+              active_attempt_id: 'a1',
+              failure_stage: null,
+              failure_reason: null,
+              terminal_reason: null
+            }
+          }
+        }
+      );
+      return { ...lane, merge_queue_state: { active, failures: {} } };
+    }
+
+    /**
+     * @param {HTMLElement} mount
+     * @returns {HTMLButtonElement|null}
+     */
+    function cancelOf(mount) {
+      return rowOf(mount, 'RD-1').querySelector('.worker-mini__merge-cancel');
+    }
+
+    test('enables [취소] on a completion root held in its merge turn', () => {
+      const { mount } = mountLane(heldMergingLane(null));
+
+      const cancel = cancelOf(mount);
+
+      expect(cancel?.disabled).toBe(false);
+    });
+
+    test('titles [취소] on a held completion root as leaving the queue', () => {
+      const { mount } = mountLane(heldMergingLane(null));
+
+      const title = cancelOf(mount)?.getAttribute('title');
+
+      expect(title).toBe(
+        '머지 큐에서 이 항목을 뺍니다 (다시 [머지]로 넣을 수 있습니다)'
+      );
+    });
+
+    test('keeps [취소] locked on a held completion root the driver is on', () => {
+      const { mount } = mountLane(heldMergingLane('RD-1'));
+
+      const cancel = cancelOf(mount);
+
+      expect(cancel?.disabled).toBe(true);
+    });
+
+    test('ranks the connection wait below 머지 중', () => {
+      const result = prStatusBadge({
+        merge_step: { label: '머지 2/6' },
+        github_hold: { ...WAIT_HOLD, since: SINCE }
+      });
+
+      expect(result?.label).toBe('머지 중');
+    });
+
+    test('ranks the connection wait above 머지 실패', () => {
+      const result = prStatusBadge({
+        github_hold: { ...WAIT_HOLD, since: SINCE },
+        queue_failure: 'merge_error'
+      });
+
+      expect(result).toMatchObject({ label: 'GitHub 연결 대기', live: true });
+    });
+
+    test('ranks the connection wait above 자동 제외', () => {
+      const result = prStatusBadge({
+        github_hold: { ...WAIT_HOLD, since: SINCE },
+        auto_skip: 'pr_closed_unmerged'
+      });
+
+      expect(result).toMatchObject({ label: 'GitHub 연결 대기', live: true });
+    });
+
+    test('ranks the connection wait above the queue re-check of a stale observation', () => {
+      const result = prStatusBadge({
+        github_hold: { ...WAIT_HOLD, since: SINCE },
+        auto_pending: true,
+        queued: true,
+        conflicting: true
+      });
+
+      expect(result?.label).toBe('GitHub 연결 대기');
+    });
+
+    test('draws a permanent hold in the warning colour with its class phrase', () => {
+      const { mount } = mountLane(
+        heldLane({
+          reason: 'github_head_unreadable',
+          failure_class: 'auth',
+          wait_point: 'gate_read'
+        })
+      );
+
+      const badge = badgeOf(mount);
+
+      expect([
+        badge.textContent?.trim(),
+        badge.classList.contains('worker-mini__badge--alert')
+      ]).toEqual(['GitHub 인증 실패', true]);
+    });
+
+    test('puts the failure point of a permanent hold in its tooltip', () => {
+      const { mount } = mountLane(
+        heldLane({
+          reason: 'github_head_unreadable',
+          failure_class: 'unknown',
+          wait_point: 'gate_read'
+        })
+      );
+
+      const title = badgeOf(mount).getAttribute('title') || '';
+
+      expect(title).toContain('마지막 실패 지점: 게이트 읽기');
+    });
+
+    test('names a GitHub exclusion by its class phrase', () => {
+      const { mount } = mountLane(
+        laneOf(['RD-1'], {
+          merge_queue_state: {
+            active: null,
+            failures: { 'RD-1': 'merge_failed:auth' }
+          }
+        })
+      );
+
+      expect(badgeOf(mount).textContent?.trim()).toBe(
+        '머지 실패 — GitHub 인증 실패'
+      );
+    });
+
+    test('puts the failure point of a GitHub exclusion in its tooltip', () => {
+      const result = prStatusBadge({ queue_failure: 'merge_failed:unknown' });
+
+      expect(result?.title).toContain('마지막 실패 지점: 머지 명령');
+    });
+
+    test('puts the gate read point of a permanent base fetch exclusion in its tooltip', () => {
+      const result = prStatusBadge({
+        queue_failure: 'base_unresolved:fetch:auth'
+      });
+
+      expect(result?.title).toContain('마지막 실패 지점: 게이트 읽기');
+    });
+
+    test('puts the resolution point of a permanent base update exclusion in its tooltip', () => {
+      const result = prStatusBadge({
+        queue_failure: 'update_branch_failed:auth'
+      });
+
+      expect(result?.title).toContain('마지막 실패 지점: 충돌 해소·base 갱신');
+    });
+
+    test('names a permanent foreign base fetch exclusion by its class phrase', () => {
+      const result = prStatusBadge({ queue_failure: 'base_fetch_failed:auth' });
+
+      expect(result?.label).toBe('머지 실패 — GitHub 인증 실패');
+    });
+
+    test('names a permanent confirm-timeout exclusion by its class phrase', () => {
+      const result = prStatusBadge({
+        queue_failure: 'merge_unconfirmed_timeout:auth'
+      });
+
+      expect(result?.label).toBe('머지 실패 — GitHub 인증 실패');
+    });
+
+    test('puts the confirm point of a permanent confirm-timeout exclusion in its tooltip', () => {
+      const result = prStatusBadge({
+        queue_failure: 'merge_unconfirmed_timeout:unknown'
+      });
+
+      expect(result?.title).toContain('마지막 실패 지점: 머지 뒤 상태 확인');
+    });
+
+    test('names a moved-candidate exclusion by its phrase', () => {
+      const result = prStatusBadge({ queue_failure: 'verify_candidate_moved' });
+
+      expect(result?.label).toBe('머지 실패 — 머지 직전 후보가 계속 바뀜');
+    });
+
+    test('shows the connection-wait notice for a refused [머지] click', async () => {
+      const transport = vi.fn(async () => ({
+        applied: false,
+        conflict: false,
+        reason: 'github_unreachable',
+        failure_class: 'network',
+        wait_point: 'gate_read',
+        queued: 0
+      }));
+      const { mount } = mountLane(laneOf(['RD-1']), transport);
+
+      /** @type {HTMLButtonElement} */ (
+        rowOf(mount, 'RD-1').querySelector('.worker-mini__merge')
+      ).click();
+      await flush();
+
+      expect(document.querySelector('.toast')?.textContent).toBe(
+        'GitHub에 연결되지 않아 머지 큐에 넣지 못했습니다 — 연결이 돌아오면 다시 눌러 주세요'
+      );
+    });
+
+    test('shows the class phrase and reason of a permanently refused [머지] click', async () => {
+      const transport = vi.fn(async () => ({
+        applied: false,
+        conflict: false,
+        reason: 'gh_failed:auth',
+        failure_class: 'auth',
+        queued: 0
+      }));
+      const { mount } = mountLane(laneOf(['RD-1']), transport);
+
+      /** @type {HTMLButtonElement} */ (
+        rowOf(mount, 'RD-1').querySelector('.worker-mini__merge')
+      ).click();
+      await flush();
+
+      expect(document.querySelector('.toast')?.textContent).toBe(
+        '머지 큐에 넣지 못했습니다 — GitHub 인증 실패 (gh_failed:auth)'
+      );
+    });
+  });
 });
 
 describe('mergeFailureText (UI-5v7d §4)', () => {

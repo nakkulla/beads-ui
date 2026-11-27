@@ -39,9 +39,20 @@
  *
  * @import { MergeClickResult } from './pr-actions.js'
  */
+import {
+  GITHUB_FAILURE_CLASS_LABELS,
+  GITHUB_FAILURE_PHRASES,
+  GITHUB_HEAD_UNREADABLE,
+  GITHUB_UNREACHABLE,
+  GITHUB_WAIT_POINT_LABELS,
+  VERIFY_CANDIDATE_MOVED,
+  isGithubHold,
+  isGithubWaitHold
+} from '../../app/utils/github-wait.js';
 import { timingSeconds } from '../timing-settings.js';
 import { failureTokenSummary } from './failure-class.js';
 import { foreignHandoffCauseOf } from './foreign-handoff.js';
+import { isTransientGithubFailure } from './gh.js';
 import { conditionWaitPolicy } from './repo-operation-policy.js';
 import { cleanupRetryParked } from './resolution-ladder.js';
 
@@ -118,6 +129,17 @@ export function unconfirmedWaitSettingMs() {
 }
 
 /**
+ * How long a connection wait stands, from its `since`, before its one push
+ * (UI-aui8 §3.8): the timing setting `merge_github_wait_notify_seconds`, read
+ * at each rejudge like the other merge-queue waits.
+ *
+ * @returns {number}
+ */
+export function githubWaitNotifySettingMs() {
+  return timingSeconds('merge_github_wait_notify_seconds') * 1000;
+}
+
+/**
  * Backstop wake interval while waiting on a resolution session. The primary
  * signal is the queue-changed event the scheduler emits when the attempt ends;
  * this only bounds how long a MISSED event can stall the queue.
@@ -182,23 +204,342 @@ const MERGE_STEP_LABELS = Object.freeze({
 });
 
 /**
+ * How many consecutive pre-merge rechecks of one turn may see the candidate
+ * move before the item is excluded (UI-aui8 §3.4). The completion intent
+ * ends on the same count (§3.7).
+ */
+export const MOVED_CANDIDATE_LIMIT = 3;
+
+/**
+ * The head a permanent GitHub failure was read on (UI-aui8 §3.6) — the head
+ * its exclusion is pinned to — or null when the result names no GitHub
+ * failure class or no full SHA.
+ *
+ * @param {{ failure_class?: string|null }|null|undefined} result
+ * @param {string|null|undefined} head_sha
+ * @returns {string|null}
+ */
+function permanentGithubHead(result, head_sha) {
+  if (
+    !result ||
+    typeof result.failure_class !== 'string' ||
+    isTransientGithubFailure(result.failure_class) ||
+    typeof head_sha !== 'string' ||
+    !SHA40_RE.test(head_sha)
+  ) {
+    return null;
+  }
+  return head_sha;
+}
+
+/**
+ * One item's post-merge confirm wait, read for its GitHub outcome (UI-aui8
+ * §3.5, §3.6): when an observation first failed transiently, and the GitHub
+ * failure class of the last observation (null when it was no GitHub
+ * failure).
+ *
+ * @typedef {Object} UnconfirmedGithubWait
+ * @property {number|null} first_transient_at
+ * @property {string|null} last_class
+ */
+
+/**
+ * Where one workspace's GitHub holds are read and written (UI-aui8 §3.7).
+ * The merge queue and the completion intent share this one record on the
+ * queued item, so an item has one hold identity, one `since` and one
+ * notification marker whichever of the two observed the failure.
+ *
+ * @typedef {Object} GithubHoldContext
+ * @property {string} workspace
+ * @property {{ snapshot: (workspace: string) => any, setMergeHold: (workspace: string, input: any) => { ok: boolean } }} store
+ * @property {{ append: (input: any) => unknown }|null} [timeline]
+ * @property {() => number} now
+ * @property {(...args: any[]) => void} log
+ * @property {((notice: GithubHoldNotice) => unknown)|null} [announce] - The
+ * one push of a hold (§3.6, §3.8). Absent, no hold is marked or sent.
+ * @property {() => number} [notifyAfterMs] - How long a connection wait
+ * stands before its push; the timing setting when absent.
+ */
+
+/**
+ * What the one push of a GitHub hold says (UI-aui8 §3.8).
+ *
+ * @typedef {Object} GithubHoldNotice
+ * @property {string} bead_id
+ * @property {string} reason
+ * @property {number} since
+ * @property {string} head_sha
+ * @property {string|null} failure_class
+ * @property {string|null} wait_point
+ */
+
+/**
+ * @typedef {Object} GithubHoldInput
+ * @property {string} reason
+ * @property {string|null} [head_sha]
+ * @property {string|null} [failure_class]
+ * @property {string|null} [wait_point]
+ * @property {number|null} [since]
+ * @property {import('./queue-store.js').LostBaseUpdate|null} [base_update] -
+ * The base update whose answer was lost (§3.2); omitted keeps the stored one.
+ */
+
+/**
+ * The GitHub hold (UI-aui8 §3.3, §3.6) the queued item stands on, or null
+ * when it is not queued, stands on another hold, or the snapshot is
+ * unreadable.
+ *
+ * @param {GithubHoldContext} ctx
+ * @param {string} bead_id
+ * @returns {import('./queue-store.js').MergeHold|null}
+ */
+export function queuedGithubHold(ctx, bead_id) {
+  let q;
+  try {
+    q = ctx.store.snapshot(ctx.workspace);
+  } catch {
+    return null;
+  }
+  const lane = q && Array.isArray(q.merge_queue) ? q.merge_queue : [];
+  const entry = lane.find((/** @type {any} */ e) => e.bead_id === bead_id);
+  const hold = entry ? entry.hold : null;
+  return isGithubHold(hold) ? hold : null;
+}
+
+/**
+ * The one history line a GitHub hold writes when it starts or ends (UI-aui8
+ * §3.9). The id is the hold's own identity — reason plus `since` — so a
+ * replay of the same line dedupes, and the per-attempt `m<n>` numbering
+ * never sees it.
+ *
+ * @param {GithubHoldContext} ctx
+ * @param {string} bead_id
+ * @param {{ reason: string, since: number, wait_point?: string|null, failure_class?: string|null }} hold
+ * @param {'start'|'end'} edge
+ */
+function appendGithubHoldLine(ctx, bead_id, hold, edge) {
+  if (!ctx.timeline) {
+    return;
+  }
+  const waiting = hold.reason === GITHUB_UNREACHABLE;
+  const name = waiting ? 'GitHub 연결 대기' : 'GitHub 확인 실패 보류';
+  const detail = waiting
+    ? GITHUB_WAIT_POINT_LABELS[String(hold.wait_point)]
+    : (GITHUB_FAILURE_PHRASES[String(hold.failure_class)] ??
+      GITHUB_FAILURE_PHRASES.unknown);
+  try {
+    ctx.timeline.append({
+      bead_id,
+      kind: 'merge_step',
+      seq: `gh-${hold.reason}-${hold.since}${edge === 'end' ? '-end' : ''}`,
+      summary:
+        edge === 'end'
+          ? `머지 큐 · ${name} 끝`
+          : `머지 큐 · ${name}${detail ? ` — ${detail}` : ''}`
+    });
+  } catch (err) {
+    ctx.log('merge queue GitHub hold history failed for %s: %o', bead_id, err);
+  }
+}
+
+/**
+ * Write or refresh one queued item's GitHub hold (UI-aui8 §3.3, §3.6, §3.7).
+ * The hold's identity is its reason: a refresh under the same reason keeps
+ * `since` and the notification marker whatever the failure point or the head
+ * now says, and only the start of a hold (or a change of reason) writes a
+ * history line. A missing head keeps the one the hold already pinned.
+ *
+ * The write's three outcomes are kept apart: an unchanged record is the
+ * normal re-judgment, a write that THROWS is `failed`, and the caller decides
+ * what a failed write stops. Every write that sticks or is unchanged also
+ * judges the hold's one push ({@link announceGithubHold}); the marker that
+ * push writes makes the outcome `written`.
+ *
+ * @param {GithubHoldContext} ctx
+ * @param {string} bead_id
+ * @param {GithubHoldInput} input
+ * @returns {'written'|'unchanged'|'failed'}
+ */
+export function writeGithubHold(ctx, bead_id, input) {
+  const prior = queuedGithubHold(ctx, bead_id);
+  const head_sha =
+    typeof input.head_sha === 'string' && input.head_sha.length > 0
+      ? input.head_sha
+      : (prior?.head_sha ?? '');
+  /** @type {'written'|'unchanged'|'failed'} */
+  let outcome = 'unchanged';
+  try {
+    outcome = ctx.store.setMergeHold(ctx.workspace, {
+      bead_id,
+      hold: {
+        reason: input.reason,
+        head_sha,
+        // A slot-fenced review hold this replaces must not hand its wait on.
+        auto_review_wait: null,
+        failure_class: input.failure_class ?? null,
+        wait_point: input.wait_point ?? null,
+        ...(typeof input.since === 'number' ? { since: input.since } : {}),
+        ...(input.base_update !== undefined
+          ? { base_update: input.base_update }
+          : {})
+      },
+      at: ctx.now()
+    }).ok
+      ? 'written'
+      : 'unchanged';
+  } catch (err) {
+    ctx.log('merge queue GitHub hold write failed for %s: %o', bead_id, err);
+    return 'failed';
+  }
+  if (prior && prior.reason !== input.reason) {
+    appendGithubHoldLine(ctx, bead_id, prior, 'end');
+  }
+  const stored = queuedGithubHold(ctx, bead_id);
+  if (stored && (!prior || prior.reason !== stored.reason)) {
+    appendGithubHoldLine(ctx, bead_id, stored, 'start');
+  }
+  const announced = stored ? announceGithubHold(ctx, bead_id, stored) : 'none';
+  if (announced === 'failed') {
+    return 'failed';
+  }
+  return announced === 'marked' ? 'written' : outcome;
+}
+
+/**
+ * The one push of a GitHub hold (UI-aui8 §3.6, §3.8), judged at the rejudge
+ * that wrote it: a connection wait once it has stood the notify setting from
+ * `since`, a head-unreadable hold at once — waiting does not clear that
+ * failure. A hold that already carries its marker sends nothing, and one
+ * stored before the marker existed has not sent.
+ *
+ * The marker is written BEFORE the send, so a restart never sends twice; a
+ * marker write that does not stick sends nothing and the next rejudge tries
+ * again, and one that THROWS is a failed store write (§3.3) the caller ends
+ * its drain on. The send is fire-and-forget and never retried: a failed push
+ * blocks no queue transition.
+ *
+ * @param {GithubHoldContext} ctx
+ * @param {string} bead_id
+ * @param {import('./queue-store.js').MergeHold} hold
+ * @returns {'marked'|'none'|'failed'} `marked` when the marker write changed
+ * the queue file.
+ */
+function announceGithubHold(ctx, bead_id, hold) {
+  if (!ctx.announce || typeof hold.notified_at === 'number') {
+    return 'none';
+  }
+  const at = ctx.now();
+  if (hold.reason === GITHUB_UNREACHABLE) {
+    const after_ms = ctx.notifyAfterMs
+      ? ctx.notifyAfterMs()
+      : githubWaitNotifySettingMs();
+    if (at - hold.since < after_ms) {
+      return 'none';
+    }
+  }
+  const failure_class = hold.failure_class ?? null;
+  const wait_point = hold.wait_point ?? null;
+  try {
+    const marked = ctx.store.setMergeHold(ctx.workspace, {
+      bead_id,
+      hold: {
+        reason: hold.reason,
+        head_sha: hold.head_sha,
+        failure_class,
+        wait_point,
+        notified_at: at
+      },
+      at
+    }).ok;
+    if (!marked) {
+      return 'none';
+    }
+  } catch (err) {
+    ctx.log('merge queue GitHub hold marker failed for %s: %o', bead_id, err);
+    return 'failed';
+  }
+  /** @param {unknown} err */
+  const pushFailed = (err) => {
+    ctx.log('merge queue GitHub hold push failed for %s: %o', bead_id, err);
+  };
+  try {
+    void Promise.resolve(
+      ctx.announce({
+        bead_id,
+        reason: hold.reason,
+        since: hold.since,
+        head_sha: hold.head_sha,
+        failure_class,
+        wait_point
+      })
+    ).catch(pushFailed);
+  } catch (err) {
+    pushFailed(err);
+  }
+  return 'marked';
+}
+
+/**
+ * End a GitHub hold at a final disposition (UI-aui8 §3.3, §3.7): release the
+ * record if the item is still queued, then write its one closing history
+ * line. A hold the item already left the queue with (a cleanup took it) still
+ * gets its closing line from the copy the caller started under. A release
+ * that THROWS is a failed store write (§3.3): the hold stands, no closing
+ * line is written, and the caller ends its drain before any transition.
+ *
+ * @param {GithubHoldContext} ctx
+ * @param {string} bead_id
+ * @param {import('./queue-store.js').MergeHold|null} started - The GitHub
+ * hold the caller started under, if any.
+ * @returns {'released'|'unchanged'|'failed'} `released` when the release
+ * changed the queue file.
+ */
+export function endGithubHold(ctx, bead_id, started) {
+  const queued = queuedGithubHold(ctx, bead_id);
+  const hold = queued ?? started;
+  if (!hold) {
+    return 'unchanged';
+  }
+  let released = false;
+  if (queued) {
+    try {
+      released =
+        ctx.store.setMergeHold(ctx.workspace, {
+          bead_id,
+          hold: null,
+          at: ctx.now()
+        }).ok === true;
+    } catch (err) {
+      ctx.log(
+        'merge queue GitHub hold release failed for %s: %o',
+        bead_id,
+        err
+      );
+      return 'failed';
+    }
+  }
+  appendGithubHoldLine(ctx, bead_id, hold, 'end');
+  return released ? 'released' : 'unchanged';
+}
+
+/**
  * Build a workspace's merge driver.
  *
  * @param {{
  *   workspace: string,
  *   store: ReturnType<typeof import('./queue-store.js').createQueueStore>,
- *   merge: (bead_id: string) => Promise<MergeClickResult>,
- *   probeMergeability?: (bead_id: string) => Promise<{ ok: boolean, kind: 'merged'|'closed'|'dirty'|'behind'|'clean'|'blocked', reason: string|null, head_sha: string|null, base_ref: string|null, head_ref?: string|null, external: boolean, continuation?: 'verify' }>,
- *   dispatchConflict?: (bead_id: string, approved: { head_sha: string, base_ref: string|null, head_ref: string|null }, resolution_wait: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha: string, base_ref: string, head_ref: string }, continuation?: { continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }) => Promise<MergeClickResult>,
- *   baseContained?: (bead_id: string, input: { base_ref: string, head_ref: string, head_sha: string }) => Promise<'contained'|'not_contained'|null>,
- *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null }>,
+ *   merge: (bead_id: string, options?: { retry_failed_cleanup?: boolean }) => Promise<MergeClickResult>,
+ *   probeMergeability?: (bead_id: string) => Promise<{ ok: boolean, kind: 'merged'|'closed'|'dirty'|'behind'|'clean'|'blocked', reason: string|null, head_sha: string|null, base_ref: string|null, head_ref?: string|null, external: boolean, continuation?: 'verify', failure_class?: string, wait_point?: string, head_unread?: boolean }>,
+ *   dispatchConflict?: (bead_id: string, approved: { head_sha: string, base_ref: string|null, head_ref: string|null }, resolution_wait: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha: string, base_ref: string, head_ref: string }, continuation?: { continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }, decided?: () => boolean) => Promise<MergeClickResult>,
+ *   baseContained?: (bead_id: string, input: { base_ref: string, head_ref: string, head_sha: string }) => Promise<'contained'|'not_contained'|'unreachable'|null>,
+ *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null, failure_class?: string }>,
  *   headSha?: (bead_id: string) => string|null,
  *   verifiedOperation?: (bead_id: string) => string|null,
  *   isExternalRow?: (bead_id: string) => boolean,
  *   conflictDispatchBlocked?: (queue_bead_id: string, subject_bead_id: string) => boolean,
  *   reviewDispatchBlocked?: (bead_id: string) => boolean,
  *   reviewSession?: { startAuto: (input: { bead_id: string, head_sha: string, head_ref: string|null, reason: string }) => Promise<{ ok: boolean, reason?: string }> },
- *   updateBase?: (bead_id: string) => Promise<{ ok: boolean, reason: string|null, result_head_sha: string|null }>,
+ *   updateBase?: (bead_id: string) => Promise<{ ok: boolean, reason: string|null, result_head_sha: string|null, failure_class?: string }>,
  *   onCompletionResult?: (root_bead_id: string, subject_bead_id: string, result: MergeClickResult) => Promise<void>|void,
  *   prepare?: () => Promise<unknown>,
  *   subscribeQueueChanged?: (fn: (workspace: string) => void) => (() => void),
@@ -214,7 +555,9 @@ const MERGE_STEP_LABELS = Object.freeze({
  *   rebase_round_cap?: number,
  *   resolution_wait_ms?: number,
  *   unconfirmed_poll_ms?: number,
- *   unconfirmed_wait_ms?: number
+ *   unconfirmed_wait_ms?: number,
+ *   announceGithubHold?: (notice: GithubHoldNotice) => unknown,
+ *   github_wait_notify_ms?: number
  * }} deps
  */
 export function createMergeQueue(deps) {
@@ -302,6 +645,17 @@ export function createMergeQueue(deps) {
   const held_this_pass = new Set();
   /** @type {Map<string, string>} */
   const failures = new Map();
+  /** @type {GithubHoldContext} */
+  const github_hold_ctx = {
+    workspace,
+    store: deps.store,
+    timeline: deps.timeline ?? null,
+    now,
+    log,
+    announce: deps.announceGithubHold ?? null,
+    notifyAfterMs: () =>
+      deps.github_wait_notify_ms ?? githubWaitNotifySettingMs()
+  };
   /** @type {(() => void)|null} */
   let unsubscribe = null;
   /** @type {(() => void)|null} */
@@ -990,10 +1344,15 @@ export function createMergeQueue(deps) {
    * transient non-hold verdict between two holds at the same head must not buy
    * that head a second automatic review.
    *
+   * A GitHub hold (UI-aui8 §3.3) is NOT released here: passing the gate alone
+   * is not its exit. It ends only at the turn's final disposition, through
+   * {@link settleGithubHold}.
+   *
    * @param {string} bead_id
    */
   function releaseHold(bead_id) {
-    if (!queuedEntry(bead_id)?.hold) {
+    const hold = queuedEntry(bead_id)?.hold;
+    if (!hold || isGithubHold(hold)) {
       return;
     }
     try {
@@ -1006,6 +1365,128 @@ export function createMergeQueue(deps) {
     } catch (err) {
       log('merge queue hold release failed for %s: %o', bead_id, err);
     }
+  }
+
+  /**
+   * This queued item's GitHub hold (UI-aui8 §3.3, §3.6), if it stands on one.
+   *
+   * @param {string} bead_id
+   * @returns {import('./queue-store.js').MergeHold|null}
+   */
+  function githubHoldOf(bead_id) {
+    return queuedGithubHold(github_hold_ctx, bead_id);
+  }
+
+  /**
+   * Decide a base update whose answer was lost (UI-aui8 §3.2) from an
+   * observation that read the PR head. An unmoved head means the update did
+   * not apply; a moved head means the PR is past that request, whoever moved
+   * it, so the request is never resent as it was. The decided record is
+   * cleared, and the gate judges the head it read like any other.
+   *
+   * @param {string} bead_id
+   * @param {import('./queue-store.js').LostBaseUpdate} lost
+   * @param {{ head_sha?: string|null }} observed
+   * @returns {'applied'|'not_applied'|'undecided'|'failed'} `failed` when the
+   * clearing write threw; this drain ends (UI-aui8 §3.3).
+   */
+  function decideLostBaseUpdate(bead_id, lost, observed) {
+    const head =
+      typeof observed.head_sha === 'string' && observed.head_sha.length > 0
+        ? observed.head_sha.toLowerCase()
+        : null;
+    if (head === null) {
+      return 'undecided';
+    }
+    const hold = githubHoldOf(bead_id);
+    if (hold?.base_update) {
+      try {
+        deps.store.setMergeHold(workspace, {
+          bead_id,
+          hold: {
+            reason: hold.reason,
+            head_sha: hold.head_sha,
+            failure_class: hold.failure_class ?? null,
+            wait_point: hold.wait_point ?? null,
+            base_update: null
+          },
+          at: now()
+        });
+      } catch (err) {
+        log(
+          'merge queue lost base update clear failed for %s: %o',
+          bead_id,
+          err
+        );
+        halted = true;
+        notify();
+        return 'failed';
+      }
+    }
+    return head === lost.head_sha ? 'not_applied' : 'applied';
+  }
+
+  /**
+   * Hold one item on a GitHub failure (UI-aui8 §3.3, §3.6) and take it out of
+   * THIS pass. The item keeps its slot and its authority; no failure, no
+   * exclusion and no dequeue is written, and its in-memory failure is cleared.
+   * Identity, `since` and history follow {@link writeGithubHold}. A GitHub
+   * hold never spends a review lineage, never dispatches a resolver and never
+   * opens a failure conversation — it does not go through {@link holdEntry}.
+   *
+   * A write that THROWS ends this drain without a dequeue (UI-yk55 §3.2) —
+   * the durable queue still holds the item.
+   *
+   * @param {string} bead_id
+   * @param {GithubHoldInput} input
+   * @returns {'written'|'unchanged'|'failed'}
+   */
+  function holdOnGithub(bead_id, input) {
+    const outcome = writeGithubHold(github_hold_ctx, bead_id, input);
+    if (outcome === 'failed') {
+      halted = true;
+      notify();
+      return outcome;
+    }
+    const failure_cleared = failures.delete(bead_id);
+    held_this_pass.add(bead_id);
+    log(
+      'merge queue: %s held (%s at %s, %s)',
+      bead_id,
+      input.reason,
+      input.wait_point ?? '-',
+      input.failure_class ?? '-'
+    );
+    // The `writeHold` rule: a re-judgment to the same record costs no fanout.
+    if (outcome === 'written' || failure_cleared) {
+      notify();
+    }
+    return outcome;
+  }
+
+  /**
+   * End a GitHub hold at the turn's final disposition (UI-aui8 §3.3) through
+   * {@link endGithubHold}.
+   *
+   * A release that fails ends this drain (UI-aui8 §3.3, UI-yk55 §3.2): the
+   * caller writes no transition after it.
+   *
+   * @param {string} bead_id
+   * @param {import('./queue-store.js').MergeHold|null} started - The GitHub
+   * hold the turn started under, if any.
+   * @returns {boolean} false when the release failed.
+   */
+  function settleGithubHold(bead_id, started) {
+    const outcome = endGithubHold(github_hold_ctx, bead_id, started);
+    if (outcome === 'failed') {
+      halted = true;
+      notify();
+      return false;
+    }
+    if (outcome === 'released') {
+      notify();
+    }
+    return true;
   }
 
   /**
@@ -1050,14 +1531,21 @@ export function createMergeQueue(deps) {
    *
    * @param {string} bead_id
    * @param {string} reason
+   * @param {string|null} [head_override] - The head the deciding GitHub read
+   * saw directly (UI-aui8 §3.4, §3.6) — the third moved recheck's head, or
+   * the head a permanent failure was read on. It pins the exclusion instead
+   * of the poller's possibly older observation.
    */
-  function failAndDequeue(bead_id, reason) {
+  function failAndDequeue(bead_id, reason, head_override = null) {
     fail(bead_id, reason);
     if (!queuedEntry(bead_id)) {
       notify();
       return;
     }
-    const head_sha = headSha(bead_id);
+    const head_sha =
+      typeof head_override === 'string' && SHA40_RE.test(head_override)
+        ? head_override.toLowerCase()
+        : headSha(bead_id);
     if (!head_sha) {
       if (!pollerObserves(bead_id)) {
         // No observation will ever arrive for this bead, so a halt here has no
@@ -1351,6 +1839,12 @@ export function createMergeQueue(deps) {
         return true;
       }
       if (resolution.state === 'ready') {
+        // A ready record a GitHub hold kept unconsumed (UI-aui8 §3.2) waits
+        // for the hold's own rejudge; the driver's own event would only
+        // re-read GitHub in a closed loop.
+        if (isGithubHold(entry.hold)) {
+          continue;
+        }
         return (
           lineage.state !== 'terminal' ||
           q.auto_merge === true ||
@@ -1502,10 +1996,14 @@ export function createMergeQueue(deps) {
    * answer — charges the session, because wrongly forgiving calls sessions
    * forever while wrongly charging only hands the item to a person.
    *
+   * A containment fetch that could not reach GitHub charges nothing (UI-aui8
+   * §3.2): it answers `unreachable`, and the caller holds the item without
+   * consuming the resolution.
+   *
    * @param {any} probe
    * @param {any} resolution
    * @param {string} subject_bead_id
-   * @returns {Promise<'session'|'rebase'|'none'>}
+   * @returns {Promise<'session'|'rebase'|'none'|'unreachable'>}
    */
   async function resolutionCharge(probe, resolution, subject_bead_id) {
     if (!probe.ok) {
@@ -1536,7 +2034,7 @@ export function createMergeQueue(deps) {
     if (typeof deps.baseContained !== 'function') {
       return 'session';
     }
-    /** @type {'contained'|'not_contained'|null} */
+    /** @type {'contained'|'not_contained'|'unreachable'|null} */
     let contained = null;
     try {
       contained = await deps.baseContained(subject_bead_id, {
@@ -1551,6 +2049,9 @@ export function createMergeQueue(deps) {
         err
       );
       contained = null;
+    }
+    if (contained === 'unreachable') {
+      return 'unreachable';
     }
     return contained === 'not_contained' ? 'rebase' : 'session';
   }
@@ -1596,16 +2097,34 @@ export function createMergeQueue(deps) {
    * restart on every such flip and hold the head forever; the item's clock
    * bounds the whole state no matter how many times it re-enters.
    *
+   * A deadline whose LAST observation failed transiently is not an OPEN PR
+   * (UI-aui8 §3.5): it answers `github_unreachable`, and `confirm` carries
+   * when the wait first failed so the hold can start there. A last
+   * observation that failed permanently keeps its class in the timeout
+   * (§3.6).
+   *
    * @param {string} queue_bead_id
    * @param {string} subject_bead_id
    * @param {number} deadline
-   * @returns {Promise<'merged'|'pr_closed_unmerged'|'merge_unconfirmed_timeout'|'gone'|'stopped'>}
+   * @param {UnconfirmedGithubWait} [confirm] - The item's GitHub
+   * observation record, shared across re-entries like the deadline.
+   * @returns {Promise<'merged'|'pr_closed_unmerged'|'merge_unconfirmed_timeout'|`merge_unconfirmed_timeout:${string}`|'github_unreachable'|'gone'|'stopped'>}
    */
-  async function watchUnconfirmed(queue_bead_id, subject_bead_id, deadline) {
+  async function watchUnconfirmed(
+    queue_bead_id,
+    subject_bead_id,
+    deadline,
+    confirm = newUnconfirmedGithubWait()
+  ) {
     while (!stopped) {
       const left = deadline - now();
       if (left <= 0) {
-        return 'merge_unconfirmed_timeout';
+        if (confirm.last_class === null) {
+          return 'merge_unconfirmed_timeout';
+        }
+        return isTransientGithubFailure(confirm.last_class)
+          ? GITHUB_UNREACHABLE
+          : `merge_unconfirmed_timeout:${confirm.last_class}`;
       }
       await sleepOrWake(Math.min(unconfirmedPollMs(), left));
       if (stopped) {
@@ -1639,8 +2158,39 @@ export function createMergeQueue(deps) {
       // OPEN, or an unreadable observation: keep waiting. An observation error
       // is never promoted to a verdict here — the same fail-closed rule the
       // merge gate runs on.
+      noteUnconfirmedObservation(confirm, observed?.failure_class);
     }
     return 'stopped';
+  }
+
+  /**
+   * @returns {UnconfirmedGithubWait}
+   */
+  function newUnconfirmedGithubWait() {
+    return { first_transient_at: null, last_class: null };
+  }
+
+  /**
+   * Record one post-merge observation's GitHub outcome (UI-aui8 §3.5, §3.6):
+   * a GitHub failure keeps its class, and a transient one, the first time,
+   * its moment; any other observation means the last one was not a GitHub
+   * failure.
+   *
+   * @param {UnconfirmedGithubWait} confirm
+   * @param {unknown} failure_class
+   */
+  function noteUnconfirmedObservation(confirm, failure_class) {
+    if (!Object.hasOwn(GITHUB_FAILURE_CLASS_LABELS, String(failure_class))) {
+      confirm.last_class = null;
+      return;
+    }
+    confirm.last_class = String(failure_class);
+    if (
+      isTransientGithubFailure(failure_class) &&
+      confirm.first_transient_at === null
+    ) {
+      confirm.first_transient_at = now();
+    }
   }
 
   /**
@@ -1703,9 +2253,11 @@ export function createMergeQueue(deps) {
 
   /**
    * @param {string} bead_id
+   * @param {string} [queue_bead_id] - The queue item this merge runs for, when
+   * it is not the subject itself.
    * @returns {Promise<MergeClickResult>}
    */
-  async function runMerge(bead_id) {
+  async function runMerge(bead_id, queue_bead_id = bead_id) {
     // BEFORE the effect: every exit below belongs to this one attempt, and an
     // id minted after the fact could not tell a replay from a new try.
     const attempt_seq = nextMergeAttemptSeq(bead_id);
@@ -1716,8 +2268,19 @@ export function createMergeQueue(deps) {
         reason: 'snapshot_unreadable'
       });
     }
+    // A connection-wait rejudge never re-runs a cleanup that already failed
+    // (UI-aui8 §3.3): that record belongs to its banner and a person.
+    const held_hold = queuedEntry(queue_bead_id)?.hold;
     try {
-      return recordMergeStep(bead_id, attempt_seq, await deps.merge(bead_id));
+      const result = isGithubWaitHold(held_hold)
+        ? await deps.merge(bead_id, { retry_failed_cleanup: false })
+        : await deps.merge(bead_id);
+      // A GitHub hold's rejudge that found the poller's cleanup in flight
+      // decided nothing; the hold's own lines are its history (§3.9).
+      if (isGithubHold(held_hold) && result?.reason === 'action_in_flight') {
+        return result;
+      }
+      return recordMergeStep(bead_id, attempt_seq, result);
     } catch (err) {
       log('merge queue merge() threw for %s: %o', bead_id, err);
       return recordMergeStep(bead_id, attempt_seq, {
@@ -1736,7 +2299,7 @@ export function createMergeQueue(deps) {
    * The result of the append is ignored: a merge that happened must never be
    * reported as refused because its history line was lost.
    *
-   * @template {{ ok?: boolean, action?: string, reason?: string|null }} T
+   * @template {{ ok?: boolean, action?: string, reason?: string|null, head_unread?: boolean }} T
    * @param {string} bead_id
    * @param {string} attempt_seq - This merge attempt's id, from {@link
    * nextMergeAttemptSeq}.
@@ -1751,6 +2314,60 @@ export function createMergeQueue(deps) {
     const label = MERGE_STEP_LABELS[action];
     if (label === undefined) {
       return result;
+    }
+    const reason = typeof result?.reason === 'string' ? result.reason : null;
+    // A GitHub hold writes its own start and end lines (UI-aui8 §3.9); the
+    // attempts that only failed to reach GitHub add none of their own.
+    if (reason === GITHUB_UNREACHABLE || result?.head_unread === true) {
+      return result;
+    }
+    // An unconfirmed merge's line waits for its confirm wait to end: a wait
+    // that ends on the connection wait has only the hold's lines (§3.9).
+    if (action === 'merge_unconfirmed') {
+      deferred_merge_steps.set(bead_id, { attempt_seq, result });
+      return result;
+    }
+    appendMergeStep(bead_id, attempt_seq, result);
+    return result;
+  }
+
+  /**
+   * The unconfirmed merge attempt per subject bead whose line waits for its
+   * confirm wait to end (UI-aui8 §3.9).
+   *
+   * @type {Map<string, { attempt_seq: string, result: { action?: string, reason?: string|null } }>}
+   */
+  const deferred_merge_steps = new Map();
+
+  /**
+   * End the confirm wait of one subject's unconfirmed merge attempt: write its
+   * deferred line when the wait reached a disposition other than the
+   * connection wait or a stop, and drop it either way.
+   *
+   * @param {string} bead_id - The subject bead.
+   * @param {string} verdict - How {@link watchUnconfirmed} ended.
+   */
+  function settleDeferredMergeStep(bead_id, verdict) {
+    const deferred = deferred_merge_steps.get(bead_id);
+    deferred_merge_steps.delete(bead_id);
+    if (!deferred || verdict === GITHUB_UNREACHABLE || verdict === 'stopped') {
+      return;
+    }
+    appendMergeStep(bead_id, deferred.attempt_seq, deferred.result);
+  }
+
+  /**
+   * Append one merge attempt's line (§5). The result of the append is
+   * ignored, as in {@link recordMergeStep}.
+   *
+   * @param {string} bead_id
+   * @param {string} attempt_seq
+   * @param {{ action?: string, reason?: string|null }} result
+   */
+  function appendMergeStep(bead_id, attempt_seq, result) {
+    const label = MERGE_STEP_LABELS[String(result?.action ?? '')];
+    if (!deps.timeline || label === undefined) {
+      return;
     }
     const reason = typeof result?.reason === 'string' ? result.reason : null;
     deps.timeline.append({
@@ -1768,7 +2385,28 @@ export function createMergeQueue(deps) {
           ? `머지 큐 · ${label}`
           : `머지 큐 · ${label} — ${failureTokenSummary(reason) ?? reason}`
     });
-    return result;
+  }
+
+  /**
+   * The connection-wait refusal of one probe (UI-aui8 §3.2).
+   *
+   * @param {any} probe
+   * @param {string} wait_point
+   * @returns {MergeClickResult}
+   */
+  function githubUnreachable(probe, wait_point) {
+    return {
+      ok: false,
+      action: 'refused',
+      reason: GITHUB_UNREACHABLE,
+      failure_class: isTransientGithubFailure(probe.failure_class)
+        ? probe.failure_class
+        : 'network',
+      wait_point: /** @type {any} */ (wait_point),
+      head_sha: probe.head_sha || null,
+      base_ref: probe.base_ref || null,
+      head_ref: probe.head_ref || null
+    };
   }
 
   /**
@@ -1800,7 +2438,7 @@ export function createMergeQueue(deps) {
       ) {
         return null;
       }
-      return runMerge(subject_bead_id);
+      return runMerge(subject_bead_id, queue_bead_id);
     }
     /** @type {any} */
     let probe;
@@ -1826,15 +2464,40 @@ export function createMergeQueue(deps) {
       halted = true;
       return null;
     }
+    // A probe that could not reach GitHub decides nothing (UI-aui8 §3.2): the
+    // ready resolution stays unconsumed, so the wait costs no round.
+    if (!probe.ok && probe.reason === GITHUB_UNREACHABLE) {
+      return githubUnreachable(
+        probe,
+        ready_attempt_id ? 'resolution' : (probe.wait_point ?? 'gate_read')
+      );
+    }
     const before = queuedEntry(queue_bead_id);
-    /** @type {'session'|'rebase'|'none'} */
     const charge = ready_attempt_id
       ? await resolutionCharge(probe, before?.resolution, subject_bead_id)
       : 'none';
+    if (charge === 'unreachable') {
+      return githubUnreachable(probe, 'resolution');
+    }
     const effective_rounds =
       (before?.resolution_rounds ?? round_cap) + (charge === 'session' ? 1 : 0);
     const effective_rebase =
       (before?.rebase_rounds ?? rebase_cap) + (charge === 'rebase' ? 1 : 0);
+    const dispatch_refusal =
+      probe.ok && probe.kind === 'dirty'
+        ? conflictDispatchRefusal(probe, effective_rounds, effective_rebase)
+        : null;
+    // A resolver dispatch re-probes before its effect, so a ready resolution
+    // it would start from is consumed only once THAT read decided (UI-aui8
+    // §3.2); every other disposition was decided by the probe above.
+    if (probe.ok && probe.kind === 'dirty' && dispatch_refusal === null) {
+      return dispatchLatestConflict(
+        queue_bead_id,
+        subject_bead_id,
+        probe,
+        ready_attempt_id ? { attempt_id: ready_attempt_id, charge } : null
+      );
+    }
     if (
       ready_attempt_id &&
       !consumeResolution(queue_bead_id, ready_attempt_id, charge)
@@ -1848,7 +2511,9 @@ export function createMergeQueue(deps) {
         reason: probe.reason || 'mergeability_probe_blocked',
         head_sha: probe.head_sha || null,
         base_ref: probe.base_ref || null,
-        head_ref: probe.head_ref || null
+        head_ref: probe.head_ref || null,
+        ...(probe.failure_class ? { failure_class: probe.failure_class } : {}),
+        ...(probe.head_unread === true ? { head_unread: true } : {})
       };
     }
     if (probe.kind !== 'dirty') {
@@ -1856,8 +2521,20 @@ export function createMergeQueue(deps) {
       // re-runs it against a fresh pin, and a verdict it refuses on comes back
       // as a `refused` reason this item is HELD on — never a second, narrower
       // freshness rule of the queue's own.
-      return runMerge(subject_bead_id);
+      return runMerge(subject_bead_id, queue_bead_id);
     }
+    return dispatch_refusal;
+  }
+
+  /**
+   * Why a DIRTY probe cannot start a resolver, or null when it can.
+   *
+   * @param {any} probe
+   * @param {number} effective_rounds
+   * @param {number} effective_rebase
+   * @returns {MergeClickResult|null}
+   */
+  function conflictDispatchRefusal(probe, effective_rounds, effective_rebase) {
     if (effective_rounds >= round_cap) {
       return {
         ok: false,
@@ -1886,9 +2563,48 @@ export function createMergeQueue(deps) {
         head_sha: probe.head_sha || null
       };
     }
+    return null;
+  }
+
+  /**
+   * Start a resolver for the DIRTY identity the probe approved. A ready
+   * resolution is consumed through `decided` once the dispatch re-probe chose
+   * the effect and before the next record binds (UI-aui8 §3.2); a re-probe
+   * that could not reach GitHub leaves it ready and holds at `resolution`,
+   * and any other refusal consumes it afterwards.
+   *
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
+   * @param {any} probe
+   * @param {{ attempt_id: string, charge: 'session'|'rebase'|'none' }|null} ready
+   * @returns {Promise<MergeClickResult|null>}
+   */
+  async function dispatchLatestConflict(
+    queue_bead_id,
+    subject_bead_id,
+    probe,
+    ready
+  ) {
+    let consumed = ready === null;
+    let consume_failed = false;
+    const decided = () => {
+      if (!consumed && ready) {
+        consumed = true;
+        consume_failed = !consumeResolution(
+          queue_bead_id,
+          ready.attempt_id,
+          ready.charge
+        );
+      }
+      return !consume_failed;
+    };
     const identity = dispatchIdentity(probe);
+    /** @type {MergeClickResult} */
+    let result;
     try {
-      return await deps.dispatchConflict(
+      result = await /** @type {NonNullable<typeof deps.dispatchConflict>} */ (
+        deps.dispatchConflict
+      )(
         subject_bead_id,
         {
           head_sha: probe.head_sha,
@@ -1901,7 +2617,8 @@ export function createMergeQueue(deps) {
           manual_authority: manualContinuation(queue_bead_id),
           ...identity
         },
-        continuationInput(queue_bead_id, subject_bead_id)
+        continuationInput(queue_bead_id, subject_bead_id),
+        decided
       );
     } catch (err) {
       log(
@@ -1909,12 +2626,25 @@ export function createMergeQueue(deps) {
         subject_bead_id,
         err
       );
-      return {
+      result = {
         ok: false,
         action: 'conflict_resolution',
         reason: 'resolution_dispatch_error'
       };
     }
+    if (consume_failed) {
+      return null;
+    }
+    if (result.reason === GITHUB_UNREACHABLE) {
+      return githubUnreachable(
+        result.head_sha ? result : { ...result, head_sha: probe.head_sha },
+        'resolution'
+      );
+    }
+    if (!decided()) {
+      return null;
+    }
+    return result;
   }
 
   /**
@@ -1936,13 +2666,33 @@ export function createMergeQueue(deps) {
     }
     if (queuedEntry(root_bead_id)) {
       const intent = completionIntent(root_bead_id);
-      halted = true;
-      halted_on_completion = {
-        bead_id: root_bead_id,
-        phase: typeof intent?.phase === 'string' ? intent.phase : 'unknown'
-      };
+      // A root the intent kept on its connection wait yields this pass, as a
+      // gating root on a GitHub hold does (UI-aui8 §3.3, §3.7).
+      if (keptGithubWait(root_bead_id)) {
+        held_this_pass.add(root_bead_id);
+      } else {
+        halted = true;
+        halted_on_completion = {
+          bead_id: root_bead_id,
+          phase: typeof intent?.phase === 'string' ? intent.phase : 'unknown'
+        };
+      }
     }
     notify();
+  }
+
+  /**
+   * Whether the completion intent left this root `gating` on a GitHub hold
+   * (UI-aui8 §3.7), the wait it keeps until its next observation.
+   *
+   * @param {string} root_bead_id
+   * @returns {boolean}
+   */
+  function keptGithubWait(root_bead_id) {
+    return (
+      completionIntent(root_bead_id)?.phase === 'gating' &&
+      githubHoldOf(root_bead_id) !== null
+    );
   }
 
   /**
@@ -1954,6 +2704,13 @@ export function createMergeQueue(deps) {
    */
   async function processCompletionItem(root_bead_id, intent) {
     if (intent.phase !== 'merging') {
+      // A root whose observation stands on a GitHub hold keeps its slot and
+      // yields this pass (UI-aui8 §3.3, §3.7): the completion intent's next
+      // observation judges it, and the items behind it keep merging.
+      if (githubHoldOf(root_bead_id)) {
+        held_this_pass.add(root_bead_id);
+        return;
+      }
       halted = true;
       halted_on_completion = {
         bead_id: root_bead_id,
@@ -1972,8 +2729,26 @@ export function createMergeQueue(deps) {
     }
     /** @type {number|null} */
     let unconfirmed_deadline = null;
+    // The completion root's GitHub hold lives on its queue entry, shared with
+    // the completion intent (UI-aui8 §3.7), and ends like `processItem`'s:
+    // once, at a final disposition of the turn.
+    let started_github_hold = githubHoldOf(root_bead_id);
+    // False when the release failed: the drain ends, so the caller writes
+    // no transition after it (UI-aui8 §3.3).
+    const settleGithub = () => {
+      if (!settleGithubHold(root_bead_id, started_github_hold)) {
+        return false;
+      }
+      started_github_hold = null;
+      return true;
+    };
+    const confirm = newUnconfirmedGithubWait();
 
-    while (!stopped && !halted && queuedEntry(root_bead_id)) {
+    while (!stopped && !halted) {
+      if (!queuedEntry(root_bead_id)) {
+        settleGithub();
+        return;
+      }
       if (continuationRequired(root_bead_id, subject_bead_id)) {
         halted = true;
         notify();
@@ -1998,6 +2773,9 @@ export function createMergeQueue(deps) {
         return;
       }
       if (result.continuation_mismatch) {
+        if (!settleGithub()) {
+          return;
+        }
         requireContinuation(
           root_bead_id,
           subject_bead_id,
@@ -2006,7 +2784,41 @@ export function createMergeQueue(deps) {
         return;
       }
       const action = result ? result.action : null;
+      // A transient failure of the merge turn is the root's connection wait,
+      // not a completion failure (UI-aui8 §3.7): no handoff, so the intent
+      // keeps its phase and its execution record.
+      if (result.reason === GITHUB_UNREACHABLE) {
+        holdOnGithub(root_bead_id, {
+          reason: GITHUB_UNREACHABLE,
+          head_sha: result.head_sha ?? null,
+          failure_class: result.failure_class ?? null,
+          wait_point: result.wait_point ?? null
+        });
+        return;
+      }
+      // A permanent failure that never read the head holds the root alone,
+      // as `processItem` holds a plain item (UI-aui8 §3.6): no handoff, so
+      // the drain goes on past it.
+      if (result.head_unread === true) {
+        holdOnGithub(root_bead_id, {
+          reason: GITHUB_HEAD_UNREADABLE,
+          failure_class: result.failure_class ?? 'unknown',
+          wait_point: result.wait_point ?? 'gate_read'
+        });
+        return;
+      }
+      if (
+        action === 'refused' &&
+        result.reason === 'action_in_flight' &&
+        started_github_hold
+      ) {
+        held_this_pass.add(root_bead_id);
+        return;
+      }
       if (action === 'cleanup_pending') {
+        if (!settleGithub()) {
+          return;
+        }
         deps.store.dequeueMerge(workspace, root_bead_id);
         void requestDrain();
         return;
@@ -2016,10 +2828,23 @@ export function createMergeQueue(deps) {
         action === 'updated_and_merged' ||
         action === 'already_merged'
       ) {
+        // The root's own merge hands its wait to the intent, which ends it at
+        // the cleanup handoff or keeps it — `since` and notification mark
+        // included — when the read that pins the cleanup fails again
+        // (UI-aui8 §3.3, §3.7). A child subject's merge ends it here.
+        if (subject_bead_id !== root_bead_id && !settleGithub()) {
+          return;
+        }
         await handoffCompletion(root_bead_id, subject_bead_id, result);
+        if (!keptGithubWait(root_bead_id)) {
+          settleGithub();
+        }
         return;
       }
       if (action === 'conflict_resolution') {
+        if (!settleGithub()) {
+          return;
+        }
         if (!result.ok) {
           if (result.reason === 'worker_sessions_busy') {
             halted = true;
@@ -2074,16 +2899,40 @@ export function createMergeQueue(deps) {
         if (unconfirmed_deadline === null) {
           unconfirmed_deadline = now() + unconfirmedWaitMs();
         }
+        if (confirm.first_transient_at === null) {
+          noteUnconfirmedObservation(confirm, result.failure_class);
+        }
         const verdict = await watchUnconfirmed(
           root_bead_id,
           subject_bead_id,
-          unconfirmed_deadline
+          unconfirmed_deadline,
+          confirm
         );
-        if (verdict === 'stopped' || verdict === 'gone') {
+        settleDeferredMergeStep(subject_bead_id, verdict);
+        if (verdict === 'stopped') {
+          return;
+        }
+        if (verdict === 'gone') {
+          settleGithub();
           return;
         }
         if (verdict === 'merged') {
           continue;
+        }
+        if (verdict === GITHUB_UNREACHABLE) {
+          // The deadline disposition of a confirm that only failed to reach
+          // GitHub stays on the same wait (UI-aui8 §3.5, §3.7).
+          holdOnGithub(root_bead_id, {
+            reason: GITHUB_UNREACHABLE,
+            head_sha: result.head_sha ?? null,
+            failure_class: confirm.last_class,
+            wait_point: 'merge_confirm',
+            since: confirm.first_transient_at
+          });
+          return;
+        }
+        if (!settleGithub()) {
+          return;
         }
         await handoffCompletion(root_bead_id, subject_bead_id, {
           ok: false,
@@ -2106,6 +2955,13 @@ export function createMergeQueue(deps) {
           snapshotFence(snapshot()).reason || 'snapshot_unreadable';
         notify();
         return;
+      }
+      // A moved candidate goes back to the intent, which re-gates it and
+      // counts the move (§3.7); the hold, if any, is not ended by it.
+      if (action !== 'refused' || result.reason !== VERIFY_CANDIDATE_MOVED) {
+        if (!settleGithub()) {
+          return;
+        }
       }
       await handoffCompletion(root_bead_id, subject_bead_id, result);
       return;
@@ -2195,9 +3051,30 @@ export function createMergeQueue(deps) {
     // An external registry race gets one refresh/re-probe per item entry. The
     // flag resets only when a new click/kick enters this item (UI-vkk8 §1).
     let registry_refresh_attempted = false;
+    // Consecutive pre-merge rechecks this turn that saw the candidate move
+    // (UI-aui8 §3.4); any other outcome resets the count.
+    let moved_streak = 0;
+    // The GitHub hold this turn started under (UI-aui8 §3.3). It survives
+    // every re-gate of the turn and ends only at a final disposition, once.
+    let started_github_hold = githubHoldOf(bead_id);
+    // False when the release failed: the drain ends, so the caller writes
+    // no transition after it (UI-aui8 §3.3).
+    const settleGithub = () => {
+      if (!settleGithubHold(bead_id, started_github_hold)) {
+        return false;
+      }
+      started_github_hold = null;
+      return true;
+    };
+    // The post-merge confirm wait's GitHub record, item-scoped like the
+    // deadline (UI-aui8 §3.5).
+    const confirm = newUnconfirmedGithubWait();
 
     while (!stopped && !halted) {
       if (!queuedEntry(bead_id)) {
+        // The item left under this turn (a poller cleanup took it): the hold
+        // it stood on is over.
+        settleGithub();
         return;
       }
       if (continuationRequired(bead_id, bead_id)) {
@@ -2220,6 +3097,7 @@ export function createMergeQueue(deps) {
       // as any other commit, so there is no queue-owned mutation voucher to
       // carry and no `resolver-self:` receipt to demand.
       const verified_operation = verifiedOperation(bead_id);
+      const lost_base_update = githubHoldOf(bead_id)?.base_update ?? null;
       const result = await runLatestMerge(
         bead_id,
         bead_id,
@@ -2229,10 +3107,77 @@ export function createMergeQueue(deps) {
         return;
       }
       if (result.continuation_mismatch) {
+        if (!settleGithub()) {
+          return;
+        }
         requireContinuation(bead_id, bead_id, result.continuation_mismatch);
         return;
       }
       const action = result ? result.action : null;
+
+      // A transient GitHub failure anywhere in the turn is the connection
+      // wait (UI-aui8 §3.3): the item keeps its slot, nothing is failed,
+      // excluded or dequeued, and the drain moves on behind it.
+      if (result.reason === GITHUB_UNREACHABLE) {
+        holdOnGithub(bead_id, {
+          reason: GITHUB_UNREACHABLE,
+          head_sha: result.head_sha ?? null,
+          failure_class: result.failure_class ?? null,
+          wait_point: result.wait_point ?? null
+        });
+        return;
+      }
+      // A permanent failure that never read the head cannot pin an exclusion
+      // and must not halt the drain on a head it never saw (UI-aui8 §3.6).
+      if (result.head_unread === true) {
+        holdOnGithub(bead_id, {
+          reason: GITHUB_HEAD_UNREADABLE,
+          failure_class: result.failure_class ?? 'unknown',
+          wait_point: result.wait_point ?? 'gate_read'
+        });
+        return;
+      }
+      // A base update whose answer was lost is decided by this observation
+      // before any new one is sent (UI-aui8 §3.2). A moved head may be the
+      // author's push rather than the update, so it earns no exemption: a PR
+      // still BEHIND gets one update pinned to the head read now, and
+      // `expectedHeadOid` refuses it if the lost one moved the head first.
+      if (lost_base_update) {
+        const decided = decideLostBaseUpdate(bead_id, lost_base_update, result);
+        if (decided === 'failed') {
+          return;
+        }
+      }
+      // The poller's own cleanup of a MERGED PR holds the bead in flight: the
+      // connection-wait rejudge accepts it rather than run a second one
+      // (UI-aui8 §3.3). The next pass sees the item gone or decides again.
+      if (
+        action === 'refused' &&
+        result.reason === 'action_in_flight' &&
+        started_github_hold
+      ) {
+        held_this_pass.add(bead_id);
+        return;
+      }
+      // A candidate that moved under the pre-merge recheck is re-gated in the
+      // same turn, like `mergeability_changed`; the third consecutive move
+      // ends the item, pinned to the head that third recheck saw (§3.4).
+      if (action === 'refused' && result.reason === VERIFY_CANDIDATE_MOVED) {
+        moved_streak += 1;
+        if (moved_streak < MOVED_CANDIDATE_LIMIT) {
+          continue;
+        }
+        if (!settleGithub()) {
+          return;
+        }
+        failAndDequeue(
+          bead_id,
+          VERIFY_CANDIDATE_MOVED,
+          result.head_sha ?? null
+        );
+        return;
+      }
+      moved_streak = 0;
 
       // The gate's review verdicts HOLD (UI-d7fy §3.3): authority stays, the
       // item keeps its slot, nothing is dequeued or terminalized, and the rest
@@ -2240,6 +3185,9 @@ export function createMergeQueue(deps) {
       // gate is no longer holding on a review, so a stale hold is released
       // before this turn decides anything else.
       if (action === 'refused' && HOLD_REASONS.has(String(result.reason))) {
+        if (!settleGithub()) {
+          return;
+        }
         await holdEntry(
           bead_id,
           String(result.reason),
@@ -2252,18 +3200,27 @@ export function createMergeQueue(deps) {
         action === 'refused' &&
         foreignHandoffCauseOf(result.reason) !== null
       ) {
+        if (!settleGithub()) {
+          return;
+        }
         holdForeignHandoff(bead_id, String(result.reason), result.head_sha);
         return;
       }
       releaseHold(bead_id);
 
       if (action === 'cleanup_pending') {
+        if (!settleGithub()) {
+          return;
+        }
         deps.store.dequeueMerge(workspace, bead_id);
         void requestDrain();
         return;
       }
 
       if (action === 'verify_blocked') {
+        if (!settleGithub()) {
+          return;
+        }
         fail(bead_id, result.reason || 'verify_failed');
         halted = true;
         halted_on_verify = { bead_id, operation_id: verified_operation };
@@ -2277,6 +3234,9 @@ export function createMergeQueue(deps) {
         action === 'updated_and_merged' ||
         action === 'already_merged'
       ) {
+        if (!settleGithub()) {
+          return;
+        }
         if (!result.ok) {
           // The merge LANDED; only the cleanup stopped, and that is already a
           // durable `cleanup_failed` record with its own banner. The item is
@@ -2295,6 +3255,9 @@ export function createMergeQueue(deps) {
       }
 
       if (action === 'conflict_resolution') {
+        if (!settleGithub()) {
+          return;
+        }
         if (!result.ok) {
           if (result.reason === 'worker_sessions_busy') {
             halted = true;
@@ -2342,12 +3305,22 @@ export function createMergeQueue(deps) {
         if (unconfirmed_deadline === null) {
           unconfirmed_deadline = now() + unconfirmedWaitMs();
         }
+        if (confirm.first_transient_at === null) {
+          // The command's own post-merge read may already have failed.
+          noteUnconfirmedObservation(confirm, result.failure_class);
+        }
         const verdict = await watchUnconfirmed(
           bead_id,
           bead_id,
-          unconfirmed_deadline
+          unconfirmed_deadline,
+          confirm
         );
-        if (verdict === 'stopped' || verdict === 'gone') {
+        settleDeferredMergeStep(bead_id, verdict);
+        if (verdict === 'stopped') {
+          return;
+        }
+        if (verdict === 'gone') {
+          settleGithub();
           return;
         }
         if (verdict === 'merged') {
@@ -2355,7 +3328,34 @@ export function createMergeQueue(deps) {
           // `already_merged` arm — one cleanup implementation, as everywhere.
           continue;
         }
-        failAndDequeue(bead_id, verdict);
+        if (verdict === GITHUB_UNREACHABLE) {
+          // The command succeeded and only the confirmation could not reach
+          // GitHub (UI-aui8 §3.5): not an exclusion. The hold starts when this
+          // wait first failed, and the turn yields.
+          holdOnGithub(bead_id, {
+            reason: GITHUB_UNREACHABLE,
+            head_sha: result.head_sha ?? null,
+            failure_class: confirm.last_class,
+            wait_point: 'merge_confirm',
+            since: confirm.first_transient_at
+          });
+          return;
+        }
+        if (!settleGithub()) {
+          return;
+        }
+        // A timeout whose last read failed permanently pins the exclusion to
+        // the head the merge ran on (§3.6).
+        failAndDequeue(
+          bead_id,
+          verdict,
+          verdict.startsWith('merge_unconfirmed_timeout:')
+            ? permanentGithubHead(
+                { failure_class: confirm.last_class },
+                result.head_sha
+              )
+            : null
+        );
         return;
       }
 
@@ -2380,7 +3380,7 @@ export function createMergeQueue(deps) {
         // carry stamp to vouch for it — the prior receipt is an ancestor of the
         // updated head, so the merge gate reads it as current (UI-vzyh §2).
         base_update_attempted = true;
-        /** @type {{ ok: boolean, reason?: string|null, result_head_sha?: string|null }} */
+        /** @type {{ ok: boolean, reason?: string|null, result_head_sha?: string|null, failure_class?: string }} */
         let updated = {
           ok: false,
           reason: 'update_branch_failed',
@@ -2395,7 +3395,29 @@ export function createMergeQueue(deps) {
           notify();
           continue;
         }
-        failAndDequeue(bead_id, updated.reason || 'update_branch_failed');
+        if (isTransientGithubFailure(updated.failure_class)) {
+          // The update never reached GitHub, or its answer never came back
+          // (UI-aui8 §3.2): the hold keeps the request, and the next
+          // observation decides whether it applied before any new one.
+          holdOnGithub(bead_id, {
+            reason: GITHUB_UNREACHABLE,
+            head_sha: result.head_sha ?? null,
+            failure_class: updated.failure_class ?? null,
+            wait_point: 'resolution',
+            base_update: result.head_sha
+              ? { head_sha: result.head_sha, base_ref: result.base_ref ?? null }
+              : null
+          });
+          return;
+        }
+        if (!settleGithub()) {
+          return;
+        }
+        failAndDequeue(
+          bead_id,
+          updated.reason || 'update_branch_failed',
+          permanentGithubHead(updated, result.head_sha)
+        );
         return;
       }
 
@@ -2420,6 +3442,9 @@ export function createMergeQueue(deps) {
         // Only an observed row may keep the queue head: its next poll can end
         // the halt. An unobserved row must leave so it cannot freeze every PR
         // behind it forever (UI-wwby §3, UI-vkk8 §1 correction).
+        if (!settleGithub()) {
+          return;
+        }
         if (pollerObserves(bead_id)) {
           fail(bead_id, 'not_in_pr_wait');
           halted = true;
@@ -2431,7 +3456,14 @@ export function createMergeQueue(deps) {
         return;
       }
 
-      failAndDequeue(bead_id, (result && result.reason) || 'refused');
+      if (!settleGithub()) {
+        return;
+      }
+      failAndDequeue(
+        bead_id,
+        (result && result.reason) || 'refused',
+        permanentGithubHead(result, result.head_sha)
+      );
       return;
     }
   }

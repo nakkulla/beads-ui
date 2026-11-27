@@ -14,6 +14,17 @@ import {
   latestImplementationAttempts
 } from '../../utils/active-attempts.js';
 import { FOREIGN_HANDOFF_SENTENCES } from '../../utils/failure-sentences.js';
+import {
+  GITHUB_FAILURE_CLASS_LABELS,
+  GITHUB_FAILURE_PHRASES,
+  GITHUB_UNREACHABLE,
+  GITHUB_WAIT_LABEL,
+  GITHUB_WAIT_POINT_LABELS,
+  githubFailurePhrase,
+  githubFailurePoint,
+  isGithubHold,
+  isGithubWaitHold
+} from '../../utils/github-wait.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
 import { failureSentence } from './failure-labels.js';
@@ -124,6 +135,12 @@ export function mergeFailureText(reason) {
     const code = reason.slice('receipt_unbacked:'.length);
     return `실행 영수증 자동 검증 불가(${code}) — [머지] 클릭으로 수동 진행 가능`;
   }
+  // A permanent GitHub failure or a moved candidate reads by its class phrase
+  // (UI-aui8 §3.9); the raw reason and its failure point stay in the tooltip.
+  const github = githubFailurePhrase(reason);
+  if (github !== null) {
+    return github;
+  }
   switch (reason) {
     case 'not_in_pr_wait':
       return 'PR 대기 상태 동기화 실패';
@@ -163,6 +180,85 @@ export function mergeFailureText(reason) {
     default:
       return reason;
   }
+}
+
+/**
+ * Human text for a rejected manual merge-queue placement — the one notice
+ * both the Worker tab and the monitor tab raise for a refused `[머지]` click
+ * (UI-aui8 §3.10).
+ *
+ * @param {unknown} reason
+ * @param {unknown} [failure_class] - The GitHub failure class the reply
+ * carries with a GitHub refusal.
+ * @returns {string}
+ */
+export function mergeQueueRefusalText(reason, failure_class = null) {
+  if (reason === 'lane_occupied') {
+    return '실행 레인에 남아 있어 머지 대상이 아닙니다';
+  }
+  if (reason === 'shelved') {
+    return '보관된 PR이라 머지 큐에 넣지 않습니다 — [보관 해제] 뒤 다시 누르세요';
+  }
+  if (reason === GITHUB_UNREACHABLE) {
+    return 'GitHub에 연결되지 않아 머지 큐에 넣지 못했습니다 — 연결이 돌아오면 다시 눌러 주세요';
+  }
+  const github = githubFailurePhrase(reason, failure_class);
+  if (github !== null) {
+    return `머지 큐에 넣지 못했습니다 — ${github} (${String(reason)})`;
+  }
+  const base = '머지 큐에 넣지 못했습니다 (이미 대기 중이거나 대상 아님)';
+  return typeof reason === 'string' && reason.length > 0
+    ? `${base}: ${reason}`
+    : base;
+}
+
+/**
+ * The tooltip of an exclusion badge: the raw reason, after the failure point
+ * of a GitHub exclusion (UI-aui8 §3.9).
+ *
+ * @param {string} reason
+ * @returns {string}
+ */
+function exclusionTitle(reason) {
+  const point = githubFailurePoint(reason);
+  return point === null
+    ? reason
+    : `마지막 실패 지점: ${GITHUB_WAIT_POINT_LABELS[point]}\n${reason}`;
+}
+
+/**
+ * The status badge of a merge-queue GitHub hold (UI-aui8 §3.9). The connection
+ * wait is a live wait with no warning colour; the permanent hold is a warning
+ * named by its class phrase. The tooltip says when the hold started, where it
+ * last failed, and the failure class.
+ *
+ * @param {Record<string, any>} hold - A merge-queue entry's GitHub hold.
+ * @returns {{ label: string, title: string, live: boolean, alert: boolean }}
+ */
+function githubHoldView(hold) {
+  const waiting = isGithubWaitHold(hold);
+  const since = formatTimestampLocal(hold.since);
+  const point = String(hold.wait_point);
+  const failure_class = String(hold.failure_class);
+  return {
+    label: waiting
+      ? GITHUB_WAIT_LABEL
+      : githubFailurePhrase(hold.reason, hold.failure_class) ||
+        GITHUB_FAILURE_PHRASES.unknown,
+    title: [
+      since ? `${waiting ? '대기' : '보류'} 시작 ${since}` : '',
+      Object.hasOwn(GITHUB_WAIT_POINT_LABELS, point)
+        ? `마지막 실패 지점: ${GITHUB_WAIT_POINT_LABELS[point]}`
+        : '',
+      Object.hasOwn(GITHUB_FAILURE_CLASS_LABELS, failure_class)
+        ? `분류: ${GITHUB_FAILURE_CLASS_LABELS[failure_class]}`
+        : ''
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    live: waiting,
+    alert: !waiting
+  };
 }
 
 /**
@@ -657,6 +753,17 @@ export function prStatusBadge(input) {
         })
       : badge('머지 중', { title: input.merge_step.label, live: true });
   }
+  // A GitHub hold (UI-aui8 §3.9) ranks below 머지 중 and above every failure
+  // or exclusion: the queue keeps the slot and re-checks on its own, so an
+  // older failure fact is not the state to read now.
+  if (input.github_hold) {
+    const view = githubHoldView(input.github_hold);
+    return badge(view.label, {
+      title: view.title,
+      live: view.live,
+      alert: view.alert
+    });
+  }
   if (input.conflict_badge) {
     return badge(input.conflict_badge, {
       live: input.conflict_live === true
@@ -810,13 +917,13 @@ export function prStatusBadge(input) {
   }
   if (input.queue_failure) {
     return badge(`머지 실패 — ${mergeFailureText(input.queue_failure)}`, {
-      title: input.queue_failure,
+      title: exclusionTitle(input.queue_failure),
       alert: true
     });
   }
   if (input.auto_skip) {
     return badge(`자동 제외 — ${mergeFailureText(input.auto_skip)}`, {
-      title: input.auto_skip,
+      title: exclusionTitle(input.auto_skip),
       alert: true
     });
   }
@@ -1028,6 +1135,10 @@ function prWaitRow(
   const review_dispatch = (merge_queue && merge_queue.review_dispatch) || null;
   const auto_review_wait =
     merge_queue?.hold?.auto_review_wait === 'slot' ? 'slot' : null;
+  // The queue's GitHub hold (UI-aui8 §3.9) — the connection wait or the
+  // permanent hold — rides on the same durable row field.
+  const github_hold =
+    merge_queue && isGithubHold(merge_queue.hold) ? merge_queue.hold : null;
   // A queued row the driver will NOT carry forward on its own: a legacy entry
   // with no authority, or an automatic enrolment sitting under a global toggle
   // that is off. For both the way forward is a fresh [머지] click, which the
@@ -1192,6 +1303,7 @@ function prWaitRow(
     queueing,
     foreign_handoff,
     merge_step,
+    github_hold,
     conflict_badge,
     conflict_live: resolution?.live === true || conflict_session === 'running',
     auto_resolution,
@@ -1322,10 +1434,13 @@ function prWaitRow(
     shelve_title: shelved
       ? '보관을 풉니다 — 자동 머지가 켜져 있으면 다음 관측에서 다시 머지 대상이 됩니다'
       : '자동 머지·일괄 머지에서 이 PR을 빼고 [보관 해제]까지 둡니다 (머지 큐에 있으면 빠집니다)',
-    // 잠겨야 하는 것은 되돌릴 수 없는 머지 효과뿐이다 (UI-d7fy §5.6).
-    cancel_enabled: !queue_active && !(recovery && recovery.lock_actions),
+    // 잠겨야 하는 것은 되돌릴 수 없는 머지 효과뿐이다 (UI-d7fy §5.6). A
+    // completion root held on GitHub has yielded its turn, so no merge request
+    // of its is running and [취소] stays its one control (UI-aui8 §3.9).
+    cancel_enabled:
+      !queue_active && (!!github_hold || !(recovery && recovery.lock_actions)),
     cancel_title:
-      recovery && recovery.lock_actions
+      recovery && recovery.lock_actions && !github_hold
         ? `${recovery.badge} — 중단하려면 상단 자동 머지 중단을 사용하세요`
         : queue_active
           ? '머지 진행 중 — 취소할 수 없습니다'
