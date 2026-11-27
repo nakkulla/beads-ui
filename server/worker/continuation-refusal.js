@@ -26,7 +26,9 @@ const TRANSIENT_REASONS = new Set([
   'default_exec_preset_resolution_failed',
   'exec_restore_capture_failed',
   'attempt_prerecord_failed',
-  'guard_hook_install_failed'
+  'guard_hook_install_failed',
+  // Clears once the next `agy models` read lands after a credential change.
+  'agy_model_list_unavailable'
 ]);
 
 /** @type {ReadonlySet<string>} */
