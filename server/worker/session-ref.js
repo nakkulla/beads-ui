@@ -30,7 +30,7 @@ const log = debug('worker:session-ref');
  *
  * @typedef {Object} SessionRefEntry
  * @property {number} index
- * @property {'claude'|'codex'|'hermes'} provider
+ * @property {'claude'|'codex'|'hermes'|'agy'} provider
  * @property {string} session_id
  * @property {string} host
  */
@@ -40,7 +40,7 @@ const log = debug('worker:session-ref');
  *
  * @typedef {Object} SessionRefView
  * @property {number} index
- * @property {'claude'|'codex'|'hermes'} provider
+ * @property {'claude'|'codex'|'hermes'|'agy'} provider
  * @property {string} session_id
  * @property {string} host
  * @property {boolean} current - Last valid item of the value.
@@ -65,7 +65,7 @@ const log = debug('worker:session-ref');
  *
  * @type {RegExp}
  */
-const ITEM_RE = /^(claude|codex|hermes):([^:@;\s]+)@(\S+)$/;
+const ITEM_RE = /^(claude|codex|hermes|agy):([^:@;\s]+)@(\S+)$/;
 
 /**
  * Narrower id grammar for anything that leaves this process as a path segment
@@ -200,6 +200,38 @@ function scanCodexRollout(session_id, input) {
 }
 
 /**
+ * The Antigravity CLI (`agy`) transcript of one conversation, or null when it
+ * is not on disk. The id is a path segment of a fixed layout under
+ * `~/.gemini/antigravity-cli/brain/`, so `.` and `..` are refused before any
+ * path is built.
+ *
+ * @param {string} session_id
+ * @param {{ home_dir: string, fs: Pick<typeof fs, 'statSync'> }} options
+ * @returns {string|null}
+ */
+function agyTranscriptFile(session_id, options) {
+  if (session_id === '.' || session_id === '..') {
+    return null;
+  }
+  const file = path.join(
+    options.home_dir,
+    '.gemini',
+    'antigravity-cli',
+    'brain',
+    session_id,
+    '.system_generated',
+    'logs',
+    'transcript_full.jsonl'
+  );
+  try {
+    options.fs.statSync(file);
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Locate one item's transcript file on this machine.
  *
  * @param {SessionRefEntry} entry
@@ -233,7 +265,12 @@ export function resolveSessionFile(entry, options = {}) {
   }
   /** @type {string|null} */
   let file;
-  if (entry.provider === 'claude') {
+  if (entry.provider === 'agy') {
+    file = agyTranscriptFile(entry.session_id, {
+      home_dir,
+      fs: file_system
+    });
+  } else if (entry.provider === 'claude') {
     file = findClaudeSessionFile(entry.session_id, {
       home_dir,
       fs: file_system
@@ -349,6 +386,9 @@ export function sessionResumeCommand(entry) {
   ) {
     return null;
   }
+  if (entry.provider === 'agy') {
+    return `agy --conversation '${entry.session_id}'`;
+  }
   return entry.provider === 'claude'
     ? `claude --resume '${entry.session_id}'`
     : `codex resume '${entry.session_id}'`;
@@ -379,7 +419,9 @@ export function recordedSessionProvider(metadata) {
     metadata && typeof metadata === 'object' ? metadata.session_ref : null
   );
   const current = entries[entries.length - 1];
-  return current === undefined || current.provider === 'hermes'
+  return current === undefined ||
+    current.provider === 'hermes' ||
+    current.provider === 'agy'
     ? null
     : current.provider;
 }
@@ -532,7 +574,7 @@ export function qualifySessionFork(metadata, runner_name, options = {}) {
  * @returns {SessionForkQualification}
  */
 export function qualifySessionEntry(current, runner_name, options = {}) {
-  if (current.provider === 'hermes') {
+  if (current.provider === 'hermes' || current.provider === 'agy') {
     return { ok: false, reason: 'no_session_ref' };
   }
   if (

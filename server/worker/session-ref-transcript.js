@@ -306,9 +306,37 @@ function projectHermesMessage(raw) {
 }
 
 /**
+ * Project one Antigravity CLI (`agy`) transcript step into the claude-shaped
+ * events the drawer reads. Only the user's text (`USER_INPUT`) and the
+ * planner's text (`PLANNER_RESPONSE`) become turns; tool calls, system
+ * messages, checkpoints, and empty steps produce nothing.
+ *
+ * @param {Record<string, unknown>} raw
+ * @returns {unknown[]}
+ */
+function projectAgyStep(raw) {
+  const text =
+    typeof raw.content === 'string' && raw.content.trim().length > 0
+      ? raw.content
+      : null;
+  if (text === null) {
+    return [];
+  }
+  if (raw.type === 'USER_INPUT') {
+    return [{ type: 'user', message: { content: text } }];
+  }
+  if (raw.type === 'PLANNER_RESPONSE') {
+    return [
+      { type: 'assistant', message: { content: [{ type: 'text', text }] } }
+    ];
+  }
+  return [];
+}
+
+/**
  * Create one subscription's transcript adapter.
  *
- * @param {'claude'|'codex'|'hermes'} provider
+ * @param {'claude'|'codex'|'hermes'|'agy'} provider
  * @returns {{ project: (line: string) => unknown[] }}
  */
 export function createSessionRefTranscript(provider) {
@@ -354,6 +382,9 @@ export function createSessionRefTranscript(provider) {
       }
       seen_messages.add(identity);
       return projectHermesMessage(raw);
+    }
+    if (provider === 'agy') {
+      return projectAgyStep(raw);
     }
     if (provider === 'claude') {
       if (typeof raw.type !== 'string' || !CLAUDE_PASS_TYPES.has(raw.type)) {

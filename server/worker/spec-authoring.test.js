@@ -752,6 +752,28 @@ describe('spec conversation clicks', () => {
 
     expect(result).toMatchObject({ launched: false, reason: 'not_target' });
   });
+
+  test('refuses unknown_runner instead of launching claude for an unregistered inherited runner', async () => {
+    const h = fixture({ currentRunner: () => 'agy' });
+
+    const result = await h.authoring.launchForClick({
+      workspace: ROOT,
+      bead_id: B
+    });
+
+    expect(result).toMatchObject({ launched: false, reason: 'unknown_runner' });
+    expect(h.launcher.launch).not.toHaveBeenCalled();
+  });
+
+  test('launches claude for an inherited claude runner', async () => {
+    const h = fixture({ currentRunner: () => 'claude' });
+
+    await h.authoring.launchForClick({ workspace: ROOT, bead_id: B });
+
+    expect(h.launcher.launch).toHaveBeenCalledWith(
+      expect.objectContaining({ runner: 'claude' })
+    );
+  });
 });
 
 describe('spec card projections', () => {

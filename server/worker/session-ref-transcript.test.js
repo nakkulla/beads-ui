@@ -499,3 +499,57 @@ describe('pairing state across snapshot and append', () => {
     });
   });
 });
+
+describe('agy transcript projection (UI-6o70)', () => {
+  test('projects a USER_INPUT record onto a user input event', () => {
+    const adapter = createSessionRefTranscript('agy');
+    const record = {
+      type: 'USER_INPUT',
+      source: 'USER_EXPLICIT',
+      status: 'DONE',
+      step_index: 0,
+      created_at: '2026-11-26T00:00:00Z',
+      content: 'fix the failing test'
+    };
+
+    const lines = parseTranscript(adapter.project(JSON.stringify(record)));
+
+    expect(lines).toEqual([{ kind: 'user', text: 'fix the failing test' }]);
+  });
+
+  test('projects a PLANNER_RESPONSE record onto an assistant response event', () => {
+    const adapter = createSessionRefTranscript('agy');
+    const record = {
+      type: 'PLANNER_RESPONSE',
+      source: 'MODEL',
+      status: 'DONE',
+      step_index: 1,
+      created_at: '2026-11-26T00:00:01Z',
+      content: 'The test now passes.'
+    };
+
+    const lines = parseTranscript(adapter.project(JSON.stringify(record)));
+
+    expect(lines).toMatchObject([
+      { kind: 'assistant', text: 'The test now passes.' }
+    ]);
+  });
+
+  test.each([
+    {
+      type: 'PLANNER_RESPONSE',
+      source: 'MODEL',
+      tool_calls: [{ name: 'run_command', args: { command: 'ls' } }]
+    },
+    { type: 'GENERIC', source: 'SYSTEM', content: 'bookkeeping' },
+    { type: 'SYSTEM_MESSAGE', source: 'SYSTEM', content: 'system prompt' },
+    { type: 'CHECKPOINT', source: 'SYSTEM', content: 'checkpoint' },
+    { type: 'USER_INPUT', source: 'USER_EXPLICIT', content: '' }
+  ])('omits agy records the drawer has no line for %j', (record) => {
+    const adapter = createSessionRefTranscript('agy');
+
+    const result = adapter.project(JSON.stringify(record));
+
+    expect(result).toEqual([]);
+  });
+});

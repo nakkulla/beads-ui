@@ -682,3 +682,51 @@ describe('worker/policy bead_dependents invariance (UI-8x90 §6.2)', () => {
     expect(with_dependents.stamped_keys).not.toContain('bead_dependents');
   });
 });
+
+describe('worker/policy stored agy values and closed runner default (UI-6o70)', () => {
+  test('refuses unknown_runner instead of claude when the fallback model has no runner', () => {
+    const catalog = resolveCatalog({ active: ['codex'], warn: () => {} });
+
+    const r = resolveExecSettings({ bead: {}, defaults: {}, catalog });
+
+    expect(r.runner).toBe(null);
+    expect(r.invalid_reason).toBe('unknown_runner');
+  });
+
+  test('reads a stored agy implementation runtime without blocking dispatch', () => {
+    const r = resolveExecSettings({
+      bead: { impl_runtime: 'agy' },
+      defaults: {}
+    });
+
+    expect(r.impl_runtime).toBe('agy');
+    expect(r.invalid_reason).toBe(undefined);
+  });
+
+  test('reads a stored neon reviewer on the step and plan review keys', () => {
+    const r = resolveExecSettings({
+      bead: {
+        spec_review_model: 'neon',
+        plan_review_model: 'neon',
+        impl_review_model: 'neon'
+      },
+      defaults: {}
+    });
+
+    expect([
+      r.spec_review_model,
+      r.plan_review_model,
+      r.impl_review_model
+    ]).toEqual(['neon', 'neon', 'neon']);
+  });
+
+  test('still blocks a stored gemini implementation runtime', () => {
+    const r = resolveExecSettings({
+      bead: { impl_runtime: 'gemini' },
+      defaults: {}
+    });
+
+    expect(r.impl_runtime).toBe(undefined);
+    expect(r.invalid_reason).toBe('invalid_impl_runtime');
+  });
+});

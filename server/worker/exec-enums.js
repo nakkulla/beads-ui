@@ -68,6 +68,19 @@ export const REVIEW_STEP_MODELS = [
 export const PLAN_REVIEW_MODELS = ['codex', 'astra', 'fable', 'skip'];
 
 /**
+ * Reviewer values a durable layer may already carry although no beads-ui
+ * surface writes them yet (UI-6o70): the dotfiles contract added `neon`, and a
+ * session that stores it must not read back as an invalid pin. Writers keep
+ * {@link REVIEW_STEP_MODELS} / {@link PLAN_REVIEW_MODELS}.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const STORED_REVIEW_STEP_MODELS = [...REVIEW_STEP_MODELS, 'neon'];
+
+/** @type {ReadonlyArray<string>} */
+export const STORED_PLAN_REVIEW_MODELS = [...PLAN_REVIEW_MODELS, 'neon'];
+
+/**
  * Effort vocabulary for all three review steps. Fixed by the contract rather
  * than catalog-derived: the review legs are dispatched by the session, so their
  * effort is the workflow's own four-level scale, not a CLI flag.
@@ -87,6 +100,23 @@ export const REVIEW_SPEEDS = ['default', 'fast'];
  * @type {ReadonlyArray<string>}
  */
 export const IMPL_RUNTIMES = ['auto', 'claude', 'codex'];
+
+/**
+ * Implementation runtimes a durable layer may carry but no beads-ui writer
+ * offers yet (UI-6o70). `agy` is the value a controller session hands to the
+ * dotfiles transport, so it means something without a beads-ui runner; it has
+ * no catalog entry, which is why its effort is judged against the catalog
+ * union like a model-less `auto`.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const STORED_ONLY_IMPL_RUNTIMES = ['agy'];
+
+/** @type {ReadonlyArray<string>} */
+export const STORED_IMPL_RUNTIMES = [
+  ...IMPL_RUNTIMES,
+  ...STORED_ONLY_IMPL_RUNTIMES
+];
 
 /**
  * `impl_dispatch` — whether the controller delegates the implementation leg or
@@ -421,6 +451,27 @@ export function sessionDefaultEnums(catalog = runtimeCatalog()) {
 }
 
 /**
+ * The {@link sessionDefaultEnums} table widened by the values a durable kv
+ * object may carry but no beads-ui writer offers (UI-6o70). Only the READ path uses it,
+ * so a stored `agy`/`neon` survives normalization while a patch naming it is
+ * still refused.
+ *
+ * @param {ResolvedCatalog} [catalog]
+ * @returns {Record<string, ReadonlyArray<string>>}
+ */
+export function storedSessionDefaultEnums(catalog = runtimeCatalog()) {
+  return {
+    ...sessionDefaultEnums(catalog),
+    spec_review_model: STORED_REVIEW_STEP_MODELS,
+    plan_review_model: STORED_PLAN_REVIEW_MODELS,
+    impl_review_model: STORED_REVIEW_STEP_MODELS,
+    impl_runtime: STORED_IMPL_RUNTIMES,
+    quick_fix_impl_runtime: ['claude', 'codex', ...STORED_ONLY_IMPL_RUNTIMES],
+    quick_fix_impl_review_model: STORED_REVIEW_STEP_MODELS
+  };
+}
+
+/**
  * Allowed values per preset key, for one profile.
  *
  * The three orchestration keys reuse the queue-facing execution table in BOTH
@@ -648,7 +699,8 @@ function runtimeEfforts(catalog, runtime) {
  * boundaries. Legacy readers may infer a missing runtime; active writers may
  * not store an exact model without its matching runtime. `auto` derives no
  * provider, so `provider_model_mismatch` cannot arise under it and a
- * model-less `auto` checks effort against the whole catalog union.
+ * model-less `auto` checks effort against the whole catalog union. A reader
+ * (`active_writer: false`) also accepts {@link STORED_ONLY_IMPL_RUNTIMES}.
  *
  * @param {{ orchestration_model?: unknown, impl_runtime?: unknown, impl_model?: unknown, impl_effort?: unknown }} settings
  * @param {{ catalog?: ResolvedCatalog, active_writer?: boolean, controller_runtime?: string }} [options] - `controller_runtime`
@@ -669,10 +721,11 @@ export function validateImplSettings(settings, options = {}) {
   const effort =
     settings?.impl_effort === AUTO_LITERAL ? undefined : settings?.impl_effort;
 
+  const runtimes = active_writer ? IMPL_RUNTIMES : STORED_IMPL_RUNTIMES;
   if (
     requested_runtime !== undefined &&
     (typeof requested_runtime !== 'string' ||
-      !IMPL_RUNTIMES.includes(requested_runtime))
+      !runtimes.includes(requested_runtime))
   ) {
     return { ok: false, reason: 'invalid_impl_runtime' };
   }
@@ -711,7 +764,8 @@ export function validateImplSettings(settings, options = {}) {
   if (effort !== undefined) {
     const allowed = model_runtime
       ? modelEfforts(catalog, model)
-      : effective_runtime
+      : effective_runtime &&
+          !STORED_ONLY_IMPL_RUNTIMES.includes(effective_runtime)
         ? runtimeEfforts(catalog, effective_runtime)
         : catalogEfforts(catalog);
     if (!allowed.includes(effort)) {

@@ -17,6 +17,7 @@ import { fillSpecAuthoringEntry } from './direction-inquiry.js';
 import { queryForeignBlockerStatus } from './foreign-blocker-status.js';
 import { createNotifier } from './notify.js';
 import { emitQueueChanged } from './queue-events.js';
+import { UNKNOWN_RUNNER } from './runner/index.js';
 import { resolveSessionLaunchOptions } from './session-launch-accounts.js';
 import {
   SPEC_AUTHORING_PANE_MARKER,
@@ -401,10 +402,15 @@ export function createSpecAuthoring(deps) {
    * @param {boolean} automatic
    */
   async function launch(root, bead_id, target, automatic) {
-    const inherited = deps.currentRunner?.(root, target.issue);
+    // No resolvable runner keeps today's claude default; a resolved name the
+    // registry does not know is refused rather than run as claude (UI-6o70).
+    const inherited = deps.currentRunner?.(root, target.issue) ?? 'claude';
+    if (inherited !== 'claude' && inherited !== 'codex') {
+      return refused(UNKNOWN_RUNNER);
+    }
     const runner = freshConversationRuntime(
       (deps.conversationSettings || getConversationSettings)(),
-      inherited === 'codex' ? 'codex' : 'claude'
+      inherited
     );
     const accounts = await resolveSessionLaunchOptions(
       deps.resolveSessionAccounts,

@@ -17338,6 +17338,25 @@ describe('scheduler dispatch through the REAL createRunner (spawn-literal wiring
     expect(env.scheduler.isRunning('S1')).toBe(true);
     await flush();
   });
+
+  test('refuses the launch with unknown_runner when the runner is unregistered', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [], exit: 0 });
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      makeRunner: () => createRunner('agy', { spawn_impl })
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const a = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(a.cause).toBe('unknown_runner');
+    expect(spawn_impl.captured.calls).toHaveLength(0);
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+  });
 });
 
 describe('scheduler policy axis removal (worker-phase2 §2)', () => {

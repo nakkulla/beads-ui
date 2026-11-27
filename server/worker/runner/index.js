@@ -12,14 +12,18 @@
  * queue across two argv shapes). Tests inject `deps.catalog` to bypass both the
  * cache and the machine's config file.
  *
- * An unknown runner name resolves to claude — the pre-existing behaviour, kept
- * because a bead carrying a stale or misspelled runner must still dispatch.
+ * A runner name the catalog does not register — an unknown name, a missing
+ * name, or `codex` after the config dropped its section — is REFUSED with
+ * {@link UNKNOWN_RUNNER} instead of resolving to claude (UI-6o70): a silent
+ * fallback would run the work on an account and model nobody chose.
  *
  * `adapterSpec` is the SPAWN-FREE half of the same resolution, for the readers
  * that parse a runner's output without owning a process (startup usage replay,
  * detached-session monitoring, and provider-outage classification). Both judge through
  * `codexEntry`, so a reader can never lift usage with a different adapter than
- * the one that wrote the log.
+ * the one that wrote the log. It keeps the claude parser for a name it does not
+ * know: it starts nothing, and the only such names are attempt records written
+ * before the refusal existed, whose logs were produced by the claude adapter.
  *
  * @import { AdapterSpec, RunnerHandle, EngineDeps } from './session.js'
  * @import { ResolvedCatalog, RunnerCatalogEntry } from '../runner-catalog.js'
@@ -32,6 +36,22 @@ import { codexSpec, spawnCodex } from './codex.js';
 
 /** @type {ReadonlyArray<string>} */
 export const RUNNERS = ACTIVE_RUNNERS;
+
+/** Refusal reason (and thrown error `code`) for an unregistered runner name. */
+export const UNKNOWN_RUNNER = 'unknown_runner';
+
+/**
+ * Whether `error` is {@link createRunner}'s unregistered-runner refusal.
+ *
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+export function isUnknownRunnerError(error) {
+  return (
+    error instanceof Error &&
+    /** @type {{ code?: unknown }} */ (error).code === UNKNOWN_RUNNER
+  );
+}
 
 /** @type {ResolvedCatalog|null} */
 let cached_catalog = null;
@@ -96,6 +116,18 @@ function codexEntry(runner_name, deps) {
 }
 
 /**
+ * The refusal {@link createRunner} throws for an unregistered runner name.
+ *
+ * @param {string|undefined} runner_name
+ * @returns {Error}
+ */
+function unknownRunnerError(runner_name) {
+  return Object.assign(new Error(`${UNKNOWN_RUNNER}: ${String(runner_name)}`), {
+    code: UNKNOWN_RUNNER
+  });
+}
+
+/**
  * The adapter spec for `runner_name`, built without spawning anything.
  *
  * @param {string|null} [runner_name]
@@ -120,11 +152,17 @@ export function adapterSpec(runner_name, deps = {}) {
 /**
  * Create the runner adapter for `runner_name`.
  *
+ * Throws an `Error` whose `code` is {@link UNKNOWN_RUNNER} when the name is not
+ * a registered runner; nothing is spawned.
+ *
  * @param {string} [runner_name]
  * @param {EngineDeps & { catalog?: ResolvedCatalog }} [deps]
  * @returns {{ name: string, spawn: (bead: any, workspace: string, settings: any) => RunnerHandle }}
  */
 export function createRunner(runner_name, deps = {}) {
+  if (runner_name !== 'claude' && runner_name !== 'codex') {
+    throw unknownRunnerError(runner_name);
+  }
   const codex_entry = codexEntry(runner_name, deps);
   if (codex_entry) {
     return {
@@ -144,6 +182,9 @@ export function createRunner(runner_name, deps = {}) {
         });
       }
     };
+  }
+  if (runner_name === 'codex') {
+    throw unknownRunnerError(runner_name);
   }
   const catalog = deps.catalog || runtimeCatalog();
   const claude_entry = Object.prototype.hasOwnProperty.call(

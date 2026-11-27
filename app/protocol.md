@@ -389,13 +389,14 @@ changes the overlap verdict. Each row also carries
 `session_refs: SessionRefView[]` (UI-4xzk §4.1) — `metadata.session_ref`
 projected from the SAME scan, so the bucket still costs no extra `bd` process.
 One view is
-`{ index, provider: 'claude'|'codex', session_id, host, current, locality: 'local'|'remote'|'missing', last_event_at, resume_command }`:
+`{ index, provider: 'claude'|'codex'|'hermes'|'agy', session_id, host, current, locality: 'local'|'remote'|'missing', last_event_at, resume_command }`:
 `index` is the position in the contract value (malformed items are dropped
 INDIVIDUALLY and the surviving indexes are unchanged), `current` marks the last
 valid item, `locality` is `remote` when the host's first label differs from this
 server's, `missing` when no transcript file was found, `last_event_at` is that
 file's mtime in epoch ms (`null` unless `local`), and `resume_command` is
-`claude --resume '<sid>'` / `codex resume '<sid>'` — `null` when the session id
+`claude --resume '<sid>'` / `codex resume '<sid>'` /
+`agy --conversation '<sid>'` — `null` for a `hermes` item or when the session id
 is not a safe single shell argument. The transcript PATH is never on the wire.
 An absent key, an all-malformed value, or a projection failure is `[]`. Worker
 admission conditions (`worker-ineligible`, the route enum, the `spec_review`
@@ -1517,8 +1518,8 @@ Streams a per-attempt raw runner event stream to the transcript viewer.
 - `launch_id`와 함께 오면 `bad_request`다(두 변형은 배타적이다).
 - `attempt_id`는 반드시 `session:<provider>:<session_id>`여야 한다 — 이 값이
   클라이언트 store·drawer의 키다. 불일치는 `bad_request`.
-- `provider`는 `claude|codex` enum, `session_id`는 `^[A-Za-z0-9._-]+$`(경로
-  구분자·`..`·셸 해석 문자 차단). 위반은 `bad_request`.
+- `provider`는 `claude|codex|hermes|agy` enum, `session_id`는
+  `^[A-Za-z0-9._-]+$`(경로 구분자·`..`·셸 해석 문자 차단). 위반은 `bad_request`.
 - **인가**: 서버는 대상 workspace에서 `bd show <bead_id> --json`을 읽어
   `metadata.session_ref` 항목 중 `(provider, session_id)`가 일치하는 것이 있을
   때에만 파일을 연다. 없으면 **filesystem을 전혀 조회하지 않고**

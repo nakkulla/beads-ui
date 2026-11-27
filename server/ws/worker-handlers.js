@@ -4273,7 +4273,7 @@ async function beadMetadataOf(ws, key, bead_id) {
  * @param {unknown} raw
  * @param {string} attempt_id
  * @param {boolean} has_launch_id
- * @returns {{ bead_id: string, provider: 'claude'|'codex'|'hermes', session_id: string }|null}
+ * @returns {{ bead_id: string, provider: 'claude'|'codex'|'hermes'|'agy', session_id: string }|null}
  */
 function normalizeSessionRefRequest(raw, attempt_id, has_launch_id) {
   if (has_launch_id || !raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -4286,7 +4286,10 @@ function normalizeSessionRefRequest(raw, attempt_id, has_launch_id) {
     typeof value.session_id === 'string' ? value.session_id : '';
   if (
     bead_id.length === 0 ||
-    (provider !== 'claude' && provider !== 'codex' && provider !== 'hermes') ||
+    (provider !== 'claude' &&
+      provider !== 'codex' &&
+      provider !== 'hermes' &&
+      provider !== 'agy') ||
     !isSafeSessionId(session_id)
   ) {
     return null;
@@ -4306,7 +4309,7 @@ function normalizeSessionRefRequest(raw, attempt_id, has_launch_id) {
  * filesystem access at all, so the reply cannot report a file's existence.
  *
  * @param {WebSocket} ws
- * @param {{ key: string, client_id: string, attempt_id: string, session_ref: { bead_id: string, provider: 'claude'|'codex'|'hermes', session_id: string } }} input
+ * @param {{ key: string, client_id: string, attempt_id: string, session_ref: { bead_id: string, provider: 'claude'|'codex'|'hermes'|'agy', session_id: string } }} input
  */
 async function followSessionRefLog(ws, input) {
   const { attempt_id, client_id, key, session_ref } = input;
@@ -4626,7 +4629,7 @@ export async function handleSubscribeSessionLog(ws, req) {
         makeError(
           req,
           'bad_request',
-          'payload.session_ref requires { bead_id, provider: claude|codex|hermes, session_id } with attempt_id "session:<provider>:<session_id>" and no launch_id'
+          'payload.session_ref requires { bead_id, provider: claude|codex|hermes|agy, session_id } with attempt_id "session:<provider>:<session_id>" and no launch_id'
         )
       )
     );

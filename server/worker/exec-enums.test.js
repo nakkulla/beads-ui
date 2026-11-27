@@ -8,6 +8,7 @@ import {
 } from '../../app/views/settings-dialog/session-model.js';
 import {
   isHttpOriginValue,
+  normalizeSessionDefaults,
   validateSessionDefaultsPatch
 } from '../session-defaults.js';
 import * as enums from './exec-enums.js';
@@ -1094,4 +1095,114 @@ test('rejects Astra implementation under the Claude runtime', () => {
   });
 
   expect(result.ok).toBe(false);
+});
+
+describe('worker/exec-enums stored agy values (UI-6o70)', () => {
+  test('accepts a stored agy implementation runtime on read', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const result = validateImplSettings(
+      { impl_runtime: 'agy' },
+      { catalog, active_writer: false }
+    );
+
+    expect(result).toEqual({ ok: true, impl_runtime: 'agy', inferred: false });
+  });
+
+  test('accepts a stored agy runtime with a catalog effort on read', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const result = validateImplSettings(
+      { impl_runtime: 'agy', impl_effort: 'high' },
+      { catalog, active_writer: false }
+    );
+
+    expect(result).toMatchObject({ ok: true, impl_runtime: 'agy' });
+  });
+
+  test('rejects an agy implementation runtime on write', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const result = validateImplSettings(
+      { impl_runtime: 'agy' },
+      { catalog, active_writer: true }
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'invalid_impl_runtime' });
+  });
+
+  test('still rejects a stored gemini implementation runtime on read', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const result = validateImplSettings(
+      { impl_runtime: 'gemini' },
+      { catalog, active_writer: false }
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'invalid_impl_runtime' });
+  });
+
+  test('reads agy runtimes and neon reviewers from the workspace session defaults', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+    const stored = {
+      schema: 1,
+      impl_runtime: 'agy',
+      quick_fix_impl_runtime: 'agy',
+      spec_review_model: 'neon',
+      plan_review_model: 'neon',
+      impl_review_model: 'neon',
+      quick_fix_impl_review_model: 'neon'
+    };
+
+    const result = normalizeSessionDefaults(stored, { catalog });
+
+    expect(result).toEqual({
+      values: {
+        impl_runtime: 'agy',
+        quick_fix_impl_runtime: 'agy',
+        spec_review_model: 'neon',
+        plan_review_model: 'neon',
+        impl_review_model: 'neon',
+        quick_fix_impl_review_model: 'neon'
+      },
+      warnings: []
+    });
+  });
+
+  test('still drops gemini values from the workspace session defaults', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+    const stored = {
+      quick_fix_impl_runtime: 'gemini',
+      spec_review_model: 'gemini'
+    };
+
+    const result = normalizeSessionDefaults(stored, { catalog });
+
+    expect(result).toEqual({
+      values: {},
+      warnings: [
+        'invalid_value:quick_fix_impl_runtime',
+        'invalid_value:spec_review_model'
+      ]
+    });
+  });
+
+  test.each([
+    ['impl_runtime', 'agy'],
+    ['quick_fix_impl_runtime', 'agy'],
+    ['spec_review_model', 'neon'],
+    ['plan_review_model', 'neon']
+  ])(
+    'refuses the stored-only value %s=%s in a session-default write',
+    (key, value) => {
+      const catalog = resolveCatalog({ warn: () => {} });
+
+      const result = validateSessionDefaultsPatch(
+        { [key]: value },
+        { catalog }
+      );
+
+      expect(result.ok).toBe(false);
+    }
+  );
 });
