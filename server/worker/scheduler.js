@@ -19871,6 +19871,9 @@ export function createScheduler(deps) {
     if (runner_name !== resolved.exec.runner) {
       return { ok: false, reason: 'provider_mismatch' };
     }
+    if (runner_name === 'agy' && !agyListReady()) {
+      return { ok: false, reason: AGY_MODEL_LIST_UNAVAILABLE };
+    }
     const preempt = await applyPreemptSwitch(workspace, runner_name, resolved);
     const provider = await providerDispatchHeld(
       workspace,
@@ -20481,6 +20484,10 @@ export function createScheduler(deps) {
           ok: false,
           reason: prerequisite ? 'prerequisite_unmet' : notReadyReason(snap)
         };
+      }
+      if (prior.runner === 'agy' && !agyListReady()) {
+        recordSkipReason(workspace, bead_id, AGY_MODEL_LIST_UNAVAILABLE);
+        return { ok: false, reason: AGY_MODEL_LIST_UNAVAILABLE };
       }
       const provider_gate = await providerDispatchHeld(
         workspace,
@@ -23119,6 +23126,9 @@ export function createScheduler(deps) {
       return continuation;
     }
     if (options.external_wait_resume === true) {
+      if (continuation.runner_name === 'agy' && !agyListReady()) {
+        return { ok: false, reason: AGY_MODEL_LIST_UNAVAILABLE };
+      }
       const provider = await providerDispatchHeld(
         workspace,
         continuation.runner_name,

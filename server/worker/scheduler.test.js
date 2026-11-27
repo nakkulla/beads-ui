@@ -17376,10 +17376,11 @@ describe('scheduler agy pre-run gate (UI-h0hwo Phase 2)', () => {
    */
   function agyModels(options = {}) {
     let ready = options.ready ?? true;
+    let dropped = false;
     return {
-      names: () => [AGY_MODEL],
-      ready: () => ready,
-      revision: () => 1,
+      names: () => (dropped ? [] : [AGY_MODEL]),
+      ready: () => ready && !dropped,
+      revision: () => (dropped ? 2 : 1),
       status: () => ({ source: 'list', read_at: 1 }),
       checkCredentials: vi.fn(() => {
         if (options.ready === false) {
@@ -17388,6 +17389,10 @@ describe('scheduler agy pre-run gate (UI-h0hwo Phase 2)', () => {
         return options.ready === false;
       }),
       quota: vi.fn(options.quota || (async () => ({ state: 'ok' }))),
+      /** Drop the list the way a moved credential fingerprint does. */
+      drop: () => {
+        dropped = true;
+      },
       stop: () => {}
     };
   }
@@ -17590,6 +17595,25 @@ describe('scheduler agy pre-run gate (UI-h0hwo Phase 2)', () => {
         reason: 'provider_gate',
         gate: { runner: 'agy', kind: 'usage_limit' }
       });
+    });
+
+    test('keeps the agy rung from launching once the model list is dropped', async () => {
+      const models = agyModels();
+      const env = await agyRetryEnv(models);
+      models.drop();
+
+      env.clock.now += RETRY_DELAYS_MS[0];
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+      await flush();
+
+      expect(env.runner.spawnOrder).toEqual(['A1']);
+      expect(
+        Object.values(env.store.snapshot(WS).attempts).filter(
+          (/** @type {any} */ attempt) =>
+            attempt.resumed_from === env.attempt_id &&
+            attempt.status === 'running'
+        )
+      ).toEqual([]);
     });
   });
 });
