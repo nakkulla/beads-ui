@@ -161,7 +161,9 @@ function commandLineOf(step) {
  * @returns {boolean}
  */
 function isStepStart(step) {
-  return !!step && step.state === 'ACTIVE' && typeof step.tool_name === 'string';
+  return (
+    !!step && step.state === 'ACTIVE' && typeof step.tool_name === 'string'
+  );
 }
 
 /**
@@ -353,7 +355,11 @@ export function verdict(ctx) {
       summary: failure ?? response ?? `status ${status}`
     };
   }
-  return { success: true, reason: 'ok', summary: response ?? NO_RESULT_SUMMARY };
+  return {
+    success: true,
+    reason: 'ok',
+    summary: response ?? NO_RESULT_SUMMARY
+  };
 }
 
 /**

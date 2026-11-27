@@ -4,6 +4,7 @@ import {
   ACTIVE_RUNNERS,
   CODEX_FAMILY_TEMPLATES,
   CODEX_SEED_NAMES,
+  SELECTABLE_RUNNERS,
   builtinCatalog,
   catalogOrchestrationEfforts,
   catalogSpeedTiers,
@@ -13,8 +14,7 @@ import {
   modelOrchestrationEfforts,
   modelRunner,
   modelSpeedTiers,
-  resolveCatalog,
-  SELECTABLE_RUNNERS
+  resolveCatalog
 } from './runner-catalog.js';
 
 describe('worker/runner-catalog parity with the pinned execution defaults', () => {
@@ -848,9 +848,7 @@ describe('worker/runner-catalog agy ids from the agy list', () => {
     });
 
     expect(modelEfforts(catalog, 'gemini-4-neon-high')).toEqual([]);
-    expect(modelSpeedTiers(catalog, 'gemini-4-neon-high')).toEqual([
-      'default'
-    ]);
+    expect(modelSpeedTiers(catalog, 'gemini-4-neon-high')).toEqual(['default']);
   });
 
   test('fills the builtin agy entry from the given ids', () => {
