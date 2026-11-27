@@ -17522,6 +17522,76 @@ describe('scheduler agy pre-run gate (UI-h0hwo Phase 2)', () => {
       reason: 'agy_model_list_unavailable'
     });
   });
+
+  describe('session-continuing retry rung', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['setTimeout'] });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /**
+     * A1 launched on agy once and its recorded session failed onto the env
+     * ladder, so the rung due after the first retry delay resumes it.
+     *
+     * @param {ReturnType<typeof agyModels>} models
+     */
+    async function agyRetryEnv(models) {
+      const clock = { now: 1000 };
+      __setAgyModelListForTest(/** @type {any} */ (models));
+      __resetRuntimeCatalogForTest();
+      const env = setup(
+        /** @type {any} */ ({
+          config: { A1: { model: AGY_MODEL } },
+          slots: 1,
+          now: () => clock.now,
+          agyModels: models
+        })
+      );
+      seedQueue(env.store, ['A1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+      env.runner.eventsFor('A1').emit('session_id', 'sid-agy');
+      await flush();
+      env.runner.finish('A1', {
+        success: false,
+        reason: 'turn_failed',
+        summary: 'unknown failure'
+      });
+      await flush();
+      await flush();
+      return { ...env, clock, attempt_id };
+    }
+
+    test('keeps the agy rung waiting while a Gemini bucket is exhausted', async () => {
+      const models = agyModels();
+      const env = await agyRetryEnv(models);
+      models.quota.mockImplementation(async () => ({
+        state: 'exhausted',
+        resets_at: RESET,
+        buckets: ['gemini-5h']
+      }));
+
+      env.clock.now += RETRY_DELAYS_MS[0];
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+      await flush();
+
+      const queue = env.store.snapshot(WS);
+      expect(env.runner.spawnOrder).toEqual(['A1']);
+      expect(
+        Object.values(queue.attempts).filter(
+          (/** @type {any} */ attempt) =>
+            attempt.resumed_from === env.attempt_id
+        )
+      ).toEqual([]);
+      expect(queue.admission.A1).toMatchObject({
+        reason: 'provider_gate',
+        gate: { runner: 'agy', kind: 'usage_limit' }
+      });
+    });
+  });
 });
 
 describe('scheduler policy axis removal (worker-phase2 §2)', () => {

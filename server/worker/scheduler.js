@@ -4880,13 +4880,44 @@ export function createScheduler(deps) {
    * resolved to that account; an unresolved target fails closed. The client
    * chip predicts with the same scope rule (`lane-model.js providerGate`).
    *
+   * An agy launch the holds let through also reads the Gemini quota here
+   * (agy-runtime §3.3), so every site that gates a claude or codex launch on
+   * the holds gates an agy launch on the quota too.
+   *
    * @typedef {{ held: false } | { held: true, runner: string, kind: 'outage'|'usage_limit', account: string|null, unresolved: boolean }} ProviderGateVerdict
+   * @param {string} workspace
+   * @param {string} runner
+   * @param {{ claude: string|null, codex: string|null }} accounts
+   * @param {string|null} [model] - The launch model an agy quota hold is entered for.
+   * @returns {Promise<ProviderGateVerdict>}
+   */
+  async function providerDispatchHeld(workspace, runner, accounts, model) {
+    const verdict = await providerHoldVerdict(workspace, runner, accounts);
+    if (verdict.held || runner !== 'agy') {
+      return verdict;
+    }
+    if (!(await agyQuotaHeld(workspace, model ?? null))) {
+      return verdict;
+    }
+    return {
+      held: true,
+      runner: 'agy',
+      kind: 'usage_limit',
+      account: AGY_HOLD_ACCOUNT,
+      unresolved: false
+    };
+  }
+
+  /**
+   * The provider-hold half of {@link providerDispatchHeld}: the verdict the
+   * workspace's effective hold alone gives.
+   *
    * @param {string} workspace
    * @param {string} runner
    * @param {{ claude: string|null, codex: string|null }} accounts
    * @returns {Promise<ProviderGateVerdict>}
    */
-  async function providerDispatchHeld(workspace, runner, accounts) {
+  async function providerHoldVerdict(workspace, runner, accounts) {
     const hold = deps.store.snapshot(workspace).provider_hold?.[runner];
     if (!hold || !Array.isArray(hold.targets) || hold.targets.length === 0) {
       return { held: false };
@@ -4978,29 +5009,31 @@ export function createScheduler(deps) {
   }
 
   /**
-   * The agy pre-run gate (agy-runtime §3.2-§3.3), judged after the provider
-   * gate let the row through. The credentials are re-stated first: a moved
-   * fingerprint drops the list, and no agy run starts until a new list for
-   * the new credentials arrives (`refused`). An exhausted `Gemini Models`
-   * bucket enters a global usage-limit target that holds every agy row until
-   * the reset, which the provider probe then confirms (`held`). A failed
-   * quota read never blocks the launch, and a `[지금 시작]` row skips the
-   * quota as it skips the provider gate.
+   * Whether an agy run may start on the current model list (agy-runtime
+   * §3.2). The credentials are re-stated first: a moved fingerprint drops the
+   * list, and no agy run starts until a new list for the new credentials
+   * arrives, so false refuses the launch.
+   *
+   * @returns {boolean}
+   */
+  function agyListReady() {
+    const models = deps.agyModels || agyModelList();
+    models.checkCredentials();
+    return models.ready();
+  }
+
+  /**
+   * The agy pre-run quota gate (agy-runtime §3.3). An exhausted `Gemini
+   * Models` bucket enters a global usage-limit target that holds every agy
+   * row until the reset, which the provider probe then confirms (true). A
+   * failed quota read never blocks the launch (false).
    *
    * @param {string} workspace
    * @param {string|null} model
-   * @param {boolean} start_now_bypass
-   * @returns {Promise<'launch'|'held'|'refused'>}
+   * @returns {Promise<boolean>}
    */
-  async function agyLaunchGate(workspace, model, start_now_bypass) {
+  async function agyQuotaHeld(workspace, model) {
     const models = deps.agyModels || agyModelList();
-    models.checkCredentials();
-    if (!models.ready()) {
-      return 'refused';
-    }
-    if (start_now_bypass) {
-      return 'launch';
-    }
     /** @type {import('./agy-model-list.js').AgyQuota} */
     let quota;
     try {
@@ -5009,7 +5042,7 @@ export function createScheduler(deps) {
       quota = { state: 'unknown', reason: String(err) };
     }
     if (quota.state !== 'exhausted') {
-      return 'launch';
+      return false;
     }
     const message = `agy Gemini quota exhausted (${quota.buckets.join(', ')})`;
     try {
@@ -5033,7 +5066,7 @@ export function createScheduler(deps) {
       log('agy quota hold write failed for %s: %o', workspace, err);
     }
     deps.providerHealth?.sync(workspace);
-    return 'held';
+    return true;
   }
 
   /**
@@ -16361,13 +16394,19 @@ export function createScheduler(deps) {
       // The timeline entry belongs to the LAUNCH, not to this decision: a row
       // the gate below turns away is rescheduled, and recording here would
       // append one unexecuted switch per scheduling pass.
+      if (runner_name === 'agy' && !agyListReady()) {
+        reservation.release();
+        refuseDispatch(workspace, bead_id, AGY_MODEL_LIST_UNAVAILABLE);
+        return;
+      }
       /** @type {ProviderGateVerdict} */
       const provider_gate = start_now_bypass
         ? { held: false }
         : await providerDispatchHeld(
             workspace,
             runner_name,
-            resolved_exec.accounts
+            resolved_exec.accounts,
+            exec.orchestration_model ?? null
           );
       if (provider_gate.held) {
         const { runner, kind, account, unresolved } = provider_gate;
@@ -16377,31 +16416,6 @@ export function createScheduler(deps) {
         reservation.release();
         claimed.delete(bead_id);
         return;
-      }
-      if (runner_name === 'agy') {
-        const agy_gate = await agyLaunchGate(
-          workspace,
-          exec.orchestration_model ?? null,
-          start_now_bypass
-        );
-        if (agy_gate === 'refused') {
-          reservation.release();
-          refuseDispatch(workspace, bead_id, AGY_MODEL_LIST_UNAVAILABLE);
-          return;
-        }
-        if (agy_gate === 'held') {
-          recordSkipReason(workspace, bead_id, 'provider_gate', {
-            gate: {
-              runner: 'agy',
-              kind: 'usage_limit',
-              account: AGY_HOLD_ACCOUNT,
-              unresolved: false
-            }
-          });
-          reservation.release();
-          claimed.delete(bead_id);
-          return;
-        }
       }
 
       const attempt_id = makeAttemptId(bead_id);
@@ -19861,7 +19875,8 @@ export function createScheduler(deps) {
     const provider = await providerDispatchHeld(
       workspace,
       runner_name,
-      resolved.accounts
+      resolved.accounts,
+      resolved.exec.orchestration_model ?? null
     );
     if (provider.held) {
       return { ok: false, reason: 'provider_held' };
@@ -20470,7 +20485,8 @@ export function createScheduler(deps) {
       const provider_gate = await providerDispatchHeld(
         workspace,
         prior.runner,
-        recordedDispatchSettings(prior).accounts
+        recordedDispatchSettings(prior).accounts,
+        prior.model ?? null
       );
       if (provider_gate.held) {
         const { runner, kind, account, unresolved } = provider_gate;
@@ -23106,7 +23122,8 @@ export function createScheduler(deps) {
       const provider = await providerDispatchHeld(
         workspace,
         continuation.runner_name,
-        continuation.accounts
+        continuation.accounts,
+        continuation.launch_model ?? null
       );
       if (provider.held) {
         return { ok: false, reason: 'provider_held' };
