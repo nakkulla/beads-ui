@@ -1206,3 +1206,28 @@ describe('worker/exec-enums stored agy values (UI-6o70)', () => {
     }
   );
 });
+
+describe('worker/exec-enums agy stays unselectable (UI-h0hwo Phase 2)', () => {
+  test('offers no listed agy id among the model choices', async () => {
+    const { __setAgyModelListForTest } = await import('./agy-model-list.js');
+    const { __resetRuntimeCatalogForTest } = await import('./runner/index.js');
+    __setAgyModelListForTest(
+      /** @type {any} */ ({
+        names: () => ['gemini-4-neon-high'],
+        revision: () => 1,
+        stop: () => {}
+      })
+    );
+    __resetRuntimeCatalogForTest();
+    try {
+      const table = execSettingEnums();
+
+      expect(table.orchestration_model).not.toContain('gemini-4-neon-high');
+      expect(table.impl_model).not.toContain('gemini-4-neon-high');
+      expect(table.impl_runtime).not.toContain('agy');
+    } finally {
+      __setAgyModelListForTest(null);
+      __resetRuntimeCatalogForTest();
+    }
+  });
+});

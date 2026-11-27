@@ -1,7 +1,7 @@
 /**
  * Server-global auto-pool persistence (UI-y7h1 §3.1-§3.2).
  *
- * Per runtime (`claude`, `codex`) the file holds the candidate models — lowest
+ * Per runtime (`claude`, `codex`, `agy`) the file holds the candidate models — lowest
  * slot first, 0 to 2 — and the effort range the dotfiles `bind` judgment uses
  * for an implementation unit whose model and effort are `auto`. A runtime
  * absent from `runtimes` follows the dotfiles shipped defaults.
@@ -36,7 +36,20 @@ import { codexNameFamily } from './worker/runner-catalog.js';
 import { autoPoolFilePath } from './worker/state-paths.js';
 
 /** The runtimes a document may name, in display order. */
-export const AUTO_POOL_RUNTIMES = /** @type {const} */ (['claude', 'codex']);
+export const AUTO_POOL_RUNTIMES = /** @type {const} */ ([
+  'claude',
+  'codex',
+  'agy'
+]);
+
+/**
+ * The runtimes the settings channel offers choices for. agy is accepted in a
+ * document but offered nowhere until the Phase 4 UI opens it (UI-h0hwo).
+ */
+export const AUTO_POOL_SELECTABLE_RUNTIMES = /** @type {const} */ ([
+  'claude',
+  'codex'
+]);
 
 /** Most candidate models one runtime may hold. */
 export const AUTO_POOL_MAX_MODELS = 2;
@@ -102,6 +115,18 @@ export function autoPoolCodexFamilies(implementation) {
 }
 
 /**
+ * The agy families the projection's `model_catalog.agy.families` names; empty
+ * (every agy name refused) while the pin carries no agy catalog.
+ *
+ * @param {Record<string, any>|null|undefined} implementation
+ * @returns {string[]}
+ */
+export function autoPoolAgyFamilies(implementation) {
+  const raw = implementation?.model_catalog?.agy?.families;
+  return isStringList(raw) ? raw.slice() : [];
+}
+
+/**
  * The effort choices of one runtime: the projection's
  * `effort_catalog.<runtime>` up to and including `xhigh`.
  *
@@ -122,6 +147,8 @@ export function autoPoolEfforts(implementation, runtime) {
  * Whether one model name is allowed for `runtime`. A Codex name is a family
  * alias or a `<family>-<version>` pinned name of a projection family; whether
  * the account's Codex list has it is not checked (resolution decides at run).
+ * An agy name is a projection family (`carbon`, `neon`); the bind judgement
+ * joins it with an effort into a `gemini-4-<family>-<effort>` id at run.
  *
  * @param {string} runtime
  * @param {string} name
@@ -131,6 +158,9 @@ export function autoPoolEfforts(implementation, runtime) {
 function isAllowedModel(runtime, name, implementation) {
   if (runtime === 'claude') {
     return autoPoolClaudeModels(implementation).includes(name);
+  }
+  if (runtime === 'agy') {
+    return autoPoolAgyFamilies(implementation).includes(name);
   }
   const families = autoPoolCodexFamilies(implementation);
   return families.length > 0 && codexNameFamily(name, families) !== null;

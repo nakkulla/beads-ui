@@ -81,6 +81,7 @@ import {
   WORKSPACE_ACCOUNTS_KV_KEY,
   normalizeWorkspaceAccounts
 } from '../workspace-accounts.js';
+import { AGY_HOLD_ACCOUNT, agyModelList } from './agy-model-list.js';
 import { buildAttemptFacts } from './attempt-facts.js';
 import { writeAttemptPrompts } from './attempt-prompts.js';
 import { observeBaseDrift } from './base-drift.js';
@@ -209,6 +210,7 @@ import {
   RUNNERS,
   UNKNOWN_RUNNER,
   adapterSpec,
+  dispatchCatalog,
   isUnknownRunnerError,
   runtimeCatalog
 } from './runner/index.js';
@@ -1153,6 +1155,9 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {{ cover_ms: number, max_wait_ms: number }} [waitingRescan]
  * @property {{ sync: (workspace: string) => void }} [providerHealth]
  * Waiting-return throttle timings. Production uses the constants above.
+ * @property {{ ready: () => boolean, names: () => string[], checkCredentials: () => boolean, quota: () => Promise<import('./agy-model-list.js').AgyQuota> }} [agyModels]
+ * The agy model list and pre-run quota read (agy-runtime §3.2-§3.3); the
+ * process-wide reader when absent.
  */
 
 // Per-lane occupancy is the store's ONE walk (`queue-store.js` `laneHolds`):
@@ -1600,6 +1605,15 @@ const FAILURE_HANDOFF_ACTIONS = Object.freeze({
  * (UI-1fss §4.3): it stays on the card while the failure row stands.
  */
 const NO_WORKER_EXIT_REFUSAL = '이 행에는 Worker 출구 없음';
+
+/** Refusal reason for an agy launch while no model list stands. */
+const AGY_MODEL_LIST_UNAVAILABLE = 'agy_model_list_unavailable';
+
+/**
+ * Refusal reason for an agy launch whose model is not on the current list —
+ * permanent, since a later read of the same account will not bring it back.
+ */
+const AGY_MODEL_UNLISTED = 'agy_model_unlisted';
 
 /**
  * The run recorded as the retry of `operation_id` — the one whose `retry_of`
@@ -4872,13 +4886,35 @@ export function createScheduler(deps) {
    * resolved to that account; an unresolved target fails closed. The client
    * chip predicts with the same scope rule (`lane-model.js providerGate`).
    *
+   * An agy launch the holds let through also reads the Gemini quota here
+   * (agy-runtime §3.3), so every site that gates a claude or codex launch on
+   * the holds gates an agy launch on the quota too.
+   *
    * @typedef {{ held: false } | { held: true, runner: string, kind: 'outage'|'usage_limit', account: string|null, unresolved: boolean }} ProviderGateVerdict
+   * @param {string} workspace
+   * @param {string} runner
+   * @param {{ claude: string|null, codex: string|null }} accounts
+   * @param {string|null} [model] - The launch model an agy quota hold is entered for.
+   * @returns {Promise<ProviderGateVerdict>}
+   */
+  async function providerDispatchHeld(workspace, runner, accounts, model) {
+    const verdict = await providerHoldVerdict(workspace, runner, accounts);
+    if (verdict.held || runner !== 'agy') {
+      return verdict;
+    }
+    return agyQuotaVerdict(workspace, model ?? null);
+  }
+
+  /**
+   * The provider-hold half of {@link providerDispatchHeld}: the verdict the
+   * workspace's effective hold alone gives.
+   *
    * @param {string} workspace
    * @param {string} runner
    * @param {{ claude: string|null, codex: string|null }} accounts
    * @returns {Promise<ProviderGateVerdict>}
    */
-  async function providerDispatchHeld(workspace, runner, accounts) {
+  async function providerHoldVerdict(workspace, runner, accounts) {
     const hold = deps.store.snapshot(workspace).provider_hold?.[runner];
     if (!hold || !Array.isArray(hold.targets) || hold.targets.length === 0) {
       return { held: false };
@@ -4921,7 +4957,9 @@ export function createScheduler(deps) {
         ? accounts.claude
         : runner === 'codex'
           ? accounts.codex
-          : null;
+          : runner === 'agy'
+            ? AGY_HOLD_ACCOUNT
+            : null;
     if (account === null) {
       try {
         if (runner === 'claude' && deps.accountCatalog?.activeClaude) {
@@ -4965,6 +5003,101 @@ export function createScheduler(deps) {
       };
     }
     return { held: false };
+  }
+
+  /**
+   * Why an agy run of `model` may not start on the current model list
+   * (agy-runtime §3.2), or null when it may. The credentials are re-stated
+   * first: a moved fingerprint drops the list, and no agy run starts until a
+   * new list for the new credentials arrives. The launch model resolves the
+   * way the adapter's argv does (catalog name → id, else the raw value, else
+   * the runner default), and that id must be on the list now held. Launch
+   * sites call this before and after the quota read, which can drop the list.
+   *
+   * @param {string|null|undefined} model
+   * @returns {string|null}
+   */
+  function agyListRefusal(model) {
+    const models = deps.agyModels || agyModelList();
+    models.checkCredentials();
+    if (!models.ready()) {
+      return AGY_MODEL_LIST_UNAVAILABLE;
+    }
+    /** @type {import('./runner-catalog.js').RunnerCatalogEntry|null} */
+    let entry = null;
+    try {
+      entry = dispatchCatalog().runners.agy ?? null;
+    } catch {
+      entry = null;
+    }
+    const requested =
+      typeof model === 'string' && model.length > 0 ? model : null;
+    /** @type {string|null} */
+    let id = null;
+    if (requested === null) {
+      id = entry?.default_model ?? null;
+    } else if (entry && Object.hasOwn(entry.models, requested)) {
+      id = entry.models[requested].id;
+    } else {
+      id = requested;
+    }
+    if (id === null || !models.names().includes(id)) {
+      return AGY_MODEL_UNLISTED;
+    }
+    return null;
+  }
+
+  /**
+   * The agy pre-run quota gate (agy-runtime §3.3). An exhausted `Gemini
+   * Models` bucket enters a global usage-limit target that holds every agy
+   * row until the reset, which the provider probe then confirms (held). A
+   * failed quota read never blocks the launch (`held: false`).
+   *
+   * @param {string} workspace
+   * @param {string|null} model
+   * @returns {Promise<ProviderGateVerdict>}
+   */
+  async function agyQuotaVerdict(workspace, model) {
+    const models = deps.agyModels || agyModelList();
+    /** @type {import('./agy-model-list.js').AgyQuota} */
+    let quota;
+    try {
+      quota = await models.quota();
+    } catch (err) {
+      quota = { state: 'unknown', reason: String(err) };
+    }
+    if (quota.state !== 'exhausted') {
+      return { held: false };
+    }
+    const message = `agy Gemini quota exhausted (${quota.buckets.join(', ')})`;
+    try {
+      deps.store.providerHolds.enter({
+        runner: 'agy',
+        origin: path.resolve(workspace),
+        target: {
+          kind: 'usage_limit',
+          model: model ?? 'agy',
+          account: AGY_HOLD_ACCOUNT,
+          detail: 'usage_limit',
+          last_error: message,
+          resets_at:
+            quota.resets_at !== null && quota.resets_at > now()
+              ? quota.resets_at
+              : null,
+          rearm_count: 0
+        }
+      });
+    } catch (err) {
+      log('agy quota hold write failed for %s: %o', workspace, err);
+    }
+    deps.providerHealth?.sync(workspace);
+    return {
+      held: true,
+      runner: 'agy',
+      kind: 'usage_limit',
+      account: AGY_HOLD_ACCOUNT,
+      unresolved: false
+    };
   }
 
   /**
@@ -16292,14 +16425,27 @@ export function createScheduler(deps) {
       // The timeline entry belongs to the LAUNCH, not to this decision: a row
       // the gate below turns away is rescheduled, and recording here would
       // append one unexecuted switch per scheduling pass.
+      const agy_model = exec.orchestration_model ?? null;
+      const agy_before =
+        runner_name === 'agy' ? agyListRefusal(agy_model) : null;
+      if (agy_before !== null) {
+        reservation.release();
+        refuseDispatch(workspace, bead_id, agy_before);
+        return;
+      }
+      // The start-now bypass skips the standing holds, never the agy quota:
+      // an exhausted Gemini bucket fails the run however it was started.
       /** @type {ProviderGateVerdict} */
-      const provider_gate = start_now_bypass
-        ? { held: false }
-        : await providerDispatchHeld(
+      const provider_gate = !start_now_bypass
+        ? await providerDispatchHeld(
             workspace,
             runner_name,
-            resolved_exec.accounts
-          );
+            resolved_exec.accounts,
+            agy_model
+          )
+        : runner_name === 'agy'
+          ? await agyQuotaVerdict(workspace, agy_model)
+          : { held: false };
       if (provider_gate.held) {
         const { runner, kind, account, unresolved } = provider_gate;
         recordSkipReason(workspace, bead_id, 'provider_gate', {
@@ -16307,6 +16453,15 @@ export function createScheduler(deps) {
         });
         reservation.release();
         claimed.delete(bead_id);
+        return;
+      }
+      // The quota read can drop or replace the list (credentials moved, a
+      // refresh landed), so the list is judged again on the far side of it.
+      const agy_after =
+        runner_name === 'agy' ? agyListRefusal(agy_model) : null;
+      if (agy_after !== null) {
+        reservation.release();
+        refuseDispatch(workspace, bead_id, agy_after);
         return;
       }
 
@@ -19763,14 +19918,24 @@ export function createScheduler(deps) {
     if (runner_name !== resolved.exec.runner) {
       return { ok: false, reason: 'provider_mismatch' };
     }
+    const agy_model = resolved.exec.orchestration_model ?? null;
+    const agy_before = runner_name === 'agy' ? agyListRefusal(agy_model) : null;
+    if (agy_before !== null) {
+      return { ok: false, reason: agy_before };
+    }
     const preempt = await applyPreemptSwitch(workspace, runner_name, resolved);
     const provider = await providerDispatchHeld(
       workspace,
       runner_name,
-      resolved.accounts
+      resolved.accounts,
+      agy_model
     );
     if (provider.held) {
       return { ok: false, reason: 'provider_held' };
+    }
+    const agy_after = runner_name === 'agy' ? agyListRefusal(agy_model) : null;
+    if (agy_after !== null) {
+      return { ok: false, reason: agy_after };
     }
     reserveResume();
     const bead_id = record.bead_id;
@@ -20373,10 +20538,17 @@ export function createScheduler(deps) {
           reason: prerequisite ? 'prerequisite_unmet' : notReadyReason(snap)
         };
       }
+      const agy_before =
+        prior.runner === 'agy' ? agyListRefusal(prior.model ?? null) : null;
+      if (agy_before !== null) {
+        recordSkipReason(workspace, bead_id, agy_before);
+        return { ok: false, reason: agy_before };
+      }
       const provider_gate = await providerDispatchHeld(
         workspace,
         prior.runner,
-        recordedDispatchSettings(prior).accounts
+        recordedDispatchSettings(prior).accounts,
+        prior.model ?? null
       );
       if (provider_gate.held) {
         const { runner, kind, account, unresolved } = provider_gate;
@@ -20384,6 +20556,12 @@ export function createScheduler(deps) {
           gate: { runner, kind, account, unresolved }
         });
         return { ok: false, reason: 'provider_gate' };
+      }
+      const agy_after =
+        prior.runner === 'agy' ? agyListRefusal(prior.model ?? null) : null;
+      if (agy_after !== null) {
+        recordSkipReason(workspace, bead_id, agy_after);
+        return { ok: false, reason: agy_after };
       }
     }
     const lane_mismatch = provider_wait_resume
@@ -21396,7 +21574,7 @@ export function createScheduler(deps) {
     /** @type {any} */
     let catalog;
     try {
-      catalog = runtimeCatalog();
+      catalog = dispatchCatalog();
     } catch {
       return false;
     }
@@ -21440,7 +21618,7 @@ export function createScheduler(deps) {
   async function priorExecutionUsable(prior, options = {}) {
     const runner = typeof prior.runner === 'string' ? prior.runner : '';
     try {
-      if (!runtimeCatalog().runners[runner]) {
+      if (!dispatchCatalog().runners[runner]) {
         return false;
       }
     } catch {
@@ -23008,16 +23186,41 @@ export function createScheduler(deps) {
     if (!continuation.ok) {
       return continuation;
     }
-    if (options.external_wait_resume === true) {
-      const provider = await providerDispatchHeld(
-        workspace,
-        continuation.runner_name,
-        continuation.accounts
-      );
-      if (provider.held) {
-        return { ok: false, reason: 'provider_held' };
+    const external_wait_resume = options.external_wait_resume === true;
+    // Every agy continuation — manual resume, conflict and revise fixes, the
+    // external-wait return — reads the quota and judges the list on both sides
+    // of it. A non-agy continuation is gated only on the external-wait return.
+    if (continuation.runner_name === 'agy' || external_wait_resume) {
+      const agy = continuation.runner_name === 'agy';
+      const agy_model = continuation.launch_model ?? null;
+      const agy_before = agy ? agyListRefusal(agy_model) : null;
+      if (agy_before !== null) {
+        return { ok: false, reason: agy_before };
       }
-      options.reserveExternalWait();
+      const provider = external_wait_resume
+        ? await providerDispatchHeld(
+            workspace,
+            continuation.runner_name,
+            continuation.accounts,
+            agy_model
+          )
+        : await agyQuotaVerdict(workspace, agy_model);
+      if (provider.held) {
+        // An agy quota read outside the external-wait return is the hold an
+        // ordinary rung reports as `provider_gate`: it waits, never spends
+        // the retry ladder the way a permanent `provider_held` would.
+        return {
+          ok: false,
+          reason: external_wait_resume ? 'provider_held' : 'provider_gate'
+        };
+      }
+      const agy_after = agy ? agyListRefusal(agy_model) : null;
+      if (agy_after !== null) {
+        return { ok: false, reason: agy_after };
+      }
+      if (external_wait_resume) {
+        options.reserveExternalWait();
+      }
     }
     return relaunchResolvedAttempt(workspace, prior, options, continuation);
   }

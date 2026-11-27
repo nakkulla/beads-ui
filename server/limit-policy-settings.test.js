@@ -427,6 +427,25 @@ describe('writing the settings', () => {
     expect(store.runner('claude').auto_switch).toBe(false);
   });
 
+  // UI-h0hwo Phase 2 keeps agy out of the limit policy: its accounts and auto
+  // switch open with agy-auth (Phase 3), so nothing may store an agy entry yet.
+  test('refuses an agy patch as an unknown runner and writes nothing', () => {
+    const store = makeStore();
+
+    const result = store.set({
+      expected_revision: 0,
+      runners: { agy: { auto_switch: true } }
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'invalid_value',
+      runner: 'agy'
+    });
+    expect(fs.existsSync(file)).toBe(false);
+    expect(Object.keys(store.snapshot().runners)).toEqual(['claude', 'codex']);
+  });
+
   test('refuses an old-shape scope field as invalid_value', () => {
     const store = makeStore();
 

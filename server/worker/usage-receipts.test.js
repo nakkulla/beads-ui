@@ -92,6 +92,51 @@ describe('attempt usage receipts', () => {
     }
   });
 
+  // Synthetic: no agy producer writes a receipt yet. Replace this fixture with
+  // real producer output once one exists (follow-up Bead UI-4clyv).
+  test('reads an agy receipt from the attempt inbox', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-receipt-'));
+    temp_roots.push(root);
+    process.env.XDG_STATE_HOME = root;
+    const workspace = '/tmp/example-workspace/project-a';
+    const attempt_id = 'UI-orfj-agy';
+    const inbox = usageReceiptInboxDir(workspace, attempt_id);
+    ensureUsageReceiptInbox(workspace, attempt_id);
+    fs.writeFileSync(
+      path.join(inbox, 'launch-agy.json'),
+      JSON.stringify({
+        schema: 'codex-usage-receipt-v1',
+        receipt_id: 'launch-agy',
+        attempt_id,
+        provider: 'agy',
+        role: 'implementation',
+        thread_id: 'conv-1',
+        turn_id: 'conv-1',
+        model: 'gemini-4-neon-high',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 2,
+          cache_read_input_tokens: 1,
+          cache_creation_input_tokens: 0,
+          reasoning_output_tokens: 3
+        },
+        completed_at: '2026-11-28T00:12:00Z'
+      })
+    );
+    fs.chmodSync(path.join(inbox, 'launch-agy.json'), 0o600);
+
+    const result = readAttemptUsageReceipts(workspace, attempt_id);
+
+    expect(result.legs).toEqual([
+      expect.objectContaining({
+        receipt_id: 'launch-agy',
+        provider: 'agy',
+        session_id: 'conv-1',
+        model: 'gemini-4-neon-high'
+      })
+    ]);
+  });
+
   test('accepts a receipt without effort and normalizes it to null', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-receipt-'));
     temp_roots.push(root);
@@ -466,6 +511,26 @@ describe('nested usage legs across providers (UI-2mpn §5.3)', () => {
     const result = normalizeUsageLegs([codex_leg]);
 
     expect(result).toEqual([codex_leg]);
+  });
+
+  // A synthetic receipt, like the inbox one above (follow-up UI-4clyv).
+  test('accepts an agy delegation receipt unchanged', () => {
+    const agy_leg = {
+      ...codex_leg,
+      receipt_id: 'r-agy',
+      provider: 'agy',
+      model: 'gemini-4-neon-high'
+    };
+
+    const result = normalizeUsageLegs([agy_leg]);
+
+    expect(result).toEqual([agy_leg]);
+  });
+
+  test('rejects a receipt from an unknown provider', () => {
+    const result = normalizeUsageLegs([{ ...codex_leg, provider: 'gemini' }]);
+
+    expect(result).toEqual([]);
   });
 
   test('rejects a claude receipt carrying a codex role', () => {

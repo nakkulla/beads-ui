@@ -15,6 +15,14 @@ import { usageReceiptInboxDir, usageReceiptRootDir } from './state-paths.js';
 const log = debug('worker:usage-receipts');
 
 const RECEIPT_SCHEMA = 'codex-usage-receipt-v1';
+
+/**
+ * Providers whose delegation transport writes the receipt itself: the Codex
+ * bridge and the agy transport (agy-runtime §3.2) share one producer shape.
+ *
+ * @type {ReadonlySet<unknown>}
+ */
+const PRODUCER_PROVIDERS = new Set(['codex', 'agy']);
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 /** @type {number} */
@@ -187,7 +195,7 @@ export function isUsageLeg(value) {
     // A Codex receipt is producer-written and always four fields plus
     // reasoning; the total-only shape is the Claude subagent's alone.
     !isTotalOnlyUsage(value.usage) &&
-    value.provider === 'codex' &&
+    PRODUCER_PROVIDERS.has(value.provider) &&
     (value.role === 'implementation' || value.role === 'review-consult') &&
     !('agent_type' in value) &&
     !('agent_id' in value) &&
@@ -363,7 +371,7 @@ function parseReceipt(raw, attempt_id, receipt_id) {
     raw.schema !== RECEIPT_SCHEMA ||
     raw.receipt_id !== receipt_id ||
     raw.attempt_id !== attempt_id ||
-    raw.provider !== 'codex' ||
+    !PRODUCER_PROVIDERS.has(raw.provider) ||
     (raw.role !== 'implementation' && raw.role !== 'review-consult') ||
     !nonEmptyString(raw.thread_id) ||
     !nonEmptyString(raw.turn_id) ||
@@ -377,12 +385,12 @@ function parseReceipt(raw, attempt_id, receipt_id) {
     return null;
   }
   const receipt =
-    /** @type {{ role: 'implementation'|'review-consult', thread_id: string, turn_id: string, model: string, effort?: string, usage: { input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number, reasoning_output_tokens: number }, completed_at: string }} */ (
+    /** @type {{ provider: 'codex'|'agy', role: 'implementation'|'review-consult', thread_id: string, turn_id: string, model: string, effort?: string, usage: { input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number, reasoning_output_tokens: number }, completed_at: string }} */ (
       raw
     );
   return {
     receipt_id,
-    provider: 'codex',
+    provider: receipt.provider,
     role: receipt.role,
     session_id: receipt.thread_id,
     turn_id: receipt.turn_id,

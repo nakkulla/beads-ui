@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { createAutoPoolStore } from './auto-pool-store.js';
+import {
+  AUTO_POOL_RUNTIMES,
+  AUTO_POOL_SELECTABLE_RUNTIMES,
+  createAutoPoolStore
+} from './auto-pool-store.js';
 import { loadExecutionDefaults } from './worker/execution-defaults.js';
 
 /** The pinned projection's `implementation` block (the validation source). */
@@ -275,5 +279,79 @@ describe('auto pool store rejections', () => {
     });
 
     expect(result).toMatchObject({ ok: false, code: 'unknown_model' });
+  });
+});
+
+describe('auto pool store agy runtime (UI-h0hwo Phase 2)', () => {
+  /**
+   * The pinned projection plus an agy catalog, as the dotfiles pin will carry.
+   *
+   * @returns {Record<string, any>}
+   */
+  function withAgy() {
+    const base = /** @type {Record<string, any>} */ (IMPLEMENTATION);
+    return {
+      ...base,
+      model_catalog: {
+        ...base.model_catalog,
+        agy: { families: ['carbon', 'neon'] }
+      },
+      effort_catalog: {
+        ...base.effort_catalog,
+        agy: ['low', 'medium', 'high', 'xhigh']
+      }
+    };
+  }
+
+  test('names agy as a document runtime', () => {
+    expect([...AUTO_POOL_RUNTIMES]).toEqual(['claude', 'codex', 'agy']);
+  });
+
+  test('keeps agy out of the offered runtimes', () => {
+    expect([...AUTO_POOL_SELECTABLE_RUNTIMES]).toEqual(['claude', 'codex']);
+  });
+
+  test('accepts an agy entry of projection families', () => {
+    const store = makeStore(withAgy());
+
+    const result = store.set({
+      expected_revision: 0,
+      runtimes: { agy: entry(['carbon', 'neon'], 'medium', 'high') }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot().runtimes.agy).toEqual(
+      entry(['carbon', 'neon'], 'medium', 'high')
+    );
+  });
+
+  test('refuses an agy id where a family belongs', () => {
+    const store = makeStore(withAgy());
+
+    const result = store.set({
+      expected_revision: 0,
+      runtimes: { agy: entry(['gemini-4-neon-high']) }
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'unknown_model',
+      runtime: 'agy'
+    });
+  });
+
+  test('refuses every agy name while the pin carries no agy catalog', () => {
+    const store = makeStore();
+
+    const result = store.set({
+      expected_revision: 0,
+      runtimes: { agy: entry(['neon']) }
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'unknown_model',
+      runtime: 'agy'
+    });
   });
 });

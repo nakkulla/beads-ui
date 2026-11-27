@@ -115,6 +115,18 @@ export function preToolHookGroup(hook_path, runner) {
 }
 
 /**
+ * The environment that hands an agy run its PreToolUse hook script. agy reads
+ * no settings file for it: the dotfiles agy guard runs `$BDUI_PRETOOL_HOOK agy`
+ * for every shell command, so no `.agents/hooks.json` is written.
+ *
+ * @param {string} hook_path
+ * @returns {{ BDUI_PRETOOL_HOOK: string }}
+ */
+export function preToolHookEnv(hook_path) {
+  return { BDUI_PRETOOL_HOOK: hook_path };
+}
+
+/**
  * Install only the tool hook; disposition sessions keep their pre-push policy.
  * The shell catches Node startup/import failures as well as script errors.
  *

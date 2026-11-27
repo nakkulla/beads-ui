@@ -19,7 +19,7 @@
  */
 import { makeError, makeOk } from '../../app/protocol.js';
 import {
-  AUTO_POOL_RUNTIMES,
+  AUTO_POOL_SELECTABLE_RUNTIMES,
   autoPoolClaudeModels,
   autoPoolCodexFamilies,
   autoPoolDefaults,
@@ -91,7 +91,7 @@ export function autoPoolChoices(implementation, catalog) {
   );
   /** @type {Record<string, AutoPoolChoice>} */
   const choices = {};
-  for (const runtime of AUTO_POOL_RUNTIMES) {
+  for (const runtime of AUTO_POOL_SELECTABLE_RUNTIMES) {
     choices[runtime] = {
       models:
         runtime === 'claude'

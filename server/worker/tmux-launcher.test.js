@@ -789,6 +789,17 @@ describe('tmux-launcher runner resolution (UI-mn5u §4.2)', () => {
   test('refuses a runner outside the active vocabulary', () => {
     expect(defaultResolveRunner('grok')).toBeNull();
   });
+
+  test('resolves no agy launcher before the conversation launch opens', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-agy-bin-'));
+    temp_dirs.push(dir);
+    fs.writeFileSync(path.join(dir, 'agy'), '#!/bin/sh\n', { mode: 0o755 });
+    vi.stubEnv('PATH', dir);
+
+    const resolved = defaultResolveRunner('agy');
+
+    expect(resolved).toBeNull();
+  });
 });
 
 describe('tmux-launcher conversation flags (UI-jbl1 §3.4)', () => {

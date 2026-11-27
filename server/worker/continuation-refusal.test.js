@@ -10,6 +10,7 @@ describe('continuationRefusalClass (2026-10-01 stall-reconcile D1)', () => {
     ['gh_unavailable', 'transient'],
     ['git_error', 'transient'],
     ['attempt_prerecord_failed', 'transient'],
+    ['agy_model_list_unavailable', 'transient'],
     ['provider_gate', 'wait'],
     ['prerequisite_unmet', 'wait'],
     ['not_ready:in_progress', 'wait'],
@@ -19,6 +20,7 @@ describe('continuationRefusalClass (2026-10-01 stall-reconcile D1)', () => {
     ['worktree_missing', 'permanent'],
     ['workflow_mode_record_failed', 'permanent'],
     ['no_progress', 'permanent'],
+    ['agy_model_unlisted', 'permanent'],
     ['a_reason_nobody_has_seen', 'permanent']
   ])('classifies %s as %s', (reason, expected) => {
     const refusal_class = continuationRefusalClass(reason);

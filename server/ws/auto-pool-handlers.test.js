@@ -141,6 +141,18 @@ describe('auto pool channel', () => {
     });
   });
 
+  test('offers no agy choices before the Phase 4 UI', () => {
+    const sock = fakeSocket();
+
+    handleSubscribeAutoPool(
+      /** @type {any} */ (sock),
+      request('s1', 'subscribe-auto-pool')
+    );
+
+    const [snapshot] = snapshots(sock);
+    expect(Object.keys(snapshot.choices)).toEqual(['claude', 'codex']);
+  });
+
   test('offers the Codex families and the catalog pinned names up to xhigh', () => {
     const sock = fakeSocket();
 

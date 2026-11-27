@@ -48,6 +48,7 @@ import {
 import { publishRuntimeIdentity } from './runtime-startup.js';
 import { onTimingSettingsChanged, timingSeconds } from './timing-settings.js';
 import { watchDb } from './watcher.js';
+import { agyModelList } from './worker/agy-model-list.js';
 import { initWorkerRuntime } from './worker/attach.js';
 import { codexModelList } from './worker/codex-model-list.js';
 import { selectCodexSwitchCandidate } from './worker/codex-switch-candidate.js';
@@ -184,6 +185,14 @@ codex_model_list.onChange(() => {
   }
 });
 codex_model_list.start();
+
+// The agy model list gates every agy launch (agy-runtime §3.3): the last list
+// read under the current credentials is adopted before the first dispatch,
+// then the CLI is read now and hourly. No picker reads it before Phase 4, so
+// a change notifies nothing.
+const agy_model_list = agyModelList();
+agy_model_list.loadPersisted();
+agy_model_list.start();
 
 // Worker queue placement judgment (UI-izba §4.2): the jev pair cache is read
 // from the state directory here, so a restart asks no pair again. Installed

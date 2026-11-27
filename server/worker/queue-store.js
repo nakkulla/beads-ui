@@ -438,7 +438,7 @@
  *
  * @typedef {Object} UsageLeg
  * @property {string} receipt_id
- * @property {'codex'|'claude'} provider
+ * @property {'codex'|'claude'|'agy'} provider
  * @property {'implementation'|'review-consult'|'subagent'} role
  * @property {string|null} [agent_type] - Claude only: the `subagent_type` the
  * `Agent` call named, or the `agentType` its result reported.

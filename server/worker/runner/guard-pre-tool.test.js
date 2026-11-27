@@ -118,6 +118,47 @@ test('returns the same denial to Codex', () => {
   ).toBe('landing on the base branch is never permitted: gh pr merge 42');
 });
 
+test('refuses gh pr merge for the agy runner argument', () => {
+  const result = runHook('gh pr merge 42 --squash', 'agy');
+
+  expect(result.status).toBe(0);
+  expect(JSON.parse(result.stdout).hookSpecificOutput).toMatchObject({
+    hookEventName: 'PreToolUse',
+    permissionDecision: 'deny'
+  });
+  expect(
+    JSON.parse(
+      fs.readFileSync(guardEventLogPath(root, input.attempt_id), 'utf8')
+    )
+  ).toMatchObject({ kind: 'guard_denied', runner: 'agy' });
+});
+
+test('records an agy hook denial on the bead timeline', () => {
+  const timeline = createBeadTimeline({ workspace_root: root });
+  const store = createQueueStore({ timeline });
+  store.appendAttempt(root, {
+    expected_revision: 0,
+    attempt: { attempt_id: input.attempt_id, bead_id: 'UI-1' }
+  });
+  const monitor = monitorGuardEvents({
+    workspace: root,
+    attempt_id: input.attempt_id,
+    store,
+    sessionLog: { publish: vi.fn() }
+  });
+
+  runHook('gh pr merge 42', 'agy');
+  monitor.stop();
+
+  expect(
+    timeline
+      .readTimeline('UI-1')
+      .filter((event) => event.kind === 'guard_denied')
+  ).toEqual([
+    expect.objectContaining({ runner: 'agy', command: 'gh pr merge 42' })
+  ]);
+});
+
 test('allows malformed input and records the hook error', () => {
   const result = spawnSync(
     '/bin/sh',
