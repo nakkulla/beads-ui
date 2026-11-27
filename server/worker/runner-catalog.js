@@ -75,7 +75,16 @@
  *
  * @type {ReadonlyArray<string>}
  */
-export const ACTIVE_RUNNERS = ['claude', 'codex'];
+export const ACTIVE_RUNNERS = ['claude', 'codex', 'agy'];
+
+/**
+ * Runners a person may choose through the UI and the write paths. `agy` is
+ * dispatchable but stays out of every selectable choice until the agy runtime
+ * plan opens them (agy-runtime Phase 4).
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const SELECTABLE_RUNNERS = ['claude', 'codex'];
 
 /**
  * Builtin catalog. Values are measured against the installed CLIs, not copied
@@ -104,6 +113,14 @@ const BUILTIN = {
     models: {},
     // Per-model `efforts` win over this runner-wide list.
     efforts: ['minimal', 'low', 'medium', 'high', 'xhigh']
+  },
+  // The agy model ids come from `agy models` (`agy-model-list.js`) and carry
+  // their effort inside the id, so the runner has no effort vocabulary.
+  agy: {
+    command: 'agy',
+    models: {},
+    efforts: [],
+    default_model: 'gemini-4-neon-high'
   }
 };
 
@@ -259,16 +276,26 @@ function codexModels(names) {
 }
 
 /**
- * Fresh copy of the builtin runner table with the codex names filled in.
+ * Fresh copy of the builtin runner table with the codex names and the agy ids
+ * filled in.
  *
  * @param {string} runner_name
  * @param {CodexNameTable} codex_names
+ * @param {ReadonlyArray<string>} agy_names
  * @returns {RunnerCatalogEntry}
  */
-function builtinEntry(runner_name, codex_names) {
+function builtinEntry(runner_name, codex_names, agy_names) {
   const entry = copyEntry(BUILTIN[runner_name]);
   if (runner_name === 'codex') {
     entry.models = codexModels(codex_names);
+  }
+  if (runner_name === 'agy') {
+    /** @type {Record<string, CatalogModel>} */
+    const models = {};
+    for (const id of agy_names) {
+      models[id] = { id };
+    }
+    entry.models = models;
   }
   return entry;
 }
@@ -368,16 +395,18 @@ function copyEntry(entry) {
 
 /**
  * Fresh deep copy of the builtin catalog — callers may mutate it freely. The
- * codex runner is filled from `codex_names` (the seed table by default).
+ * codex runner is filled from `codex_names` (the seed table by default) and the
+ * agy runner from `agy_names` (empty until the agy list has been read).
  *
  * @param {CodexNameTable} [codex_names]
+ * @param {ReadonlyArray<string>} [agy_names]
  * @returns {Record<string, RunnerCatalogEntry>}
  */
-export function builtinCatalog(codex_names = CODEX_SEED_NAMES) {
+export function builtinCatalog(codex_names = CODEX_SEED_NAMES, agy_names = []) {
   /** @type {Record<string, RunnerCatalogEntry>} */
   const out = {};
   for (const name of Object.keys(BUILTIN)) {
-    out[name] = builtinEntry(name, codex_names);
+    out[name] = builtinEntry(name, codex_names, agy_names);
   }
   return out;
 }
@@ -570,10 +599,12 @@ function mergeRunnerSection(runners, runner_name, section, warn) {
 
 /**
  * Build the model → runner index, enforcing global model-name uniqueness.
- * Builtin names (including the codex names generated from the CLI list) are
- * registered first so they always win; a config-added name that collides is
- * dropped from its runner. Both passes walk `active` in order, so the result
- * does not depend on config declaration order.
+ * Builtin names (including the codex names generated from the CLI list and the
+ * agy ids from `agy models`) are registered first so they always win; a
+ * config-added name that collides is dropped from its runner. Two builtin names
+ * that collide keep the runner earlier in `active`, so a listed agy id never
+ * takes a Claude or Codex name. Both passes walk `active` in order, so the
+ * result does not depend on config declaration order.
  *
  * @param {Record<string, RunnerCatalogEntry>} runners
  * @param {ReadonlyArray<string>} active
@@ -594,9 +625,20 @@ function buildModelIndex(runners, active, builtin_names, warn) {
       continue;
     }
     for (const model_name of Object.keys(entry.models)) {
-      if (builtin.has(model_name)) {
-        model_index[model_name] = runner_name;
+      if (!builtin.has(model_name)) {
+        continue;
       }
+      // Two runners' listed names can meet (an agy id against a Claude or
+      // Codex name); the runner earlier in `active` keeps the name.
+      if (hasOwn(model_index, model_name)) {
+        warn(
+          `${runner_name} 모델 ${model_name} 무시: 모델명이 ${model_index[model_name]} 러너와 충돌합니다.`
+        );
+        delete entry.models[model_name];
+        builtin.delete(model_name);
+        continue;
+      }
+      model_index[model_name] = runner_name;
     }
   }
 
@@ -634,6 +676,7 @@ function buildModelIndex(runners, active, builtin_names, warn) {
  *   overrides?: unknown,
  *   active?: ReadonlyArray<string>,
  *   codex_names?: CodexNameTable,
+ *   agy_names?: ReadonlyArray<string>,
  *   warn?: (message: string) => void
  * }} [options]
  * @returns {ResolvedCatalog}
@@ -642,6 +685,7 @@ export function resolveCatalog(options = {}) {
   const active = options.active ?? ACTIVE_RUNNERS;
   const warn = options.warn ?? console.warn;
   const codex_names = options.codex_names ?? CODEX_SEED_NAMES;
+  const agy_names = options.agy_names ?? [];
 
   /** @type {Record<string, RunnerCatalogEntry>} */
   const runners = {};
@@ -649,7 +693,7 @@ export function resolveCatalog(options = {}) {
   const builtin_names = {};
   for (const runner_name of active) {
     if (hasOwn(BUILTIN, runner_name)) {
-      runners[runner_name] = builtinEntry(runner_name, codex_names);
+      runners[runner_name] = builtinEntry(runner_name, codex_names, agy_names);
       builtin_names[runner_name] = new Set(
         Object.keys(runners[runner_name].models)
       );

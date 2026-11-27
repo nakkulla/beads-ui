@@ -13,7 +13,8 @@ import {
   modelOrchestrationEfforts,
   modelRunner,
   modelSpeedTiers,
-  resolveCatalog
+  resolveCatalog,
+  SELECTABLE_RUNNERS
 } from './runner-catalog.js';
 
 describe('worker/runner-catalog parity with the pinned execution defaults', () => {
@@ -235,8 +236,12 @@ describe('worker/runner-catalog codex name grammar', () => {
 });
 
 describe('worker/runner-catalog builtin defaults', () => {
-  test('lists claude and codex as the active runners', () => {
-    expect(ACTIVE_RUNNERS).toEqual(['claude', 'codex']);
+  test('lists claude, codex and agy as the active runners', () => {
+    expect(ACTIVE_RUNNERS).toEqual(['claude', 'codex', 'agy']);
+  });
+
+  test('keeps agy out of the selectable runners', () => {
+    expect(SELECTABLE_RUNNERS).toEqual(['claude', 'codex']);
   });
 
   test('returns a fresh deep copy each call', () => {
@@ -566,7 +571,7 @@ describe('worker/runner-catalog fail-quiet validation', () => {
 
     const catalog = resolveCatalog({ overrides: [{ claude: {} }], warn });
 
-    expect(Object.keys(catalog.runners)).toEqual(['claude', 'codex']);
+    expect(Object.keys(catalog.runners)).toEqual(['claude', 'codex', 'agy']);
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
@@ -779,6 +784,79 @@ describe('worker/runner-catalog global model-name uniqueness', () => {
     expect(modelRunner(catalog, 'opus')).toBe('claude');
     expect(modelEfforts(catalog, 'opus')).toEqual(['max']);
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('worker/runner-catalog agy ids from the agy list', () => {
+  test('carries no agy model before the list is read', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    expect(catalog.runners.agy).toEqual({
+      command: 'agy',
+      models: {},
+      efforts: [],
+      default_model: 'gemini-4-neon-high'
+    });
+  });
+
+  test('registers each listed agy id as its own model name', () => {
+    const catalog = resolveCatalog({
+      agy_names: ['gemini-4-neon-high', 'gemini-4-carbon-medium'],
+      warn: () => {}
+    });
+
+    expect(catalog.runners.agy.models['gemini-4-neon-high']).toEqual({
+      id: 'gemini-4-neon-high'
+    });
+    expect(modelRunner(catalog, 'gemini-4-carbon-medium')).toBe('agy');
+  });
+
+  test('resolves a listed agy claude id to agy rather than claude', () => {
+    const catalog = resolveCatalog({
+      agy_names: ['claude-opus-5-5-high'],
+      warn: () => {}
+    });
+
+    expect(modelRunner(catalog, 'claude-opus-5-5-high')).toBe('agy');
+  });
+
+  test('drops an agy id that collides with a claude name', () => {
+    const warn = vi.fn();
+
+    const catalog = resolveCatalog({
+      agy_names: ['opus', 'gemini-4-neon-high'],
+      warn
+    });
+
+    expect(modelRunner(catalog, 'opus')).toBe('claude');
+    expect(catalog.runners.agy.models.opus).toBe(undefined);
+    expect(catalog.runners.agy.models['gemini-4-neon-high']).toBeDefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  test('drops an agy id that collides with a codex name', () => {
+    const catalog = resolveCatalog({ agy_names: ['sol'], warn: () => {} });
+
+    expect(modelRunner(catalog, 'sol')).toBe('codex');
+    expect(catalog.runners.agy.models.sol).toBe(undefined);
+  });
+
+  test('gives an agy model no effort and only the default speed', () => {
+    const catalog = resolveCatalog({
+      agy_names: ['gemini-4-neon-high'],
+      warn: () => {}
+    });
+
+    expect(modelEfforts(catalog, 'gemini-4-neon-high')).toEqual([]);
+    expect(modelSpeedTiers(catalog, 'gemini-4-neon-high')).toEqual([
+      'default'
+    ]);
+  });
+
+  test('fills the builtin agy entry from the given ids', () => {
+    const runners = builtinCatalog(CODEX_SEED_NAMES, ['gemini-4-neon-high']);
+
+    expect(Object.keys(runners.agy.models)).toEqual(['gemini-4-neon-high']);
   });
 });
 

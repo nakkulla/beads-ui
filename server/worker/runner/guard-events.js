@@ -105,7 +105,7 @@ export function monitorGuardEvents(input) {
         const event = JSON.parse(line);
         if (
           !['guard_denied', 'guard_warning'].includes(event.kind) ||
-          !['claude', 'codex'].includes(event.runner) ||
+          !['claude', 'codex', 'agy'].includes(event.runner) ||
           typeof event.reason !== 'string'
         ) {
           return;
