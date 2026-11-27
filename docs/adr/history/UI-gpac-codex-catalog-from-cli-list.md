@@ -1,11 +1,12 @@
 ---
 id: UI-gpac
 title: Codex 모델 카탈로그의 원천은 Codex CLI 목록이다
-status: accepted
+status: superseded
 date: 2026-10-12
 summary: "beads-ui의 Codex 모델 선택지는 서버가 Codex CLI 목록(codex debug models)을 비동기로 읽어 dotfiles와 같은 규칙(계열별 최신 list·v2 → 별칭, 모든 적격 버전 → <계열>-<버전> 고정 이름)으로 만들고, 규칙은 JS로 복제해 dotfiles 해석기와 교차 테스트로 묶는다; 마지막 성공 목록을 영속해 읽기 실패가 카탈로그를 줄이지 않으며, effort·speed는 계열 템플릿을, 단가는 별칭이 해석된 고정 이름의 것을 상속하며, 목록에서 빠진 고정 이름의 저장값은 원문을 보존하고 실행은 기본값으로 대신한다"
 spec: docs/superpowers/specs/2026-10-07-codex-model-list-from-cli-design.md
 bead: UI-gpac
+superseded_by: 'UI-h0hwo'
 ---
 
 # Codex 모델 카탈로그의 원천은 Codex CLI 목록이다
