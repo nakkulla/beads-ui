@@ -31,6 +31,11 @@
  *
  * @import { ResolvedCatalog } from './runner-catalog.js'
  */
+import {
+  AGY_EFFORTS,
+  AGY_FAMILIES,
+  agyFamilyEffort
+} from './agy-model-list.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
 import {
   catalogEfforts,
@@ -55,6 +60,7 @@ export const REVIEW_STEP_MODELS = [
   'astra',
   'opus',
   'fable',
+  'neon',
   'self',
   'skip'
 ];
@@ -65,20 +71,20 @@ export const REVIEW_STEP_MODELS = [
  *
  * @type {ReadonlyArray<string>}
  */
-export const PLAN_REVIEW_MODELS = ['codex', 'astra', 'fable', 'skip'];
+export const PLAN_REVIEW_MODELS = ['codex', 'astra', 'fable', 'neon', 'skip'];
 
 /**
- * Reviewer values a durable layer may already carry although no beads-ui
- * surface writes them yet (UI-6o70): the dotfiles contract added `neon`, and a
- * session that stores it must not read back as an invalid pin. Writers keep
- * {@link REVIEW_STEP_MODELS} / {@link PLAN_REVIEW_MODELS}.
+ * Reviewer values a durable layer may carry. Since the agy runtime opened its
+ * write paths (UI-ufgo) every stored reviewer is also writable, so the read
+ * vocabulary is the write one; the names stay for the readers that judge a
+ * durable layer.
  *
  * @type {ReadonlyArray<string>}
  */
-export const STORED_REVIEW_STEP_MODELS = [...REVIEW_STEP_MODELS, 'neon'];
+export const STORED_REVIEW_STEP_MODELS = REVIEW_STEP_MODELS;
 
 /** @type {ReadonlyArray<string>} */
-export const STORED_PLAN_REVIEW_MODELS = [...PLAN_REVIEW_MODELS, 'neon'];
+export const STORED_PLAN_REVIEW_MODELS = PLAN_REVIEW_MODELS;
 
 /**
  * Effort vocabulary for all three review steps. Fixed by the contract rather
@@ -99,24 +105,23 @@ export const REVIEW_SPEEDS = ['default', 'fast'];
  *
  * @type {ReadonlyArray<string>}
  */
-export const IMPL_RUNTIMES = ['auto', 'claude', 'codex'];
+export const IMPL_RUNTIMES = ['auto', 'claude', 'codex', 'agy'];
 
 /**
- * Implementation runtimes a durable layer may carry but no beads-ui writer
- * offers yet (UI-6o70). `agy` is the value a controller session hands to the
- * dotfiles transport, so it means something without a beads-ui runner; it has
- * no catalog entry, which is why its effort is judged against the catalog
- * union like a model-less `auto`.
+ * Implementation runtimes a durable layer may carry. Equal to
+ * {@link IMPL_RUNTIMES} since `agy` became writable (UI-ufgo).
  *
  * @type {ReadonlyArray<string>}
  */
-export const STORED_ONLY_IMPL_RUNTIMES = ['agy'];
+export const STORED_IMPL_RUNTIMES = IMPL_RUNTIMES;
 
-/** @type {ReadonlyArray<string>} */
-export const STORED_IMPL_RUNTIMES = [
-  ...IMPL_RUNTIMES,
-  ...STORED_ONLY_IMPL_RUNTIMES
-];
+/**
+ * `quick_fix_impl_runtime` choices: the contract's quick_fix runtimes, which
+ * have no `auto` because the provider is derived from the model token.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const QUICK_FIX_IMPL_RUNTIMES = ['claude', 'codex', 'agy'];
 
 /**
  * `impl_dispatch` — whether the controller delegates the implementation leg or
@@ -440,7 +445,7 @@ export function sessionDefaultEnums(catalog = runtimeCatalog()) {
     impl_effort: [AUTO_LITERAL, ...base.impl_effort],
     impl_speed: IMPL_SPEEDS,
     quick_fix_impl_dispatch: IMPL_DISPATCHES,
-    quick_fix_impl_runtime: ['claude', 'codex'],
+    quick_fix_impl_runtime: QUICK_FIX_IMPL_RUNTIMES,
     quick_fix_impl_model: base.impl_model,
     quick_fix_impl_effort: [AUTO_LITERAL, ...base.impl_effort],
     quick_fix_impl_speed: IMPL_SPEEDS,
@@ -451,24 +456,81 @@ export function sessionDefaultEnums(catalog = runtimeCatalog()) {
 }
 
 /**
- * The {@link sessionDefaultEnums} table widened by the values a durable kv
- * object may carry but no beads-ui writer offers (UI-6o70). Only the READ path uses it,
- * so a stored `agy`/`neon` survives normalization while a patch naming it is
- * still refused.
+ * The vocabulary the READ path judges a durable kv object with. It equals
+ * {@link sessionDefaultEnums} since the stored-only `agy`/`neon` values became
+ * writable (UI-ufgo); kept as its own entry so a future read-only value has
+ * one place to widen.
  *
  * @param {ResolvedCatalog} [catalog]
  * @returns {Record<string, ReadonlyArray<string>>}
  */
 export function storedSessionDefaultEnums(catalog = runtimeCatalog()) {
-  return {
-    ...sessionDefaultEnums(catalog),
-    spec_review_model: STORED_REVIEW_STEP_MODELS,
-    plan_review_model: STORED_PLAN_REVIEW_MODELS,
-    impl_review_model: STORED_REVIEW_STEP_MODELS,
-    impl_runtime: STORED_IMPL_RUNTIMES,
-    quick_fix_impl_runtime: ['claude', 'codex', ...STORED_ONLY_IMPL_RUNTIMES],
-    quick_fix_impl_review_model: STORED_REVIEW_STEP_MODELS
-  };
+  return sessionDefaultEnums(catalog);
+}
+
+/**
+ * Rewrite the agy ids a writer put in the workflow model slots
+ * (`impl_model`, `quick_fix_impl_model`) into the dotfiles contract's shape:
+ * the family in the model slot and the id's effort in the effort slot
+ * (agy-runtime §3.3). A missing runtime becomes `agy`; `auto` stays, since
+ * the selector derives agy from the family. An id outside the four families is
+ * left as it is, so the model check refuses it rather than storing it.
+ *
+ * Refused: an id beside a different explicit effort (`agy_effort_conflict`)
+ * or beside another provider's runtime (`provider_model_mismatch`).
+ *
+ * @param {Record<string, unknown>} settings
+ * @returns {{ ok: true, settings: Record<string, unknown> }|{ ok: false, reason: string }}
+ */
+export function splitAgyWorkflowModels(settings) {
+  /** @type {Record<string, unknown>} */
+  const out = { ...settings };
+  for (const prefix of ['', 'quick_fix_']) {
+    const model_key = `${prefix}impl_model`;
+    const pair = agyFamilyEffort(out[model_key]);
+    if (!pair) {
+      continue;
+    }
+    const effort_key = `${prefix}impl_effort`;
+    const runtime_key = `${prefix}impl_runtime`;
+    const effort = out[effort_key];
+    if (
+      typeof effort === 'string' &&
+      effort !== '' &&
+      effort !== AUTO_LITERAL &&
+      effort !== pair.effort
+    ) {
+      return { ok: false, reason: 'agy_effort_conflict' };
+    }
+    const runtime = out[runtime_key];
+    if (typeof runtime === 'string' && runtime !== '') {
+      if (runtime !== 'agy' && runtime !== AUTO_LITERAL) {
+        return { ok: false, reason: 'provider_model_mismatch' };
+      }
+    } else {
+      out[runtime_key] = 'agy';
+    }
+    out[model_key] = pair.family;
+    out[effort_key] = pair.effort;
+  }
+  return { ok: true, settings: out };
+}
+
+/**
+ * The runtime a workflow model token names: an agy family is agy's, a raw agy
+ * id is no workflow model at all (its family and effort are what the contract
+ * stores), and any other token is its catalog runner's.
+ *
+ * @param {ResolvedCatalog} catalog
+ * @param {unknown} model
+ * @returns {string|null}
+ */
+function workflowModelRunner(catalog, model) {
+  if (typeof model === 'string' && AGY_FAMILIES.includes(model)) {
+    return 'agy';
+  }
+  const runner = modelRunner(catalog, model);
+  return runner === 'agy' ? null : runner;
 }
 
 /**
@@ -666,7 +728,7 @@ export function inferImplRuntime(settings, catalog = runtimeCatalog()) {
   if (typeof settings?.impl_runtime === 'string') {
     return undefined;
   }
-  const runtime = modelRunner(catalog, settings?.impl_model);
+  const runtime = workflowModelRunner(catalog, settings?.impl_model);
   return runtime ?? undefined;
 }
 
@@ -678,6 +740,9 @@ export function inferImplRuntime(settings, catalog = runtimeCatalog()) {
  * @returns {string[]}
  */
 function runtimeEfforts(catalog, runtime) {
+  if (runtime === 'agy') {
+    return AGY_EFFORTS.slice();
+  }
   const entry = catalog.runners[runtime];
   if (!entry) {
     return [];
@@ -699,8 +764,9 @@ function runtimeEfforts(catalog, runtime) {
  * boundaries. Legacy readers may infer a missing runtime; active writers may
  * not store an exact model without its matching runtime. `auto` derives no
  * provider, so `provider_model_mismatch` cannot arise under it and a
- * model-less `auto` checks effort against the whole catalog union. A reader
- * (`active_writer: false`) also accepts {@link STORED_ONLY_IMPL_RUNTIMES}.
+ * model-less `auto` checks effort against the whole catalog union. An agy
+ * model is a family (agy-runtime §3.3) whose efforts are {@link AGY_EFFORTS};
+ * a raw agy id is unknown here, since the writer splits it first.
  *
  * @param {{ orchestration_model?: unknown, impl_runtime?: unknown, impl_model?: unknown, impl_effort?: unknown }} settings
  * @param {{ catalog?: ResolvedCatalog, active_writer?: boolean, controller_runtime?: string }} [options] - `controller_runtime`
@@ -737,7 +803,7 @@ export function validateImplSettings(settings, options = {}) {
   }
 
   const model_runtime =
-    model === undefined ? null : modelRunner(catalog, model);
+    model === undefined ? null : workflowModelRunner(catalog, model);
   if (model !== undefined && !model_runtime) {
     return { ok: false, reason: 'unknown_impl_model' };
   }
@@ -762,12 +828,14 @@ export function validateImplSettings(settings, options = {}) {
   }
 
   if (effort !== undefined) {
-    const allowed = model_runtime
-      ? modelEfforts(catalog, model)
-      : effective_runtime &&
-          !STORED_ONLY_IMPL_RUNTIMES.includes(effective_runtime)
-        ? runtimeEfforts(catalog, effective_runtime)
-        : catalogEfforts(catalog);
+    const allowed =
+      model_runtime === 'agy'
+        ? AGY_EFFORTS.slice()
+        : model_runtime
+          ? modelEfforts(catalog, model)
+          : effective_runtime && effective_runtime !== AUTO_LITERAL
+            ? runtimeEfforts(catalog, effective_runtime)
+            : catalogEfforts(catalog);
     if (!allowed.includes(effort)) {
       return { ok: false, reason: 'illegal_impl_effort' };
     }
@@ -849,9 +917,11 @@ export function validateOrchestrationPin(settings, options = {}) {
  * Allowed values per exec-preference key — the 15 workspace-global-capable keys
  * (`workflow_mode` excluded).
  *
- * `orchestration_model` and `impl_model` take the catalog's model names (claude
- * aliases plus the codex short names, which pass through unexpanded — the worker
- * never assembles a full model id). `orchestration_effort` uses the outer
+ * `orchestration_model` takes the catalog's model names (claude aliases, the
+ * codex short names, which pass through unexpanded — the worker never
+ * assembles a full model id — and the listed agy ids). `impl_model` takes the
+ * same names minus the agy ids plus the four agy families, the contract's
+ * stored shape (agy-runtime §3.3). `orchestration_effort` uses the outer
  * catalog union and is narrowed per resolved model by `policy.js`; `impl_effort`
  * retains the implementation union because it names a leaf whose model is not
  * known at set time.
@@ -862,8 +932,18 @@ export function validateOrchestrationPin(settings, options = {}) {
  */
 export function execSettingEnums(catalog = runtimeCatalog()) {
   const models = Object.keys(catalog.model_index);
+  const workflow_models = [
+    ...models.filter((model) => catalog.model_index[model] !== 'agy'),
+    ...AGY_FAMILIES
+  ];
   const orchestration_efforts = catalogOrchestrationEfforts(catalog);
+  /** @type {string[]} */
   const impl_efforts = catalogEfforts(catalog);
+  for (const effort of AGY_EFFORTS) {
+    if (!impl_efforts.includes(effort)) {
+      impl_efforts.push(effort);
+    }
+  }
   return {
     orchestration_model: models,
     orchestration_effort: orchestration_efforts,
@@ -878,7 +958,7 @@ export function execSettingEnums(catalog = runtimeCatalog()) {
     impl_review_effort: REVIEW_EFFORTS,
     impl_review_speed: REVIEW_SPEEDS,
     impl_runtime: IMPL_RUNTIMES,
-    impl_model: models,
+    impl_model: workflow_models,
     impl_effort: impl_efforts
   };
 }

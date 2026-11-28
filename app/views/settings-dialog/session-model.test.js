@@ -574,19 +574,21 @@ describe('narrowImplTarget', () => {
 });
 
 describe('writablePresetSettings', () => {
-  test('drops stored-only agy and neon values and keeps every other key', () => {
+  test('keeps the writable agy and neon values and drops an unlisted one', () => {
     const settings = {
       impl_runtime: 'agy',
       impl_model: 'opus',
       spec_review_model: 'neon',
-      plan_review_model: 'neon',
+      plan_review_model: 'retired',
       impl_review_model: 'codex'
     };
 
     const writable = writablePresetSettings(settings);
 
     expect(writable).toEqual({
+      impl_runtime: 'agy',
       impl_model: 'opus',
+      spec_review_model: 'neon',
       impl_review_model: 'codex'
     });
   });
@@ -742,16 +744,23 @@ describe('orchestrationModelOptions', () => {
 });
 
 describe('buildExecutionOptionView', () => {
-  test('offers Astra in both reviewer vocabularies', () => {
+  test('offers Astra and Neon in both reviewer vocabularies', () => {
     expect(REVIEW_STEP_MODELS).toEqual([
       'codex',
       'astra',
       'opus',
       'fable',
+      'neon',
       'self',
       'skip'
     ]);
-    expect(PLAN_REVIEW_MODELS).toEqual(['codex', 'astra', 'fable', 'skip']);
+    expect(PLAN_REVIEW_MODELS).toEqual([
+      'codex',
+      'astra',
+      'fable',
+      'neon',
+      'skip'
+    ]);
   });
 
   test('keeps a stored token the narrowed choice list no longer offers', () => {

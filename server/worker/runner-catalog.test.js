@@ -240,8 +240,8 @@ describe('worker/runner-catalog builtin defaults', () => {
     expect(ACTIVE_RUNNERS).toEqual(['claude', 'codex', 'agy']);
   });
 
-  test('keeps agy out of the selectable runners', () => {
-    expect(SELECTABLE_RUNNERS).toEqual(['claude', 'codex']);
+  test('offers every active runner, agy included, as selectable', () => {
+    expect(SELECTABLE_RUNNERS).toEqual(['claude', 'codex', 'agy']);
   });
 
   test('returns a fresh deep copy each call', () => {

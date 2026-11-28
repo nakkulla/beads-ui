@@ -2326,3 +2326,80 @@ describe('chip-preset-toggle (design §4)', () => {
     ).toEqual(['applied', 'restored']);
   });
 });
+
+describe('agy presets (UI-ufgo Phase 4)', () => {
+  test('stores a chosen agy id as its family and effort on save', () => {
+    const { ws, sent } = fakeWs();
+
+    seedPreset(ws, sent, {
+      impl_runtime: 'agy',
+      impl_model: 'gemini-4-neon-high',
+      impl_review_model: 'neon'
+    });
+
+    expect(sent[0].payload.presets[0].settings).toEqual({
+      impl_runtime: 'agy',
+      impl_model: 'neon',
+      impl_effort: 'high',
+      impl_review_model: 'neon'
+    });
+  });
+
+  test('pins an agy preset onto a bead as family and effort', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, {
+      impl_runtime: 'agy',
+      impl_model: 'gemini-4-carbon-xhigh',
+      impl_review_model: 'neon'
+    });
+    runBdJsonProjectedInWorkspace.mockResolvedValue({
+      ok: true,
+      data: { id: 'UI-1', metadata: { route: 'spec_backed' } }
+    });
+    runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
+
+    await handleApplyImplPreset(ws, {
+      id: 'apply',
+      type: 'apply-impl-preset',
+      payload: { id: 'UI-1', preset_id, expected_revision: 1 }
+    });
+
+    const argv = runBdInWorkspace.mock.calls[0][1];
+    expect(argv).toEqual(
+      expect.arrayContaining([
+        'impl_runtime=agy',
+        'impl_model=carbon',
+        'impl_effort=xhigh',
+        'impl_review_model=neon'
+      ])
+    );
+  });
+
+  test('writes a quick_fix agy preset into the prefixed kv keys as family and effort', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(
+      ws,
+      sent,
+      { impl_model: 'gemini-4-argon-medium' },
+      'quick_fix'
+    );
+    const expected = {
+      schema: 1,
+      quick_fix_impl_runtime: 'agy',
+      quick_fix_impl_model: 'argon',
+      quick_fix_impl_effort: 'medium'
+    };
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } })
+      .mockResolvedValueOnce({ ok: true, value: expected });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply',
+      type: 'apply-impl-preset-global',
+      payload: { preset_id, expected_revision: 1, expected_queue_revision: 0 }
+    });
+
+    expect(kvSetJsonInWorkspace.mock.calls[0][2]).toEqual(expected);
+  });
+});

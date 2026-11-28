@@ -22,6 +22,7 @@
 import {
   WORKSPACE_KV_KEYS,
   sessionDefaultEnums,
+  splitAgyWorkflowModels,
   storedSessionDefaultEnums
 } from './worker/exec-enums.js';
 
@@ -167,6 +168,9 @@ export function normalizeSessionDefaults(raw, options = {}) {
  * `type: bool` key never sends: its off position is the deletion, and its
  * `false` is an ordinary storable value meaning the same thing.
  *
+ * An agy id in a workflow model slot is stored as its family and effort
+ * ({@link splitAgyWorkflowModels}).
+ *
  * @param {unknown} raw
  * @param {{ catalog?: ResolvedCatalog }} [options]
  * @returns {{ ok: true, patch: Record<string, string|boolean|null> }|{ ok: false, reason: string }}
@@ -176,9 +180,13 @@ export function validateSessionDefaultsPatch(raw, options = {}) {
     return { ok: false, reason: 'values must be an object' };
   }
   const enums = sessionDefaultEnums(options.catalog);
+  const split = splitAgyWorkflowModels(raw);
+  if (!split.ok) {
+    return { ok: false, reason: split.reason };
+  }
   /** @type {Record<string, string|boolean|null>} */
   const patch = {};
-  for (const [key, value] of Object.entries(raw)) {
+  for (const [key, value] of Object.entries(split.settings)) {
     if (!WORKSPACE_KV_KEYS.includes(key)) {
       return { ok: false, reason: `unknown session-default key: ${key}` };
     }

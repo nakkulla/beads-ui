@@ -78,13 +78,12 @@
 export const ACTIVE_RUNNERS = ['claude', 'codex', 'agy'];
 
 /**
- * Runners a person may choose through the UI and the write paths. `agy` is
- * dispatchable but stays out of every selectable choice until the agy runtime
- * plan opens them (agy-runtime Phase 4).
+ * Runners a person may choose through the UI and the write paths — every
+ * active runner since the agy runtime opened its choices (UI-ufgo).
  *
  * @type {ReadonlyArray<string>}
  */
-export const SELECTABLE_RUNNERS = ['claude', 'codex'];
+export const SELECTABLE_RUNNERS = ACTIVE_RUNNERS;
 
 /**
  * Builtin catalog. Values are measured against the installed CLIs, not copied

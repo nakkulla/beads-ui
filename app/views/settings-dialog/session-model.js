@@ -288,7 +288,7 @@ export function presetKvKeysFor(applies_to) {
 export const IMPL_DISPATCHES = ['delegated', 'main'];
 
 /** Which runtime the delegated implementation leg runs on. */
-export const IMPL_RUNTIMES = ['auto', 'claude', 'codex'];
+export const IMPL_RUNTIMES = ['auto', 'claude', 'codex', 'agy'];
 
 /** Service tier for the implementation leg; `fast` is Codex-only. */
 export const IMPL_SPEEDS = ['default', 'fast'];
@@ -301,10 +301,11 @@ export const REVIEW_STEP_MODELS = [
   'astra',
   'opus',
   'fable',
+  'neon',
   'self',
   'skip'
 ];
-export const PLAN_REVIEW_MODELS = ['codex', 'astra', 'fable', 'skip'];
+export const PLAN_REVIEW_MODELS = ['codex', 'astra', 'fable', 'neon', 'skip'];
 export const REVIEW_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 export const REVIEW_SPEEDS = ['default', 'fast'];
 
@@ -736,8 +737,8 @@ function presetIgnoredKeysFor(applies_to) {
 
 /**
  * The value list a preset save may store for each enumerated canonical key.
- * A stored kv can hold a value only the read side accepts yet (`agy`, `neon`;
- * UI-6o70), and the preset write would refuse the whole set over it.
+ * A stored kv value outside these lists would make the preset write refuse
+ * the whole set (UI-6o70); `agy`/`neon` joined the lists in UI-ufgo.
  */
 const PRESET_WRITE_VALUES = Object.freeze({
   impl_runtime: IMPL_RUNTIMES,

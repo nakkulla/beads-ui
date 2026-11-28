@@ -32,7 +32,7 @@ describe('decorateQueue runner_catalog decoration (UI-jrb3 §7)', () => {
     const catalog = /** @type {any} */ (decorateQueue(WS, bareQueue()))
       .runner_catalog;
 
-    expect(Object.keys(catalog.runners)).toEqual(['claude', 'codex']);
+    expect(Object.keys(catalog.runners)).toEqual(['claude', 'codex', 'agy']);
     expect(Object.keys(catalog.runners.claude.models)).toContain('opus');
     expect(Object.keys(catalog.runners.codex.models)).toContain('sol');
     expect(catalog.model_index.sol).toBe('codex');

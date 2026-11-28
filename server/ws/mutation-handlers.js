@@ -16,6 +16,7 @@ import {
   AUTO_LITERAL,
   execSettingEnums,
   sessionDefaultEnums,
+  splitAgyWorkflowModels,
   validateExecSpeeds,
   validateImplSettings
 } from '../worker/exec-enums.js';
@@ -546,34 +547,39 @@ export async function handleUpdateImplTarget(ws, req) {
     );
     return;
   }
-  // Coherence is judged over the EXACT values only: `auto` names a selector
-  // state, not a catalog model or effort, so it neither constrains nor is
-  // constrained by the runtime (spec §A `impl_model`/`impl_effort` auto).
-  const coherence = validateImplSettings(
-    exactImplValues({ impl_runtime, impl_model, impl_effort }),
-    {
-      ...(typeof orchestration_runtime === 'string'
-        ? { controller_runtime: orchestration_runtime }
-        : {})
-    }
-  );
-  if (!coherence.ok) {
-    ws.send(JSON.stringify(makeError(req, 'bad_request', coherence.reason)));
-    return;
-  }
-  const speed_error = await beadSpeedWriteError(ws, id, {
+  // A chosen agy id is pinned as the contract's (family, effort) pair
+  // (agy-runtime §3.3), so the split runs before every check below.
+  const split = splitAgyWorkflowModels({
     impl_runtime,
     impl_model,
     impl_effort
   });
+  if (!split.ok) {
+    ws.send(JSON.stringify(makeError(req, 'bad_request', split.reason)));
+    return;
+  }
+  const target =
+    /** @type {{ impl_runtime: string, impl_model: string, impl_effort: string }} */ (
+      split.settings
+    );
+  // Coherence is judged over the EXACT values only: `auto` names a selector
+  // state, not a catalog model or effort, so it neither constrains nor is
+  // constrained by the runtime (spec §A `impl_model`/`impl_effort` auto).
+  const coherence = validateImplSettings(exactImplValues(target), {
+    ...(typeof orchestration_runtime === 'string'
+      ? { controller_runtime: orchestration_runtime }
+      : {})
+  });
+  if (!coherence.ok) {
+    ws.send(JSON.stringify(makeError(req, 'bad_request', coherence.reason)));
+    return;
+  }
+  const speed_error = await beadSpeedWriteError(ws, id, target);
   if (speed_error) {
     ws.send(JSON.stringify(makeError(req, 'bad_request', speed_error)));
     return;
   }
-  const res = await runBdInWorkspace(
-    ws,
-    buildImplTargetArgs(id, { impl_runtime, impl_model, impl_effort })
-  );
+  const res = await runBdInWorkspace(ws, buildImplTargetArgs(id, target));
   if (res.code !== 0) {
     ws.send(
       JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
