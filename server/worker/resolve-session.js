@@ -1296,7 +1296,7 @@ export function failedDiscardOperation(queue, bead_id) {
  * @property {(...args: any[]) => void} [log]
  * @property {string} [heartbeatPath]
  * @property {{ home_dir?: string, hostname?: string, fs?: any, now?: () => number }} [sessionRefOptions]
- * @property {(workspace: string, issue: any) => 'claude'|'codex'|null} [currentRunner] -
+ * @property {(workspace: string, issue: any) => 'claude'|'codex'|'agy'|null} [currentRunner] -
  * The provider CURRENT execution settings resolve to. Consulted ONLY when the
  * bead names no session at all (codex-orchestration-parity §4.1): a recorded
  * source that merely cannot be forked keeps its own provider, so a tool error
@@ -1408,7 +1408,7 @@ export function createResolveSession(deps) {
    * The runtime a FRESH conversation runs (UI-jbl1 §3.4): the setting, else
    * the provider this launch would have inherited.
    *
-   * @param {'claude'|'codex'|null} inherited - null when the current runner is
+   * @param {'claude'|'codex'|'agy'|null} inherited - null when the current runner is
    * not a registered one.
    * @returns {'claude'|'codex'|'agy'|null}
    */
@@ -1564,7 +1564,7 @@ export function createResolveSession(deps) {
    * @param {string} workspace
    * @param {string} bead_id
    * @param {any} attempt
-   * @returns {Promise<{ session_id: string|null, runner: 'claude'|'codex'|null, source: 'attempt'|'session_ref'|'fresh', fallback_reason: string|null }>}
+   * @returns {Promise<{ session_id: string|null, runner: 'claude'|'codex'|'agy'|null, source: 'attempt'|'session_ref'|'fresh', fallback_reason: string|null }>}
    */
   async function forkTarget(workspace, bead_id, attempt) {
     /**
@@ -1574,7 +1574,7 @@ export function createResolveSession(deps) {
      * Claude (UI-6o70).
      *
      * @param {any} issue
-     * @returns {'claude'|'codex'|null}
+     * @returns {'claude'|'codex'|'agy'|null}
      */
     function currentRunner(issue) {
       if (typeof deps.currentRunner !== 'function') {
@@ -1582,7 +1582,9 @@ export function createResolveSession(deps) {
       }
       try {
         const runner = deps.currentRunner(workspace, issue);
-        return runner === 'codex' || runner === 'claude' ? runner : null;
+        return runner === 'codex' || runner === 'claude' || runner === 'agy'
+          ? runner
+          : null;
       } catch (err) {
         log('current runner resolution failed for %s: %o', bead_id, err);
         return 'claude';
@@ -1784,13 +1786,15 @@ export function createResolveSession(deps) {
           ? input.repo
           : input.workspace;
       const row_key = repoOperationRowKey(input.operation_id);
-      /** @type {'claude'|'codex'|null} */
+      /** @type {'claude'|'codex'|'agy'|null} */
       let inherited = 'claude';
       if (typeof deps.currentRunner === 'function') {
         try {
           const current = deps.currentRunner(input.workspace, null);
           inherited =
-            current === 'codex' || current === 'claude' ? current : null;
+            current === 'codex' || current === 'claude' || current === 'agy'
+              ? current
+              : null;
         } catch (err) {
           log('current runner resolution failed for %s: %o', row_key, err);
         }

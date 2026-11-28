@@ -3747,7 +3747,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
   });
 
   /**
-   * @param {{ bead?: Record<string, any>, park?: string|null, admission?: any, timeline?: any, kind?: 'inquiry'|'resolve'|'external_resume', provider?: 'claude'|'codex', directionInquiry?: any }} [options]
+   * @param {{ bead?: Record<string, any>, park?: string|null, admission?: any, timeline?: any, kind?: 'inquiry'|'resolve'|'external_resume', provider?: 'claude'|'codex'|'agy', directionInquiry?: any }} [options]
    */
   function conversationEnv(options = {}) {
     let at = 1000;

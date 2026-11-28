@@ -152,8 +152,9 @@ const NOTES = [
  *
  * @param {string[]} session_ids
  * @param {string[]} [codex_ids]
+ * @param {string[]} [agy_ids]
  */
-function sessionFs(session_ids, codex_ids = []) {
+function sessionFs(session_ids, codex_ids = [], agy_ids = []) {
   return {
     /** @param {string} file_path */
     readdirSync(file_path) {
@@ -175,7 +176,12 @@ function sessionFs(session_ids, codex_ids = []) {
       if (
         session_ids
           .concat(codex_ids)
-          .some((session_id) => file_path.endsWith(`${session_id}.jsonl`))
+          .some((session_id) => file_path.endsWith(`${session_id}.jsonl`)) ||
+        agy_ids.some((session_id) =>
+          file_path.endsWith(
+            `/brain/${session_id}/.system_generated/logs/transcript_full.jsonl`
+          )
+        )
       ) {
         return { mtimeMs: 1 };
       }
@@ -188,7 +194,7 @@ function sessionFs(session_ids, codex_ids = []) {
 const SESSION_OPTIONS = {
   home_dir: '/home',
   hostname: 'host',
-  fs: sessionFs(['claude-sid'], ['codex-sid'])
+  fs: sessionFs(['claude-sid'], ['codex-sid'], ['agy-sid'])
 };
 
 /**
@@ -531,6 +537,29 @@ describe('direction-inquiry same-session launch', () => {
     expect(outcome?.command).toBe("claude --resume 'claude-sid'");
   });
 
+  test('reopens the agy attempt conversation by its id', async () => {
+    const tmux = launchingHub();
+    const { inquiry } = makeInquiry({
+      tmux,
+      readAttempt: async () =>
+        attempt({ runner: 'agy', session_id: 'agy-sid' }),
+      resolveRunner: (/** @type {string} */ runner) =>
+        runner === 'agy' ? '/home/.local/bin/agy' : null
+    });
+
+    const outcome = await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(tmux.wrapper()).toContain(
+      "'--conversation' 'agy-sid' '-i' '이 세션은"
+    );
+    expect(outcome).toMatchObject({
+      mode: 'resume',
+      source: 'attempt',
+      runner: 'agy',
+      command: "agy --conversation 'agy-sid'"
+    });
+  });
+
   test('opens the conversation in the attempt worktree', async () => {
     const tmux = launchingHub();
     const { inquiry } = makeInquiry({ tmux });
@@ -825,6 +854,25 @@ describe('direction-inquiry fresh fallback', () => {
     await inquiry.onParkedAttempt(recoveryInput());
 
     expect(recordInteractiveSession.mock.calls[0]?.[1].provider).toBe('codex');
+  });
+
+  test('inherits an agy current runner for a fresh fallback', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { inquiry } = makeInquiry({
+      tmux: launchingHub(),
+      readAttempt: async () => attempt({ runner: null }),
+      resolveRunner: (/** @type {string} */ runner) =>
+        runner === 'agy' ? '/home/.local/bin/agy' : null,
+      currentRunner: () => 'agy',
+      store: { recordInteractiveSession }
+    });
+
+    await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
+      provider: 'agy',
+      mode: 'fresh'
+    });
   });
 });
 

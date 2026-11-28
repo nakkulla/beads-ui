@@ -339,7 +339,7 @@ export function inquiryWrapper(input) {
  * @property {import('./tmux-launcher.js').TmuxLauncherDeps['runSessionHub']} [runSessionHub]
  * @property {() => string|null} [resolveClaude]
  * @property {(runner: string) => string|null} [resolveRunner]
- * @property {(workspace: string, issue: any) => 'claude'|'codex'|null} [currentRunner]
+ * @property {(workspace: string, issue: any) => 'claude'|'codex'|'agy'|null} [currentRunner]
  * @property {(file_path: string) => { mtimeMs: number }} [statFile]
  * @property {() => number} [now]
  * @property {{ recordInteractiveSession: (workspace: string, record: any) => ({ ok: boolean }|void) }} [store]
@@ -444,14 +444,16 @@ export function createDirectionInquiry(deps) {
    *
    * @param {string} workspace
    * @param {any} issue
-   * @returns {'claude'|'codex'|null}
+   * @returns {'claude'|'codex'|'agy'|null}
    */
   function currentRunnerOf(workspace, issue) {
     if (typeof deps.currentRunner !== 'function') {
       return 'claude';
     }
     const runner = deps.currentRunner(workspace, issue);
-    return runner === 'claude' || runner === 'codex' ? runner : null;
+    return runner === 'claude' || runner === 'codex' || runner === 'agy'
+      ? runner
+      : null;
   }
 
   /**
@@ -586,7 +588,9 @@ export function createDirectionInquiry(deps) {
       command: same
         ? target.runner === 'codex'
           ? `codex resume ${shellQuote(/** @type {string} */ (target.session_id))}`
-          : `claude --resume ${shellQuote(/** @type {string} */ (target.session_id))}`
+          : target.runner === 'agy'
+            ? `agy --conversation ${shellQuote(/** @type {string} */ (target.session_id))}`
+            : `claude --resume ${shellQuote(/** @type {string} */ (target.session_id))}`
         : target.runner === 'claude'
           ? `claude --session-id ${shellQuote(/** @type {string} */ (launch_session_id))}`
           : target.runner,

@@ -190,7 +190,7 @@ const FLAG_CATALOG = {
 };
 
 /**
- * @param {{ resolveSessionAccounts?: import('./session-launch-accounts.js').ResolveSessionAccounts, tmux?: ReturnType<typeof makeHub>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, sessionRefFs?: any, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|null, store?: import('./resolve-session.js').ResolveSessionDeps['store'], existsSync?: (file_path: string) => boolean, settings?: Partial<import('../conversation-settings.js').ConversationSettingValues> }} [input]
+ * @param {{ resolveSessionAccounts?: import('./session-launch-accounts.js').ResolveSessionAccounts, tmux?: ReturnType<typeof makeHub>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, sessionRefFs?: any, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|'agy'|null, store?: import('./resolve-session.js').ResolveSessionDeps['store'], existsSync?: (file_path: string) => boolean, settings?: Partial<import('../conversation-settings.js').ConversationSettingValues> }} [input]
  */
 function makeLauncher(input = {}) {
   // Each test states the settings it is about; the default keeps every
@@ -1978,6 +1978,24 @@ describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
       session_id: null,
       session_id_source: null
     });
+  });
+
+  test('inherits an agy current runner for a fresh failure conversation', async () => {
+    const { resolver } = makeLauncher({
+      metadata: {},
+      resolveRunner: (runner) =>
+        runner === 'agy' ? '/home/.local/bin/agy' : null,
+      currentRunner: () => 'agy'
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect([outcome.mode, outcome.runner]).toEqual(['fresh', 'agy']);
   });
 
   test('opens a repo-operation conversation on agy with the entry as its first input', async () => {

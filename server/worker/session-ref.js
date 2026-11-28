@@ -432,12 +432,17 @@ export function recordedSessionProvider(metadata) {
  * locally. The refusal names which of the three failed; a transcript found
  * nowhere under a mismatched host label reads `other_host`.
  *
+ * An agy session qualifies for a same-session reopen (`--conversation`); it is
+ * never a fork source, which `qualifyInteractiveForkSource` enforces.
+ *
  * @param {{ attempt?: { runner?: string, session_id?: string|null }|null, hostname?: string, options?: Parameters<typeof resolveSessionFile>[1] }} input
- * @returns {{ ok: true, session_id: string, provider: 'claude'|'codex' }|{ ok: false, provider: 'claude'|'codex'|null, reason: 'runner_unknown'|'attempt_session_missing'|'attempt_transcript_missing'|'other_host' }}
+ * @returns {{ ok: true, session_id: string, provider: 'claude'|'codex'|'agy' }|{ ok: false, provider: 'claude'|'codex'|'agy'|null, reason: 'runner_unknown'|'attempt_session_missing'|'attempt_transcript_missing'|'other_host' }}
  */
 export function qualifyAttemptSession({ attempt, hostname, options = {} }) {
   const provider =
-    attempt?.runner === 'claude' || attempt?.runner === 'codex'
+    attempt?.runner === 'claude' ||
+    attempt?.runner === 'codex' ||
+    attempt?.runner === 'agy'
       ? attempt.runner
       : null;
   if (provider === null) {
@@ -471,10 +476,12 @@ export function qualifyAttemptSession({ attempt, hostname, options = {} }) {
 
 /**
  * Select the attempt transcript, then the recorded ref, then a fresh session.
- * An attempt without a recorded session is not a fork source.
+ * An attempt without a recorded session is not a fork source. agy cannot fork:
+ * an agy attempt is never a fork source, but its runner still names the fresh
+ * session's provider.
  *
  * @param {{ attempt?: { runner?: string, session_id?: string|null }|null, metadata?: Record<string, unknown>|null, hostname?: string, options?: Parameters<typeof qualifySessionFork>[2] }} input
- * @returns {{ session_id: string|null, provider: 'claude'|'codex'|null, source: 'attempt'|'session_ref'|'fresh', fallback_reason: string|null }}
+ * @returns {{ session_id: string, provider: 'claude'|'codex', source: 'attempt'|'session_ref', fallback_reason: null }|{ session_id: null, provider: 'claude'|'codex'|'agy'|null, source: 'fresh', fallback_reason: string|null }}
  */
 export function qualifyInteractiveForkSource({
   attempt,
@@ -488,7 +495,7 @@ export function qualifyInteractiveForkSource({
     own.ok ||
     own.reason === 'attempt_transcript_missing' ||
     own.reason === 'other_host';
-  if (own.ok) {
+  if (own.ok && own.provider !== 'agy') {
     return {
       session_id: own.session_id,
       provider: own.provider,
@@ -511,9 +518,12 @@ export function qualifyInteractiveForkSource({
       (has_attempt_source ? attempt_runner : null) ??
       recordedSessionProvider(metadata),
     source: 'fresh',
-    fallback_reason: has_attempt_source
-      ? 'attempt_transcript_missing'
-      : qualified.reason
+    // Only a reopenable agy session reaches here with `own.ok`.
+    fallback_reason: own.ok
+      ? 'attempt_unforkable'
+      : has_attempt_source
+        ? 'attempt_transcript_missing'
+        : qualified.reason
   };
 }
 
