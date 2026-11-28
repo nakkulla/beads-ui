@@ -12,6 +12,7 @@
  *     original session's runtime, so this is never read for one.
  *   - `<runner>_model` / `<runner>_effort`: flags appended to every
  *     conversation launch of that runtime; unset means "따름" — no flag.
+ *     agy has `agy_model` only: its effort is part of the model id.
  *
  * Deliberately NOT a `workflow_session_defaults` key: that table is the
  * contract's registered vocabulary and the dotfiles skills never read these.
@@ -21,8 +22,8 @@
  * and "따름"; a bad key falls back alone with one log line); writes are strict
  * and write nothing when rejected.
  *
- * @typedef {'inherit'|'claude'|'codex'} FreshRuntime
- * @typedef {'claude'|'codex'} ConversationRunner
+ * @typedef {'inherit'|'claude'|'codex'|'agy'} FreshRuntime
+ * @typedef {'claude'|'codex'|'agy'} ConversationRunner
  * @typedef {Object} ConversationSettingValues
  * @property {boolean} auto_launch
  * @property {FreshRuntime} fresh_runtime
@@ -30,6 +31,7 @@
  * @property {string|null} claude_effort
  * @property {string|null} codex_model
  * @property {string|null} codex_effort
+ * @property {string|null} [agy_model]
  * @property {string|null} [conflict_claude_model]
  * @property {string|null} [conflict_claude_effort]
  * @property {string|null} [conflict_codex_model]
@@ -52,6 +54,7 @@
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { getConfig } from './config.js';
+import { isAgyModelId } from './worker/agy-model-list.js';
 import { runtimeCatalog } from './worker/runner/index.js';
 import { stateHome } from './worker/state-paths.js';
 
@@ -59,7 +62,8 @@ import { stateHome } from './worker/state-paths.js';
 export const FRESH_RUNTIMES = /** @type {const} */ ([
   'inherit',
   'claude',
-  'codex'
+  'codex',
+  'agy'
 ]);
 
 /**
@@ -77,6 +81,7 @@ export const CONVERSATION_SETTINGS_FIELDS = Object.freeze({
   claude_effort: { kind: 'effort', runner: 'claude', default: null },
   codex_model: { kind: 'model', runner: 'codex', default: null },
   codex_effort: { kind: 'effort', runner: 'codex', default: null },
+  agy_model: { kind: 'model', runner: 'agy', default: null },
   conflict_claude_model: { kind: 'model', runner: 'claude', default: null },
   conflict_claude_effort: { kind: 'effort', runner: 'claude', default: null },
   conflict_codex_model: { kind: 'model', runner: 'codex', default: null },
@@ -209,6 +214,11 @@ function checkValue(key, value, catalog, overrides) {
     return typeof value === 'boolean' ? null : '참·거짓이어야 합니다';
   }
   const choices = /** @type {string[]} */ (choicesOf(key, catalog, overrides));
+  // Until the first `agy models` read the agy list is empty; a stored id
+  // spelled as one is kept rather than dropped by every later write.
+  if (field.runner === 'agy' && choices.length === 0 && isAgyModelId(value)) {
+    return null;
+  }
   if (typeof value !== 'string' || !choices.includes(value)) {
     return `다음 중 하나여야 합니다: ${choices.join(', ')}`;
   }
@@ -250,14 +260,21 @@ function configAutoLaunch() {
 /**
  * The CLI flags a conversation launch of `runner` carries for the stored
  * model and effort — the same spelling the headless runners use
- * (`runner/claude.js`, `runner/codex.js`). "따름" (null) adds nothing.
+ * (`runner/claude.js`, `runner/codex.js`, `runner/agy.js`). "따름" (null)
+ * adds nothing.
  *
  * @param {string} runner
- * @param {Pick<ConversationSettingValues, 'claude_model'|'claude_effort'|'codex_model'|'codex_effort'>} values
+ * @param {Pick<ConversationSettingValues, 'claude_model'|'claude_effort'|'codex_model'|'codex_effort'|'agy_model'>} values
  * @param {CatalogLike|null} [catalog]
  * @returns {string[]}
  */
 export function conversationLaunchFlags(runner, values, catalog = null) {
+  if (runner === 'agy') {
+    const model = values.agy_model;
+    return typeof model === 'string' && model.length > 0
+      ? ['--model', model]
+      : [];
+  }
   if (runner !== 'claude' && runner !== 'codex') {
     return [];
   }
@@ -293,7 +310,9 @@ export function conversationLaunchFlags(runner, values, catalog = null) {
  * @returns {ConversationRunner|T}
  */
 export function freshConversationRuntime(values, inherited) {
-  return values.fresh_runtime === 'claude' || values.fresh_runtime === 'codex'
+  return values.fresh_runtime === 'claude' ||
+    values.fresh_runtime === 'codex' ||
+    values.fresh_runtime === 'agy'
     ? values.fresh_runtime
     : inherited;
 }
@@ -418,6 +437,7 @@ export function createConversationSettingsStore(options = {}) {
       claude_effort: overrides.claude_effort ?? null,
       codex_model: overrides.codex_model ?? null,
       codex_effort: overrides.codex_effort ?? null,
+      agy_model: overrides.agy_model ?? null,
       conflict_claude_model: overrides.conflict_claude_model ?? null,
       conflict_claude_effort: overrides.conflict_claude_effort ?? null,
       conflict_codex_model: overrides.conflict_codex_model ?? null,
@@ -628,6 +648,7 @@ export function getConversationSettings() {
 
 /**
  * Resolve conflict-only overrides against the model this launch really runs.
+ * agy has no conflict overrides, so an agy launch keeps `base`.
  *
  * @param {string} runner
  * @param {{ model: string|null, effort: string|null, speed: string }} base
@@ -640,6 +661,9 @@ export function conflictLaunchSettings(
   values = getConversationSettings(),
   catalog = runtimeCatalog()
 ) {
+  if (runner !== 'claude' && runner !== 'codex') {
+    return base;
+  }
   const model =
     runner === 'claude'
       ? values.conflict_claude_model

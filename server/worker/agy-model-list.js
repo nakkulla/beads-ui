@@ -91,6 +91,17 @@ const AGY_ID_RE = /^[a-z0-9][a-z0-9.-]*$/;
 const WORKFLOW_ID_RE = /^gemini-4-([a-z]+)-([a-z]+)$/;
 
 /**
+ * Whether a value is spelled as an `agy models` id — the shape check a stored
+ * value falls back to while no list has been read yet.
+ *
+ * @param {unknown} value
+ * @returns {value is string}
+ */
+export function isAgyModelId(value) {
+  return typeof value === 'string' && AGY_ID_RE.test(value);
+}
+
+/**
  * The agy id for a workflow (family, effort) pair, or null when either is
  * outside the vocabulary.
  *

@@ -35,15 +35,32 @@ afterEach(() => {
 });
 
 /**
- * @param {{ config?: boolean, warn?: (message: string) => void }} [over]
+ * @param {{ config?: boolean, warn?: (message: string) => void, catalog?: any }} [over]
  */
 function makeStore(over = {}) {
   return createConversationSettingsStore({
     filePath: () => path.join(dir, 'conversation-settings.json'),
     warn: over.warn ?? (() => {}),
     configAutoLaunch: () => over.config === true,
-    catalog: () => CATALOG
+    catalog: () => over.catalog ?? CATALOG
   });
+}
+
+/**
+ * The fixture catalog plus an agy runner listing `ids`.
+ *
+ * @param {string[]} ids
+ */
+function agyCatalog(ids) {
+  return {
+    runners: {
+      ...CATALOG.runners,
+      agy: {
+        models: Object.fromEntries(ids.map((id) => [id, { id }])),
+        efforts: []
+      }
+    }
+  };
 }
 
 /**
@@ -158,6 +175,7 @@ describe('conversation settings store (UI-jbl1 §3.4)', () => {
       claude_effort: null,
       codex_model: null,
       codex_effort: null,
+      agy_model: null,
       conflict_claude_model: null,
       conflict_claude_effort: null,
       conflict_codex_model: null,
@@ -256,7 +274,7 @@ describe('conversation settings store (UI-jbl1 §3.4)', () => {
     expect(fields.claude_model.choices).toEqual(['opus', 'opus-4.8']);
     expect(fields.codex_effort.choices).toEqual(['minimal', 'low']);
     expect(fields.fresh_runtime).toMatchObject({
-      choices: ['inherit', 'claude', 'codex'],
+      choices: ['inherit', 'claude', 'codex', 'agy'],
       default: 'claude'
     });
   });
@@ -365,5 +383,127 @@ describe('conversation launch flags', () => {
     expect(freshConversationRuntime({ fresh_runtime: 'claude' }, 'codex')).toBe(
       'claude'
     );
+  });
+});
+
+describe('agy conversations (UI-ufgo Phase 4)', () => {
+  test('saves agy as the fresh runtime with a listed agy model', () => {
+    const catalog = agyCatalog(['gemini-4-neon-high']);
+    const store = makeStore({ catalog });
+
+    const result = store.set({
+      expected_revision: 0,
+      values: { fresh_runtime: 'agy', agy_model: 'gemini-4-neon-high' }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(makeStore({ catalog }).effective()).toMatchObject({
+      fresh_runtime: 'agy',
+      agy_model: 'gemini-4-neon-high'
+    });
+  });
+
+  test('lists the agy model ids as the agy_model choices', () => {
+    const store = makeStore({
+      catalog: agyCatalog(['gemini-4-neon-high', 'gemini-4-carbon-medium'])
+    });
+
+    const fields = store.snapshot().fields;
+
+    expect(fields.agy_model).toMatchObject({
+      kind: 'model',
+      runner: 'agy',
+      default: null,
+      choices: ['gemini-4-neon-high', 'gemini-4-carbon-medium']
+    });
+  });
+
+  test('refuses an agy model the agy list does not carry', () => {
+    const store = makeStore({ catalog: agyCatalog(['gemini-4-neon-high']) });
+
+    const result = store.set({
+      expected_revision: 0,
+      values: { agy_model: 'gemini-4-zinc-high' }
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'invalid_value',
+      key: 'agy_model'
+    });
+  });
+
+  test('keeps a stored agy model while the agy list is still empty', () => {
+    writeFile({
+      revision: 1,
+      overrides: { agy_model: 'gemini-4-neon-xhigh' }
+    });
+    const store = makeStore({ catalog: agyCatalog([]) });
+
+    store.set({ expected_revision: 1, values: { auto_launch: true } });
+
+    expect(store.launchFlags('agy')).toEqual([
+      '--model',
+      'gemini-4-neon-xhigh'
+    ]);
+    const saved = JSON.parse(
+      fs.readFileSync(path.join(dir, 'conversation-settings.json'), 'utf8')
+    );
+    expect(saved.overrides.agy_model).toBe('gemini-4-neon-xhigh');
+  });
+
+  test('spells the agy model flag as the headless agy runner does', () => {
+    const flags = conversationLaunchFlags(
+      'agy',
+      {
+        claude_model: 'opus',
+        claude_effort: 'high',
+        codex_model: null,
+        codex_effort: null,
+        agy_model: 'gemini-4-carbon-high'
+      },
+      agyCatalog(['gemini-4-carbon-high'])
+    );
+
+    expect(flags).toEqual(['--model', 'gemini-4-carbon-high']);
+  });
+
+  test('adds no agy flag when the agy model follows the CLI', () => {
+    const flags = conversationLaunchFlags('agy', {
+      claude_model: null,
+      claude_effort: null,
+      codex_model: null,
+      codex_effort: null,
+      agy_model: null
+    });
+
+    expect(flags).toEqual([]);
+  });
+
+  test('runs a fresh conversation on agy when the setting names agy', () => {
+    const runtime = freshConversationRuntime({ fresh_runtime: 'agy' }, 'codex');
+
+    expect(runtime).toBe('agy');
+  });
+
+  test('keeps the base launch settings for agy despite codex conflict overrides', () => {
+    const base = {
+      model: 'gemini-4-neon-high',
+      effort: null,
+      speed: 'default'
+    };
+    const values = /** @type {any} */ ({
+      conflict_codex_model: 'sol',
+      conflict_codex_effort: 'xhigh'
+    });
+
+    const result = conflictLaunchSettings(
+      'agy',
+      base,
+      values,
+      /** @type {any} */ (agyCatalog(['gemini-4-neon-high']))
+    );
+
+    expect(result).toBe(base);
   });
 });
