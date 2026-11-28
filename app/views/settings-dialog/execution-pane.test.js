@@ -2897,9 +2897,17 @@ describe('createExecutionPane active-login lines (UI-32oq §4.4)', () => {
                   { key: 'b@example.com', email: 'b@example.com', active: true }
                 ]
               }
-            : {
-                accounts: [{ key: 'ck', email: 'c@example.com', active: true }]
-              }
+            : url.includes('agy')
+              ? {
+                  accounts: [
+                    { key: 'main', email: 'main@gmail.test', active: true }
+                  ]
+                }
+              : {
+                  accounts: [
+                    { key: 'ck', email: 'c@example.com', active: true }
+                  ]
+                }
       }))
     );
     const until = new Date(2026, 10, 10, 14, 5).toISOString();
@@ -2920,7 +2928,7 @@ describe('createExecutionPane active-login lines (UI-32oq §4.4)', () => {
     expect(
       root.querySelector('[data-account-login-text]')?.textContent?.trim()
     ).toBe(
-      '활성 로그인: Claude b@example.com (default a@example.com 리셋 14:05 뒤 복귀) · Codex c@example.com'
+      '활성 로그인: Claude b@example.com (default a@example.com 리셋 14:05 뒤 복귀) · Codex c@example.com · agy main@gmail.test'
     );
   });
 

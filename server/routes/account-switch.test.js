@@ -18,6 +18,8 @@ import {
   runningBeadsUsingAccount,
   subscribeAccountSwitched
 } from './account-switch.js';
+import { createAgySwitchHandler } from './agy-account.js';
+import { runAgyCredentialChange } from './agy-usage.js';
 
 /**
  * @import { RequestHandler } from 'express'
@@ -1313,5 +1315,165 @@ describe('strict in-use scan for account removal', () => {
     expect(() => runningBeadsUsingAccount('codex', 'k')).toThrow(
       'registry unreadable'
     );
+  });
+});
+
+describe('agy account switch', () => {
+  /**
+   * @param {{ busy?: boolean, capabilities?: { save: boolean, switch: boolean, remove: boolean }, switched?: any }} [options]
+   */
+  function agySwitchHarness(options = {}) {
+    const listAccounts = vi.fn(async () => ({
+      ok: /** @type {const} */ (true),
+      capabilities: options.capabilities || {
+        save: true,
+        switch: true,
+        remove: true
+      },
+      active: 'main',
+      slots: [
+        {
+          name: 'main',
+          account: 'main@gmail.test',
+          active: true,
+          saved_at: null,
+          usage: null,
+          usage_at: null
+        },
+        {
+          name: 'spare',
+          account: 'spare@gmail.test',
+          active: false,
+          saved_at: null,
+          usage: null,
+          usage_at: null
+        }
+      ]
+    }));
+    const runSwitch = vi.fn(
+      async () =>
+        options.switched || {
+          ok: true,
+          active: 'spare',
+          account: 'spare@gmail.test'
+        }
+    );
+    const invalidateModels = vi.fn();
+    const invalidateUsage = vi.fn();
+    let active = false;
+    const change = (/** @type {() => Promise<any>} */ action) =>
+      runAgyCredentialChange(action, {
+        begin: () => {
+          if (active) {
+            return false;
+          }
+          active = true;
+          return true;
+        },
+        end: () => {
+          active = false;
+        },
+        busy: async () => options.busy === true,
+        settle: async () => {},
+        invalidateModels,
+        invalidateUsage
+      });
+    const handler = createAgySwitchHandler({ listAccounts, runSwitch, change });
+    /**
+     * @param {unknown} body
+     */
+    async function post(body) {
+      /** @type {{ status: number, body: any }} */
+      const out = { status: 0, body: undefined };
+      const res = {
+        status(/** @type {number} */ code) {
+          out.status = code;
+          return res;
+        },
+        json(/** @type {unknown} */ payload) {
+          out.body = payload;
+          return res;
+        }
+      };
+      await handler(
+        /** @type {any} */ ({ body }),
+        /** @type {any} */ (res),
+        () => {}
+      );
+      return out;
+    }
+    return { post, runSwitch, invalidateModels, invalidateUsage };
+  }
+
+  test('switches to the slot the row number names and invalidates usage', async () => {
+    const h = agySwitchHarness();
+
+    const response = await h.post({ number: 2, key: 'spare' });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ ok: true, active: 'spare' });
+    expect(h.runSwitch).toHaveBeenCalledWith('spare');
+    expect(h.invalidateModels).toHaveBeenCalledOnce();
+    expect(h.invalidateUsage).toHaveBeenCalledOnce();
+  });
+
+  test('answers busy without switching while an agy run is going', async () => {
+    const h = agySwitchHarness({ busy: true });
+
+    const response = await h.post({ number: 2, key: 'spare' });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({ ok: false, error: 'busy' });
+    expect(h.runSwitch).not.toHaveBeenCalled();
+  });
+
+  test('refuses a switch agy-auth does not support', async () => {
+    const h = agySwitchHarness({
+      capabilities: { save: false, switch: false, remove: false }
+    });
+
+    const response = await h.post({ number: 2, key: 'spare' });
+
+    expect(response.body).toEqual({ ok: false, error: 'not_supported' });
+    expect(h.runSwitch).not.toHaveBeenCalled();
+  });
+
+  test('reports a failed switch without invalidating', async () => {
+    const h = agySwitchHarness({
+      switched: { ok: false, error: 'switch_failed' }
+    });
+
+    const response = await h.post({ number: 2, key: 'spare' });
+
+    expect(response.body).toEqual({ ok: false, error: 'switch_failed' });
+    expect(h.invalidateModels).not.toHaveBeenCalled();
+  });
+
+  test('answers account_changed for a number no slot holds', async () => {
+    const h = agySwitchHarness();
+
+    const response = await h.post({ number: 3, key: 'spare' });
+
+    expect(response.body).toEqual({ ok: false, error: 'account_changed' });
+    expect(h.runSwitch).not.toHaveBeenCalled();
+  });
+
+  test('answers account_changed when the number now names another slot', async () => {
+    const h = agySwitchHarness();
+
+    const response = await h.post({ number: 1, key: 'spare' });
+
+    expect(response.body).toEqual({ ok: false, error: 'account_changed' });
+    expect(h.runSwitch).not.toHaveBeenCalled();
+  });
+
+  test('refuses a switch that names no slot key', async () => {
+    const h = agySwitchHarness();
+
+    const response = await h.post({ number: 2 });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ ok: false, error: 'invalid_key' });
+    expect(h.runSwitch).not.toHaveBeenCalled();
   });
 });

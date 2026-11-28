@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Verify the deployed agy usage route answers with windows (agy-runtime U3)."""
+import json
+import os
+import shutil
+import subprocess
+import sys
+from urllib.parse import urlsplit, urlunsplit
+from urllib.request import HTTPRedirectHandler, build_opener
+
+# The route's first read runs the agy quota probe, which may take up to 120 s.
+USAGE_TIMEOUT_S = 150
+
+
+def command(argv):
+    return subprocess.run(argv, capture_output=True, text=True, timeout=12)
+
+
+def git(*args):
+    result = command(['git'] + list(args))
+    if result.returncode:
+        raise ValueError('git identity lookup failed')
+    return result.stdout.strip()
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def http_json(url, timeout):
+    with build_opener(NoRedirect).open(url, timeout=timeout) as response:
+        if response.status != 200:
+            raise ValueError('HTTP response is not 200: ' + url)
+        return json.load(response)
+
+
+def health_url_of():
+    url = os.environ.get('BDUI_DEPLOY_HEALTH_URL')
+    if url:
+        return url
+    host = os.environ.get('BDUI_HOST')
+    if not host and shutil.which('ts-ip'):
+        result = command(['ts-ip'])
+        host = result.stdout.strip() if result.returncode == 0 else None
+    return 'http://' + (host or '127.0.0.1') + ':3000/healthz'
+
+
+# 일회성(UI-qlxsw): 제거 조건 — UI-qlxsw 머지 커밋의 배포에서 이 검사가 한 번 통과해 완료 보고 검증 줄에 남은 뒤 이 파일을 지운다.
+def main():
+    target = os.environ['REPO_OPS_TARGET_SHA']
+    if git('rev-parse', 'HEAD') != target:
+        raise ValueError('job merge SHA mismatch')
+    print(json.dumps({'merge_sha': target}))
+    health_url = health_url_of()
+    origin = urlsplit(health_url)
+    if origin.scheme not in ('http', 'https') or not origin.hostname:
+        raise ValueError('invalid health origin')
+    health = http_json(health_url, 10)
+    if health.get('runtime', {}).get('source_sha') != target:
+        raise ValueError('health source SHA mismatch')
+    print(json.dumps({'health': 'passed'}))
+    usage_url = urlunsplit((origin.scheme, origin.netloc, '/api/agy-usage', '', ''))
+    usage = http_json(usage_url, USAGE_TIMEOUT_S)
+    if usage.get('provider') != 'agy':
+        raise ValueError('agy usage frame carries no provider agy')
+    if usage.get('available') is not True:
+        raise ValueError('agy usage unavailable')
+    windows = usage.get('windows')
+    if not isinstance(windows, list) or not windows:
+        raise ValueError('agy usage carries no windows')
+    print(json.dumps({
+        'agy_usage': 'passed',
+        'windows': [window.get('key') for window in windows if isinstance(window, dict)],
+        'accounts': len(usage.get('accounts') or []),
+    }))
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except Exception as error:
+        print(json.dumps({'result': 'failed', 'cause': str(error)}), file=sys.stderr)
+        sys.exit(1)

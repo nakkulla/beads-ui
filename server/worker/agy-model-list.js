@@ -213,6 +213,148 @@ export function judgeAgyQuota(payload) {
 }
 
 /**
+ * @typedef {{ key: string, pct: number, resetsAt: string|null }} AgyUsageWindow
+ * @typedef {{ group?: string, id?: string, window?: string, remaining_fraction?: number, reset_time?: string }} AgyUsageBucket
+ */
+
+const AGY_WINDOW_KEYS = Object.freeze({ '5h': '5h', weekly: '7d' });
+const SCOPED_GROUP_RE = /claude|gpt/i;
+const SCOPED_PREFIX = 'Claude·GPT';
+const WINDOW_ORDER = Object.freeze([
+  '5h',
+  '7d',
+  `${SCOPED_PREFIX} 5h`,
+  `${SCOPED_PREFIX} 7d`
+]);
+
+/**
+ * Flatten `/usage` groups into buckets that carry their group name, the shape
+ * `agy-auth list --json` stores per slot.
+ *
+ * @param {unknown} groups
+ * @returns {AgyUsageBucket[]}
+ */
+export function agyUsageBuckets(groups) {
+  /** @type {AgyUsageBucket[]} */
+  const buckets = [];
+  if (!Array.isArray(groups)) {
+    return buckets;
+  }
+  for (const group of groups) {
+    if (!Array.isArray(group?.buckets)) {
+      continue;
+    }
+    for (const bucket of group.buckets) {
+      if (typeof bucket === 'object' && bucket !== null) {
+        buckets.push({ ...bucket, group: String(group.name ?? '') });
+      }
+    }
+  }
+  return buckets;
+}
+
+/**
+ * Map agy usage buckets to the shared usage windows (agy-runtime §3.4): the
+ * `Gemini Models` buckets are the primary `5h`/`7d` windows and the Claude and
+ * GPT buckets are scoped `Claude·GPT 5h`/`Claude·GPT 7d`. An omitted fraction
+ * with a scheduled reset is used up; an epoch reset is the never-used bucket.
+ *
+ * @param {unknown} buckets
+ * @returns {AgyUsageWindow[]}
+ */
+export function agyUsageWindows(buckets) {
+  /** @type {Map<string, AgyUsageWindow>} */
+  const by_key = new Map();
+  if (!Array.isArray(buckets)) {
+    return [];
+  }
+  for (const bucket of buckets) {
+    if (typeof bucket !== 'object' || bucket === null) {
+      continue;
+    }
+    const window_key =
+      AGY_WINDOW_KEYS[
+        /** @type {keyof typeof AGY_WINDOW_KEYS} */ (String(bucket.window))
+      ];
+    if (!window_key) {
+      continue;
+    }
+    const group = String(bucket.group ?? '');
+    let key = null;
+    if (group === QUOTA_GROUP) {
+      key = window_key;
+    } else if (SCOPED_GROUP_RE.test(group)) {
+      key = `${SCOPED_PREFIX} ${window_key}`;
+    }
+    if (key === null) {
+      continue;
+    }
+    const reset = Date.parse(String(bucket.reset_time ?? ''));
+    const scheduled = Number.isFinite(reset) && reset > 0;
+    let fraction = bucket.remaining_fraction;
+    if (typeof fraction !== 'number' || !Number.isFinite(fraction)) {
+      fraction = scheduled ? 0 : 1;
+    }
+    const pct = Math.min(100, Math.max(0, Math.round((1 - fraction) * 100)));
+    const resets_at = scheduled ? new Date(reset).toISOString() : null;
+    const previous = by_key.get(key);
+    if (!previous || pct > previous.pct) {
+      by_key.set(key, { key, pct, resetsAt: resets_at });
+    }
+  }
+  /** @type {AgyUsageWindow[]} */
+  const windows = [];
+  for (const key of WINDOW_ORDER) {
+    const window = by_key.get(key);
+    if (window) {
+      windows.push(window);
+    }
+  }
+  return windows;
+}
+
+// One credential change (login, switch, remove) at a time, process-wide
+// (agy-runtime §3.5). While it runs the scheduler launches no agy run and the
+// quota and list reads stay off, so no read lands under half-moved
+// credentials. Every change that began also moves the generation, so a launch
+// that passed its gate before a change that already ended still sees it.
+let credential_change_active = false;
+let credential_generation = 0;
+
+/**
+ * Take the credential-change flag.
+ *
+ * @returns {boolean} false when another change already holds it.
+ */
+export function beginAgyCredentialChange() {
+  if (credential_change_active) {
+    return false;
+  }
+  credential_change_active = true;
+  credential_generation += 1;
+  return true;
+}
+
+/** Release the credential-change flag. */
+export function endAgyCredentialChange() {
+  credential_change_active = false;
+}
+
+/**
+ * @returns {boolean} Whether a credential change is running.
+ */
+export function agyCredentialChangeActive() {
+  return credential_change_active;
+}
+
+/**
+ * @returns {number} How many credential changes have begun in this process.
+ */
+export function agyCredentialGeneration() {
+  return credential_generation;
+}
+
+/**
  * @returns {string} `$XDG_STATE_HOME/bdui/agy-models.json`.
  */
 export function agyModelListFilePath() {
@@ -335,6 +477,9 @@ export function createAgyModelList(options = {}) {
   let quota_cache = null;
   /** @type {Promise<AgyQuota>|null} */
   let quota_in_flight = null;
+  /** The buckets behind the last judged `/usage` answer, for the usage route. */
+  /** @type {{ quota: AgyQuota, groups: unknown, read_at: number }|null} */
+  let last_usage = null;
   /** @type {Set<() => void>} */
   const listeners = new Set();
 
@@ -376,6 +521,7 @@ export function createAgyModelList(options = {}) {
     observed = next_observed;
     quota_cache = null;
     quota_in_flight = null;
+    last_usage = null;
     // A list read in flight is left to finish: its generation no longer
     // matches, so it lands nothing and `refreshOnce` reads once more.
     const had_list = record !== null;
@@ -501,6 +647,9 @@ export function createAgyModelList(options = {}) {
    * @returns {Promise<boolean>}
    */
   function refresh() {
+    if (credential_change_active) {
+      return Promise.resolve(false);
+    }
     if (!in_flight) {
       const current = refreshOnce().finally(() => {
         if (in_flight === current) {
@@ -543,13 +692,17 @@ export function createAgyModelList(options = {}) {
     const started_fingerprint = fingerprint();
     /** @type {AgyQuota} */
     let value;
+    /** @type {unknown} */
+    let groups = null;
     try {
       const { stdout } = await execFile(
         command(),
         ['-p', '/usage', '--output-format', 'json'],
         { timeout: AGY_QUOTA_TIMEOUT_MS, env: env(), maxBuffer: 1024 * 1024 }
       );
-      value = judgeAgyQuota(JSON.parse(stdout));
+      const payload = JSON.parse(stdout);
+      value = judgeAgyQuota(payload);
+      groups = payload?.command?.data?.groups ?? null;
     } catch (err) {
       value = { state: 'unknown', reason: String(err) };
     }
@@ -570,6 +723,9 @@ export function createAgyModelList(options = {}) {
     }
     if (value.state !== 'unknown') {
       quota_cache = { value, expires_at: now() + AGY_QUOTA_CACHE_MS };
+      last_usage = { quota: value, groups, read_at: now() };
+    } else {
+      last_usage = null;
     }
     return value;
   }
@@ -688,6 +844,14 @@ export function createAgyModelList(options = {}) {
      * @returns {Promise<AgyQuota>}
      */
     quota() {
+      if (credential_change_active) {
+        return Promise.resolve(
+          /** @type {AgyQuota} */ ({
+            state: 'unknown',
+            reason: 'credential_change'
+          })
+        );
+      }
       // A credential move since the last look drops the cache before it is
       // reused, so an answer for the old account never gates the new one.
       if (credentialsMoved()) {
@@ -705,6 +869,26 @@ export function createAgyModelList(options = {}) {
         quota_in_flight = current;
       }
       return quota_in_flight;
+    },
+
+    /**
+     * The last judged `/usage` answer with its groups, or null when the last
+     * read failed or the credentials moved since.
+     *
+     * @returns {{ quota: AgyQuota, groups: unknown, read_at: number }|null}
+     */
+    usage() {
+      return last_usage;
+    },
+
+    /**
+     * Resolve once the list and quota reads in flight finished, so a credential
+     * change never runs under a read started for the old credentials.
+     *
+     * @returns {Promise<void>}
+     */
+    async settle() {
+      await Promise.allSettled([in_flight, quota_in_flight]);
     },
 
     /**

@@ -11,7 +11,7 @@ export { claudeLabel, codexLabel };
 
 /**
  * @typedef {{ accounts: any[], active: any }} AccountProviderCatalog
- * @typedef {{ claude: AccountProviderCatalog|null, codex: AccountProviderCatalog|null }} AccountCatalog
+ * @typedef {{ claude: AccountProviderCatalog|null, codex: AccountProviderCatalog|null, agy: AccountProviderCatalog|null }} AccountCatalog
  */
 
 /**
@@ -59,16 +59,17 @@ export async function fetchAccountProvider(endpoint) {
 }
 
 /**
- * Read both providers' account lists in parallel.
+ * Read every provider's account list in parallel.
  *
  * @returns {Promise<AccountCatalog>}
  */
 export async function loadAccountCatalog() {
-  const [claude, codex] = await Promise.all([
+  const [claude, codex, agy] = await Promise.all([
     fetchAccountProvider('/api/claude-usage'),
-    fetchAccountProvider('/api/codex-usage')
+    fetchAccountProvider('/api/codex-usage'),
+    fetchAccountProvider('/api/agy-usage')
   ]);
-  return { claude, codex };
+  return { claude, codex, agy };
 }
 
 /**
@@ -102,12 +103,19 @@ export function usageWindowSuffix(row) {
  * call this one formatter, so the bulk window and the single-repo window name
  * an account — and its usage — identically (§6.1).
  *
- * @param {'claude'|'codex'} provider_key
+ * An agy slot is named by its signed-in account.
+ *
+ * @param {'claude'|'codex'|'agy'} provider_key
  * @param {any} row
  * @returns {string}
  */
 export function accountRowLabel(provider_key, row) {
-  const base = provider_key === 'claude' ? claudeLabel(row) : codexLabel(row);
+  const base =
+    provider_key === 'claude'
+      ? claudeLabel(row)
+      : provider_key === 'agy'
+        ? String(row.email)
+        : codexLabel(row);
   return `${base}${usageWindowSuffix(row)}`;
 }
 

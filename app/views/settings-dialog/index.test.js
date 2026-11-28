@@ -1554,7 +1554,7 @@ describe('createSettingsDialog server-wide tabs (UI-32oq §4.4)', () => {
       Array.from(pane.querySelectorAll('[data-active-login-line]'), (line) =>
         line.getAttribute('data-active-login-line')
       )
-    ).toEqual(['claude', 'codex']);
+    ).toEqual(['claude', 'codex', 'agy']);
     expect(
       status &&
         groups &&

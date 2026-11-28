@@ -28,7 +28,11 @@ const TRANSIENT_REASONS = new Set([
   'attempt_prerecord_failed',
   'guard_hook_install_failed',
   // Clears once the next `agy models` read lands after a credential change.
-  'agy_model_list_unavailable'
+  'agy_model_list_unavailable',
+  // Clears when the agy login, switch, or remove running now ends; the
+  // prefixed form is the same refusal read again just before the spawn.
+  'agy_credential_change',
+  'spawn_failed:agy_credential_change'
 ]);
 
 /** @type {ReadonlySet<string>} */

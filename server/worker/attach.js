@@ -44,6 +44,7 @@ import {
   recentClaudeSwitch,
   subscribeAccountSwitched
 } from '../routes/account-switch.js';
+import { listAgyAccounts, switchAgyAccount } from '../routes/agy-usage.js';
 import {
   listAccounts as listClaudeAccounts,
   resolveCswapPath
@@ -1465,6 +1466,12 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         kvGetJson(key, { cwd: workspace })),
     makeRunner,
     accountCatalog,
+    // The agy-auth slots an exhausted Gemini quota may switch to between runs
+    // (agy-runtime §3.5); the switch takes the credential-change flag.
+    agyAccounts: {
+      list: () => listAgyAccounts(),
+      switchTo: (/** @type {string} */ name) => switchAgyAccount(name)
+    },
     // The last Claude switch, so an accountless attempt's error settled right
     // after it lands on the account it ran on (UI-btp3 §4.1).
     recentClaudeSwitch,

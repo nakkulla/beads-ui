@@ -15,7 +15,8 @@ import { showToast } from '../utils/toast.js';
 /**
  * @typedef {{ key: string, pct: number, resetsAt: string }} UsageWindow
  * @typedef {{ key: string, number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null, loginExpiresAt: string | null }} UsageAccount
- * @typedef {{ available: boolean, windows: UsageWindow[], ageSeconds: number | null, accounts: UsageAccount[], receivedAtMs: number, held: boolean }} ProviderSnapshot
+ * @typedef {{ save: boolean, switch: boolean, remove: boolean }} AccountCapabilities
+ * @typedef {{ available: boolean, windows: UsageWindow[], ageSeconds: number | null, accounts: UsageAccount[], receivedAtMs: number, held: boolean, capabilities: AccountCapabilities | null }} ProviderSnapshot
  * @typedef {{ key: string, label: string, endpoint: string, switch_endpoint: string, remove_endpoint: string, login_tools: string }} ProviderDescriptor
  * @typedef {{ number: number, key: string, name: string }} RemoveTarget
  * @typedef {{ kind: 'ok' | 'warn' | 'error', text: string } | { kind: 'confirm', text: string, key: string | null } | { kind: 'remove_confirm', text: string, target: RemoveTarget }} RowMessage
@@ -95,7 +96,10 @@ const LOGIN_FAILURE_TEXT = {
   account_list_unavailable: '계정 목록을 읽지 못함',
   tmux_failed: 'tmux 창을 열지 못함',
   invalid_output: '로그인 도구의 출력을 읽지 못함',
-  login_not_found: '로그인 세션이 이미 끝남'
+  login_not_found: '로그인 세션이 이미 끝남',
+  busy: 'agy 실행·대화 창이 있거나 계정 변경 중 — 끝난 뒤 다시 시도',
+  save_failed: '로그인한 계정을 슬롯으로 저장하지 못함',
+  not_supported: '이 도구는 아직 계정 추가를 지원하지 않음'
 };
 
 /**
@@ -462,8 +466,46 @@ const PROVIDERS = [
     switch_endpoint: '/api/codex-account/switch',
     remove_endpoint: '/api/codex-account/remove',
     login_tools: 'codex·codex-auth'
+  },
+  {
+    key: 'agy',
+    label: 'agy',
+    endpoint: '/api/agy-usage',
+    switch_endpoint: '/api/agy-account/switch',
+    remove_endpoint: '/api/agy-account/remove',
+    login_tools: 'agy·agy-auth·tmux'
   }
 ];
+
+/**
+ * The account actions a provider reports it can do (agy-runtime §3.5), or
+ * null when it reports none — Claude and Codex, which can do all of them.
+ *
+ * @param {unknown} input
+ * @returns {AccountCapabilities | null}
+ */
+function normalizeCapabilities(input) {
+  if (!input || typeof input !== 'object') {
+    return null;
+  }
+  const capabilities = /** @type {any} */ (input);
+  return {
+    save: capabilities.save === true,
+    switch: capabilities.switch === true,
+    remove: capabilities.remove === true
+  };
+}
+
+/**
+ * Whether a provider's card may offer one account action; a provider that
+ * reports no capabilities offers every action.
+ *
+ * @param {ProviderSnapshot} snapshot
+ * @param {keyof AccountCapabilities} action
+ */
+function canDo(snapshot, action) {
+  return snapshot.capabilities === null || snapshot.capabilities[action];
+}
 
 /**
  * Keep only the windows the meter can actually draw.
@@ -597,7 +639,8 @@ function normalizeSnapshot(input, received_at_ms) {
         : null,
     accounts,
     receivedAtMs: received_at_ms,
-    held: false
+    held: false,
+    capabilities: normalizeCapabilities(payload.capabilities)
   };
 }
 
@@ -960,6 +1003,14 @@ export function createUsageMeter(mount_element, options = {}) {
       return;
     }
     const row_key = rowKey(provider.key, account_number);
+    // agy names its slot by number and key so a reordered list cannot move
+    // the switch onto another slot.
+    const slot_key =
+      provider.key === 'agy'
+        ? (accountsOf(provider.key).find(
+            (account) => account.number === account_number
+          )?.key ?? null)
+        : null;
     switching_rows.set(provider.key, account_number);
     switch_starts.set(provider.key, (switch_starts.get(provider.key) ?? 0) + 1);
     row_messages.delete(row_key);
@@ -973,6 +1024,7 @@ export function createUsageMeter(mount_element, options = {}) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           number: account_number,
+          ...(slot_key !== null ? { key: slot_key } : {}),
           ...(confirm ? { confirm: true } : {})
         })
       });
@@ -2086,8 +2138,10 @@ export function createUsageMeter(mount_element, options = {}) {
    * @param {UsageAccount[]} accounts - The provider's whole list, which decides
    * whether the name needs the plan or number to stay unambiguous.
    * @param {number} now_ms
+   * @param {ProviderSnapshot} snapshot - The provider's snapshot, whose
+   * capabilities decide whether the row offers a switch.
    */
-  function renderAccount(provider, account, accounts, now_ms) {
+  function renderAccount(provider, account, accounts, now_ms, snapshot) {
     const is_ok = account.status === 'ok';
     const stale =
       typeof account.ageSeconds === 'number' &&
@@ -2100,6 +2154,12 @@ export function createUsageMeter(mount_element, options = {}) {
     const expiry_notice = is_ok
       ? loginExpiryNotice(account.loginExpiresAt, now_ms)
       : null;
+    // agy has one live login, so its active row always offers a re-login.
+    const standing_relogin =
+      provider.key === 'agy' &&
+      account.active &&
+      !needs_relogin &&
+      expiry_notice === null;
     /** @type {string[]} */
     const classes = ['usage-meter__account'];
     if (account.active) {
@@ -2133,7 +2193,10 @@ export function createUsageMeter(mount_element, options = {}) {
           : html`<span class="usage-meter__account-age"
               >${formatAge(account.ageSeconds)}</span
             >`}
-        ${account.active || message?.kind === 'confirm'
+        ${standing_relogin ? reloginButtonTemplate(provider, account) : ''}
+        ${account.active ||
+        message?.kind === 'confirm' ||
+        !canDo(snapshot, 'switch')
           ? ''
           : html`<button
               type="button"
@@ -2144,7 +2207,7 @@ export function createUsageMeter(mount_element, options = {}) {
               ${row_switching ? '전환 중…' : '전환'}
             </button>`}
       </div>
-      ${manage_providers.has(provider.key)
+      ${manage_providers.has(provider.key) && canDo(snapshot, 'remove')
         ? html`<div class="usage-meter__account-ops">
             ${removeControlTemplate(provider, account, message)}
           </div>`
@@ -2329,22 +2392,26 @@ export function createUsageMeter(mount_element, options = {}) {
           ${snapshot.accounts.length}
         </h2>
         <div class="usage-meter__section-ops">
-          <button
-            type="button"
-            class="op-btn usage-meter__add"
-            ?disabled=${login_panels.has(provider.key)}
-            @click=${() => void startLogin(provider, 'add', null)}
-          >
-            + 계정 추가
-          </button>
-          <button
-            type="button"
-            class=${`op-btn usage-meter__manage${managing ? ' is-active' : ''}`}
-            aria-pressed=${String(managing)}
-            @click=${() => toggleManage(provider.key)}
-          >
-            관리
-          </button>
+          ${canDo(snapshot, 'save')
+            ? html`<button
+                type="button"
+                class="op-btn usage-meter__add"
+                ?disabled=${login_panels.has(provider.key)}
+                @click=${() => void startLogin(provider, 'add', null)}
+              >
+                + 계정 추가
+              </button>`
+            : ''}
+          ${canDo(snapshot, 'remove')
+            ? html`<button
+                type="button"
+                class=${`op-btn usage-meter__manage${managing ? ' is-active' : ''}`}
+                aria-pressed=${String(managing)}
+                @click=${() => toggleManage(provider.key)}
+              >
+                관리
+              </button>`
+            : ''}
         </div>
       </div>
       ${policyLineTemplate(provider, snapshot.accounts)}
@@ -2364,7 +2431,8 @@ export function createUsageMeter(mount_element, options = {}) {
         // mobile browser that wraps the email text in a link leaves the old
         // email behind when lit only updates that text in place.
         (account) => `${provider.key}:${account.number}:${account.key}`,
-        (account) => renderAccount(provider, account, snapshot.accounts, now_ms)
+        (account) =>
+          renderAccount(provider, account, snapshot.accounts, now_ms, snapshot)
       )}
     </section>`;
   }

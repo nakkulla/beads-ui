@@ -81,7 +81,13 @@ import {
   WORKSPACE_ACCOUNTS_KV_KEY,
   normalizeWorkspaceAccounts
 } from '../workspace-accounts.js';
-import { AGY_HOLD_ACCOUNT, agyModelList } from './agy-model-list.js';
+import {
+  AGY_HOLD_ACCOUNT,
+  agyCredentialChangeActive,
+  agyCredentialGeneration,
+  agyModelList,
+  agyUsageWindows
+} from './agy-model-list.js';
 import { buildAttemptFacts } from './attempt-facts.js';
 import { writeAttemptPrompts } from './attempt-prompts.js';
 import { observeBaseDrift } from './base-drift.js';
@@ -1158,6 +1164,9 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {{ ready: () => boolean, names: () => string[], checkCredentials: () => boolean, quota: () => Promise<import('./agy-model-list.js').AgyQuota> }} [agyModels]
  * The agy model list and pre-run quota read (agy-runtime §3.2-§3.3); the
  * process-wide reader when absent.
+ * @property {{ list: () => Promise<import('../routes/agy-usage.js').AgyAuthList>, switchTo: (name: string) => Promise<{ ok: boolean, error?: string }> }} [agyAccounts]
+ * The agy-auth slots and the switch an exhausted Gemini quota tries before it
+ * holds (agy-runtime §3.5). No auto-switch when absent.
  */
 
 // Per-lane occupancy is the store's ONE walk (`queue-store.js` `laneHolds`):
@@ -1608,6 +1617,9 @@ const NO_WORKER_EXIT_REFUSAL = '이 행에는 Worker 출구 없음';
 
 /** Refusal reason for an agy launch while no model list stands. */
 const AGY_MODEL_LIST_UNAVAILABLE = 'agy_model_list_unavailable';
+
+/** Refusal reason for an agy launch while an agy credential change runs. */
+const AGY_CREDENTIAL_CHANGE = 'agy_credential_change';
 
 /**
  * Refusal reason for an agy launch whose model is not on the current list —
@@ -2188,7 +2200,7 @@ export function createScheduler(deps) {
    * durable pause that only waited for the process would let a late parent
    * callback release the child's claim.
    *
-   * @type {Map<string, { bead_id: string, repo: string, handle: RunnerHandle, prior: string|null, settled: Promise<any> }>}
+   * @type {Map<string, { bead_id: string, repo: string, runner: string, handle: RunnerHandle, prior: string|null, settled: Promise<any> }>}
    */
   const running = new Map();
   /** Beads currently claimed (dispatching or running) — prevents double launch. @type {Set<string>} */
@@ -5018,6 +5030,9 @@ export function createScheduler(deps) {
    * @returns {string|null}
    */
   function agyListRefusal(model) {
+    if (agyCredentialChangeActive()) {
+      return AGY_CREDENTIAL_CHANGE;
+    }
     const models = deps.agyModels || agyModelList();
     models.checkCredentials();
     if (!models.ready()) {
@@ -5049,9 +5064,13 @@ export function createScheduler(deps) {
 
   /**
    * The agy pre-run quota gate (agy-runtime §3.3). An exhausted `Gemini
-   * Models` bucket enters a global usage-limit target that holds every agy
-   * row until the reset, which the provider probe then confirms (held). A
-   * failed quota read never blocks the launch (`held: false`).
+   * Models` bucket first tries {@link agyAutoSwitch}: a switch lets the list
+   * re-check judge the launch (`held: false`), and a switch deferred behind a
+   * live agy run holds only this pass, with no hold target, so the next pass
+   * after the run ends switches. Otherwise it enters a global usage-limit
+   * target that holds every agy row until the reset, which the provider probe
+   * then confirms (held). A failed quota read never blocks the launch
+   * (`held: false`). This gate never releases a provider hold.
    *
    * @param {string} workspace
    * @param {string|null} model
@@ -5068,6 +5087,21 @@ export function createScheduler(deps) {
     }
     if (quota.state !== 'exhausted') {
       return { held: false };
+    }
+    // A switched account is judged by the list re-check after this gate: the
+    // switch invalidates the list, so this launch waits for the new one.
+    const switched = await agyAutoSwitch();
+    if (switched === 'switched') {
+      return { held: false };
+    }
+    if (switched === 'deferred') {
+      return {
+        held: true,
+        runner: 'agy',
+        kind: 'usage_limit',
+        account: AGY_HOLD_ACCOUNT,
+        unresolved: false
+      };
     }
     const message = `agy Gemini quota exhausted (${quota.buckets.join(', ')})`;
     try {
@@ -5098,6 +5132,57 @@ export function createScheduler(deps) {
       account: AGY_HOLD_ACCOUNT,
       unresolved: false
     };
+  }
+
+  /**
+   * Switch the agy account to another saved slot when the active one is
+   * exhausted (agy-runtime §3.5). Only when `agy-auth` reports `switch` and a
+   * candidate has room in every window the slot's stored observation names
+   * (ADR UI-d9c1), and only between runs: while an agy run is live the switch
+   * is `deferred` to a pass after that run ends.
+   *
+   * @returns {Promise<'switched'|'deferred'|'none'>} `none` when no switch
+   * can happen (no accounts, no capability, no candidate, a failed switch).
+   */
+  async function agyAutoSwitch() {
+    const accounts = deps.agyAccounts;
+    if (!accounts) {
+      return 'none';
+    }
+    try {
+      const list = await accounts.list();
+      if (!list.ok || list.capabilities.switch !== true) {
+        return 'none';
+      }
+      const candidate = list.slots.find(
+        (slot) =>
+          !slot.active &&
+          slot.name !== list.active &&
+          windowsHaveRoom(
+            /** @type {any} */ ({ windows: agyUsageWindows(slot.usage ?? []) }),
+            null
+          )
+      );
+      if (!candidate) {
+        return 'none';
+      }
+      // Read after the list await, right before the switch.
+      for (const entry of running.values()) {
+        if (entry.runner === 'agy') {
+          return 'deferred';
+        }
+      }
+      const result = await accounts.switchTo(candidate.name);
+      if (!result.ok) {
+        log('agy auto-switch to %s failed: %s', candidate.name, result.error);
+        return 'none';
+      }
+      log('agy auto-switch to %s', candidate.name);
+      return 'switched';
+    } catch (err) {
+      log('agy auto-switch failed: %o', err);
+      return 'none';
+    }
   }
 
   /**
@@ -16464,6 +16549,10 @@ export function createScheduler(deps) {
         refuseDispatch(workspace, bead_id, agy_after);
         return;
       }
+      // The launch refuses itself when a credential change began after this
+      // last agy check, even one that already ended (launchSession).
+      const agy_generation =
+        runner_name === 'agy' ? agyCredentialGeneration() : null;
 
       const attempt_id = makeAttemptId(bead_id);
       const prior = snap.workflow_mode ?? null;
@@ -17059,6 +17148,7 @@ export function createScheduler(deps) {
         accounts: resolved_exec.accounts,
         account_sources: resolved_exec.account_sources,
         ...(preempt ? { preempt } : {}),
+        agy_credential_generation: agy_generation,
         quickfix_lane,
         prior_wf: prior,
         stamped_keys,
@@ -18204,8 +18294,12 @@ export function createScheduler(deps) {
    *   disposition?: string|null,
    *   quickfix_lane?: boolean,
    *   session_lane?: boolean,
-   *   attempt_facts?: import('./attempt-facts.js').AttemptFacts|null
+   *   attempt_facts?: import('./attempt-facts.js').AttemptFacts|null,
+   *   agy_credential_generation?: number|null
    * }} input
+   * `agy_credential_generation` is the agy credential-change generation the
+   * dispatch gate read; a launch whose generation moved since is refused,
+   * since a change that began and ended in between went unseen.
    * `session_lane` sends the launch to {@link launchSessionLane} (UI-lbm5
    * §4.3): the same input, opened as an interactive window.
    * `attempt_facts` is the dispatch-time facts card (spec D1). Only the
@@ -18480,6 +18574,24 @@ export function createScheduler(deps) {
           log('guard-hook judged flag failed for %s: %o', attempt_id, err);
         }
       }
+    }
+
+    // The dispatch gates read the agy credential-change flag many awaits ago,
+    // and a change sees a run only once the record below names its runner.
+    // Read the flag again with no await before the spawn, so either the change
+    // sees this run or this run sees the change; a change that began and ended
+    // since the gate shows as a moved generation.
+    const gate_generation = input.agy_credential_generation;
+    if (
+      runner_name === 'agy' &&
+      (agyCredentialChangeActive() ||
+        (typeof gate_generation === 'number' &&
+          gate_generation !== agyCredentialGeneration()))
+    ) {
+      const refusal = `spawn_failed:${AGY_CREDENTIAL_CHANGE}`;
+      log('launch refused for %s: %s', attempt_id, refusal);
+      await finalizeLaunchRefusal(input, refusal, false);
+      return { ok: false, reason: refusal };
     }
 
     /** @type {RunnerHandle} */
@@ -18880,6 +18992,7 @@ export function createScheduler(deps) {
     running.set(attempt_id, {
       bead_id,
       repo,
+      runner: runner_name,
       handle,
       prior: prior_wf,
       settled
@@ -19937,6 +20050,8 @@ export function createScheduler(deps) {
     if (agy_after !== null) {
       return { ok: false, reason: agy_after };
     }
+    const agy_generation =
+      runner_name === 'agy' ? agyCredentialGeneration() : null;
     reserveResume();
     const bead_id = record.bead_id;
     const repo = snap.repo;
@@ -20129,6 +20244,7 @@ export function createScheduler(deps) {
       accounts: resolved.accounts,
       account_sources: resolved.account_sources,
       ...(preempt ? { preempt } : {}),
+      agy_credential_generation: agy_generation,
       prior_wf,
       stamped_keys,
       wt_path: prepared_worktree.path,
@@ -23187,6 +23303,8 @@ export function createScheduler(deps) {
       return continuation;
     }
     const external_wait_resume = options.external_wait_resume === true;
+    /** @type {number|null} */
+    let agy_generation = null;
     // Every agy continuation — manual resume, conflict and revise fixes, the
     // external-wait return — reads the quota and judges the list on both sides
     // of it. A non-agy continuation is gated only on the external-wait return.
@@ -23218,11 +23336,20 @@ export function createScheduler(deps) {
       if (agy_after !== null) {
         return { ok: false, reason: agy_after };
       }
+      if (agy) {
+        agy_generation = agyCredentialGeneration();
+      }
       if (external_wait_resume) {
         options.reserveExternalWait();
       }
     }
-    return relaunchResolvedAttempt(workspace, prior, options, continuation);
+    return relaunchResolvedAttempt(
+      workspace,
+      prior,
+      options,
+      continuation,
+      agy_generation
+    );
   }
 
   /**
@@ -23287,12 +23414,15 @@ export function createScheduler(deps) {
    * @param {any} prior
    * @param {any} options
    * @param {any} continuation
+   * @param {number|null} [agy_generation] - The agy credential-change
+   * generation read at the last agy check (launchSession).
    */
   async function relaunchResolvedAttempt(
     workspace,
     prior,
     options,
-    continuation
+    continuation,
+    agy_generation = null
   ) {
     const bead_id = prior.bead_id;
     const repo = typeof prior.repo === 'string' ? prior.repo : '';
@@ -23711,6 +23841,7 @@ export function createScheduler(deps) {
       accounts,
       account_sources,
       preempt: continuation.preempt,
+      agy_credential_generation: agy_generation,
       prior_wf,
       stamped_keys,
       wt_path,

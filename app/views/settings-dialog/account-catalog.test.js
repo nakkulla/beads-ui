@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'vitest';
-import { accountRowLabel } from './account-catalog.js';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import { accountRowLabel, loadAccountCatalog } from './account-catalog.js';
 
 describe('accountRowLabel usage windows (UI-e1ta §6.1)', () => {
   test('appends every window as a usage percentage', () => {
@@ -40,5 +40,48 @@ describe('accountRowLabel usage windows (UI-e1ta §6.1)', () => {
     const label = accountRowLabel('codex', row);
 
     expect(label).toBe('codex@example.com · pro (7d 12%)');
+  });
+});
+
+describe('agy account catalog (UI-qlxsw)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test('labels an agy slot by its account and usage windows', () => {
+    const row = {
+      key: 'main',
+      email: 'main@gmail.test',
+      alias: 'main',
+      plan: null,
+      windows: [
+        { key: '5h', pct: 25 },
+        { key: 'Claude·GPT 7d', pct: 0 }
+      ]
+    };
+
+    const label = accountRowLabel('agy', row);
+
+    expect(label).toBe('main@gmail.test (5h 25% · Claude·GPT 7d 0%)');
+  });
+
+  test('reads the agy slots from the agy usage endpoint', async () => {
+    const rows = [
+      { key: 'main', email: 'main@gmail.test', active: true, windows: [] }
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (/** @type {string} */ url) => ({
+        ok: true,
+        json: async () =>
+          url === '/api/agy-usage'
+            ? { available: true, windows: [], accounts: rows }
+            : { available: false }
+      }))
+    );
+
+    const catalog = await loadAccountCatalog();
+
+    expect(catalog.agy).toEqual({ accounts: rows, active: rows[0] });
   });
 });

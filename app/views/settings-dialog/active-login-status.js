@@ -7,6 +7,10 @@
  * - `계정` tab: the same facts on one line with a link to the `활성 계정` tab,
  *   and per runner the warning a waiting repo needs when its empty pin follows
  *   the active-login auto switch.
+ * - agy: a read-only line naming its current login on both tabs. agy keeps no
+ *   default pin, departure record, or auto-switch setting, so it gets no
+ *   return hint and no empty-pin warning, and no line at all when the catalog
+ *   carries no agy entry.
  *
  * Every account name goes through `accountDisplayName`, and the return wording
  * is the one the server notices use (`app/utils/active-login-return.js`).
@@ -15,7 +19,7 @@
  * @typedef {'claude'|'codex'} LoginRunner
  * @typedef {import('../../utils/active-login-return.js').DepartureRecord} DepartureRecord
  * @typedef {{ accounts: any[], active: any }|null} ProviderCatalog
- * @typedef {{ claude: ProviderCatalog, codex: ProviderCatalog }} LoginCatalog
+ * @typedef {{ claude: ProviderCatalog, codex: ProviderCatalog, agy?: ProviderCatalog }} LoginCatalog
  * @typedef {import('../../data/limit-policy-settings-store.js').LimitPolicySettingsState} LimitPolicySettingsState
  */
 import { html, render } from 'lit-html';
@@ -99,6 +103,20 @@ export function runnerStatusText(label, provider, record) {
     : `${head} · ${departureHintText(record, provider)}`;
 }
 
+/** The agy line's label. */
+const AGY_LABEL = 'agy';
+
+/**
+ * Whether the catalog carries an agy entry at all (null still counts: the
+ * list was asked for and could not be read).
+ *
+ * @param {LoginCatalog} catalog
+ * @returns {catalog is LoginCatalog & { agy: ProviderCatalog }}
+ */
+function hasAgyEntry(catalog) {
+  return catalog.agy !== undefined;
+}
+
 /**
  * The `계정` tab's one status line: every runner's current login, each with
  * its return hint in parentheses while a record stands.
@@ -116,6 +134,9 @@ export function accountTabStatusText(catalog, departures) {
       ? name
       : `${name} (${departureHintText(record, provider)})`;
   });
+  if (hasAgyEntry(catalog)) {
+    parts.push(`${AGY_LABEL} ${activeLoginName(catalog.agy)}`);
+  }
   return `활성 로그인: ${parts.join(' · ')}`;
 }
 
@@ -213,6 +234,14 @@ export function createActiveLoginStatus(host, options) {
               ${runnerStatusText(label, catalog[runner], departures[runner])}
             </p>`
         )}
+        ${hasAgyEntry(catalog)
+          ? html`<p
+              class="settings-dialog__hint-block settings-dialog__login-line"
+              data-active-login-line=${AGY_LABEL}
+            >
+              ${runnerStatusText(AGY_LABEL, catalog.agy, null)}
+            </p>`
+          : ''}
         <p class="settings-dialog__hint-block" data-active-login-note>
           ${WORKER_LOGIN_NOTE}
         </p>

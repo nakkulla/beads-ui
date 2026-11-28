@@ -3,9 +3,10 @@ id: 'UI-xj50'
 title: 'Claude 계정 추가와 세션 전용 로그인'
 date: '2026-11-15'
 summary: '화면 로그인·계정 추가는 활성 계정을 바꾸지 않는 격리 로그인이고, Claude 계정 추가는 cswap login 뒤 같은 창에서 cswap session login까지 이어 세션 전용 로그인을 만들며 그 성공은 종료 코드와 계정 목록의 sessionLoginOwn으로 확인한다 — 나머지 조항은 UI-xm29 그대로다'
-status: 'accepted'
+status: superseded
 bead: 'UI-xj50'
 supersedes: ['UI-xm29']
+superseded_by: 'UI-qlxsw'
 ---
 
 # Claude 계정 추가와 세션 전용 로그인
