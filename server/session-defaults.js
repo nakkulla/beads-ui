@@ -169,10 +169,11 @@ export function normalizeSessionDefaults(raw, options = {}) {
  * `false` is an ordinary storable value meaning the same thing.
  *
  * An agy id in a workflow model slot is stored as its family and effort
- * ({@link splitAgyWorkflowModels}).
+ * ({@link splitAgyWorkflowModels}); `current`, the stored kv object, decides
+ * whether a runtime the patch omits is filled in.
  *
  * @param {unknown} raw
- * @param {{ catalog?: ResolvedCatalog }} [options]
+ * @param {{ catalog?: ResolvedCatalog, current?: Record<string, unknown> }} [options]
  * @returns {{ ok: true, patch: Record<string, string|boolean|null> }|{ ok: false, reason: string }}
  */
 export function validateSessionDefaultsPatch(raw, options = {}) {
@@ -180,7 +181,7 @@ export function validateSessionDefaultsPatch(raw, options = {}) {
     return { ok: false, reason: 'values must be an object' };
   }
   const enums = sessionDefaultEnums(options.catalog);
-  const split = splitAgyWorkflowModels(raw);
+  const split = splitAgyWorkflowModels(raw, options.current);
   if (!split.ok) {
     return { ok: false, reason: split.reason };
   }

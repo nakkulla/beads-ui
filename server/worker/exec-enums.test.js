@@ -1398,6 +1398,30 @@ describe('worker/exec-enums splitAgyWorkflowModels (UI-ufgo Phase 4)', () => {
     });
   });
 
+  test('leaves an omitted runtime unset when the stored runtime is auto', () => {
+    const settings = { impl_model: 'gemini-4-neon-high' };
+
+    const result = enums.splitAgyWorkflowModels(settings, {
+      impl_runtime: 'auto'
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      settings: { impl_model: 'neon', impl_effort: 'high' }
+    });
+  });
+
+  test('keeps an explicitly cleared runtime as a clear', () => {
+    const settings = { impl_runtime: null, impl_model: 'gemini-4-neon-high' };
+
+    const result = enums.splitAgyWorkflowModels(settings);
+
+    expect(result).toEqual({
+      ok: true,
+      settings: { impl_runtime: null, impl_model: 'neon', impl_effort: 'high' }
+    });
+  });
+
   test('refuses an agy id beside a different effort', () => {
     const settings = {
       impl_model: 'gemini-4-neon-high',

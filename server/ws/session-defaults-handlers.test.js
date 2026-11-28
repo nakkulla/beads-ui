@@ -698,6 +698,32 @@ describe('set-session-defaults agy runtime (UI-ufgo Phase 4)', () => {
     );
   });
 
+  test('keeps a stored auto runtime when only an agy id changes', async () => {
+    kvGetJsonInWorkspace.mockResolvedValue({
+      ok: true,
+      value: { schema: 1, impl_runtime: 'auto' }
+    });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    const { ws } = fakeWs();
+
+    await handleSetSessionDefaults(ws, {
+      id: 'set',
+      type: 'set-session-defaults',
+      payload: { values: { impl_model: 'gemini-4-neon-high' } }
+    });
+
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
+      ws,
+      'workflow_session_defaults',
+      {
+        schema: 1,
+        impl_runtime: 'auto',
+        impl_model: 'neon',
+        impl_effort: 'high'
+      }
+    );
+  });
+
   test('refuses an agy id beside a different effort before touching bd', async () => {
     const { ws, sent } = fakeWs();
 

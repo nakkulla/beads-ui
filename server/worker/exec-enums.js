@@ -472,17 +472,20 @@ export function storedSessionDefaultEnums(catalog = runtimeCatalog()) {
  * Rewrite the agy ids a writer put in the workflow model slots
  * (`impl_model`, `quick_fix_impl_model`) into the dotfiles contract's shape:
  * the family in the model slot and the id's effort in the effort slot
- * (agy-runtime §3.3). A missing runtime becomes `agy`; `auto` stays, since
- * the selector derives agy from the family. An id outside the four families is
- * left as it is, so the model check refuses it rather than storing it.
+ * (agy-runtime §3.3). A runtime the writer omitted becomes `agy` unless the
+ * stored `current` one is already `agy` or `auto`; `auto` stays, since the
+ * selector derives agy from the family. An explicit `null` or `''` runtime is
+ * the writer's clear and stays one. An id outside the four families is left
+ * as it is, so the model check refuses it rather than storing it.
  *
  * Refused: an id beside a different explicit effort (`agy_effort_conflict`)
  * or beside another provider's runtime (`provider_model_mismatch`).
  *
  * @param {Record<string, unknown>} settings
+ * @param {Record<string, unknown>|null} [current] - The stored values the settings patch.
  * @returns {{ ok: true, settings: Record<string, unknown> }|{ ok: false, reason: string }}
  */
-export function splitAgyWorkflowModels(settings) {
+export function splitAgyWorkflowModels(settings, current = null) {
   /** @type {Record<string, unknown>} */
   const out = { ...settings };
   for (const prefix of ['', 'quick_fix_']) {
@@ -507,7 +510,11 @@ export function splitAgyWorkflowModels(settings) {
       if (runtime !== 'agy' && runtime !== AUTO_LITERAL) {
         return { ok: false, reason: 'provider_model_mismatch' };
       }
-    } else {
+    } else if (
+      !Object.hasOwn(out, runtime_key) &&
+      current?.[runtime_key] !== 'agy' &&
+      current?.[runtime_key] !== AUTO_LITERAL
+    ) {
       out[runtime_key] = 'agy';
     }
     out[model_key] = pair.family;

@@ -226,7 +226,18 @@ export async function handleSetSessionDefaults(ws, req) {
     ws.send(JSON.stringify(makeError(req, 'kv_read_failed', before.error)));
     return;
   }
-  const next = mergeSessionDefaults(before.raw, validated.patch);
+  // The stored runtime decides whether a split agy id fills in a runtime the
+  // patch omitted, so the accepted patch is split again against it.
+  const against_stored = validateSessionDefaultsPatch(values, {
+    current: before.raw
+  });
+  if (!against_stored.ok) {
+    ws.send(
+      JSON.stringify(makeError(req, 'bad_request', against_stored.reason))
+    );
+    return;
+  }
+  const next = mergeSessionDefaults(before.raw, against_stored.patch);
   const planned = normalizeSessionDefaults(next);
   const general_speed = validateExecSpeeds(planned.values);
   const quick_fix_values = { ...planned.values };
