@@ -1609,8 +1609,9 @@ derives no provider from it — only an exact `impl_model` token names one.
 
 An agy workflow model (`impl_model`, `quick_fix_impl_model`) is stored as the
 pair (family, effort): a written `gemini-4-<family>-<effort>` id is split into
-`impl_model=<family>` and `impl_effort=<effort>` in workspace defaults, Bead
-pins, and preset apply (agy-runtime §3.3). Only the four families
+`impl_model=<family>` and `impl_effort=<effort>` by `set-session-defaults`,
+`update-impl-target`, and `impl-preset-create`/`impl-preset-update`, so a preset
+apply writes the stored pair (agy-runtime §3.3). Only the four families
 `neon|carbon|argon|hydrogen` split; a different explicit effort is
 `agy_effort_conflict`, an agy id under a runtime other than `agy`/`auto` is
 `provider_model_mismatch`, and a missing runtime becomes `agy`. Readers merge
