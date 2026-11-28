@@ -6,6 +6,7 @@
  * verdict, and judges liveness and the answer wait from observed facts. No I/O.
  */
 import { conversationLaunchFlags } from '../conversation-settings.js';
+import { agyConversationArgs } from './runner/agy.js';
 import { terminalResultOf } from './runner/session.js';
 
 /** The interactive-record kind of a session-lane window. */
@@ -71,12 +72,22 @@ export function sessionLaneEnv(input) {
  * preset's model/effort ride the same flag shapes the conversation settings
  * use; claude gets the contract on `--append-system-prompt` and the task as
  * its first input, codex (which has no system-prompt channel) gets the
- * contract prefixed to that first input (UI-lbm5 §4.3).
+ * contract prefixed to that first input (UI-lbm5 §4.3). agy is the same as
+ * codex: the contract rides its first input `-i`, and its model id carries
+ * the effort, so no effort flag is added. Neither codex nor agy can pick its
+ * session id up front; the scheduler reads it after the window opens.
  *
- * @param {{ runner: 'claude'|'codex', model?: string|null, effort?: string|null, session_id?: string|null, resume_session_id?: string|null, system_prompt: string, task_prompt: string, catalog?: any }} input
+ * @param {{ runner: 'claude'|'codex'|'agy', model?: string|null, effort?: string|null, session_id?: string|null, resume_session_id?: string|null, system_prompt: string, task_prompt: string, catalog?: any }} input
  * @returns {string[]}
  */
 export function sessionLaneCommandArgs(input) {
+  if (input.runner === 'agy') {
+    return agyConversationArgs({
+      model: input.model ?? null,
+      conversation_id: input.resume_session_id ?? null,
+      prompt: `${input.system_prompt}\n\n${input.task_prompt}`
+    });
+  }
   const model = input.model ?? '';
   const effort = input.effort ?? '';
   const flags = conversationLaunchFlags(

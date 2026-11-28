@@ -12,6 +12,7 @@ import { runShell } from '../bd.js';
 import { conversationSettingsStore } from '../conversation-settings.js';
 import { debug } from '../logging.js';
 import { SELECTABLE_RUNNERS } from './runner-catalog.js';
+import { agyLauncherPath } from './runner/agy.js';
 import { runtimeCatalog } from './runner/index.js';
 
 const default_log = debug('worker:tmux-launcher');
@@ -218,7 +219,8 @@ export function markerWrapper(input) {
  * §4.2), the same resolution the headless dispatch argv is built from, so a
  * `[runner.codex] command` override reaches the interactive window too. An
  * unknown runner resolves nothing — it is never substituted with claude. agy
- * resolves nothing either until its conversation launch opens (UI-h0hwo).
+ * always runs its launcher `~/.local/bin/agy`, the same one the headless agy
+ * runner uses, and is never looked up on PATH (agy-runtime §3.6).
  *
  * @param {string} runner
  * @returns {string|null}
@@ -226,6 +228,15 @@ export function markerWrapper(input) {
 export function defaultResolveRunner(runner) {
   if (!SELECTABLE_RUNNERS.includes(runner)) {
     return null;
+  }
+  if (runner === 'agy') {
+    const launcher = agyLauncherPath();
+    try {
+      fs.accessSync(launcher, fs.constants.X_OK);
+      return launcher;
+    } catch {
+      return null;
+    }
   }
   /** @type {string} */
   let command;
@@ -351,6 +362,23 @@ export function withLaunchFlags(runner, args, flags) {
     return [args[0], ...flags, ...args.slice(1)];
   }
   return [...flags, ...args];
+}
+
+/**
+ * Put `--dangerously-skip-permissions` into an agy argv right after its
+ * leading `--model <id>`, the order `session-hub open … -- <launcher> --model
+ * <id> --dangerously-skip-permissions [--conversation <id>]` names.
+ *
+ * @param {string[]} args - The arguments AFTER the agy launcher.
+ * @returns {string[]}
+ */
+function withAgyPermissionFlag(args) {
+  const head = args[0] === '--model' && args.length >= 2 ? 2 : 0;
+  return [
+    ...args.slice(0, head),
+    '--dangerously-skip-permissions',
+    ...args.slice(head)
+  ];
 }
 
 /**
@@ -915,11 +943,7 @@ export function createTmuxLauncher(deps = {}) {
       ...(runner === 'claude'
         ? ['--allow-dangerously-skip-permissions', '--no-chrome']
         : []),
-      ...withLaunchFlags(
-        runner,
-        input.commandArgs,
-        input.conversation_flags === false ? [] : launchFlags(runner)
-      )
+      ...runnerArgs(runner, input)
     ]);
     if (!opened.ok) {
       return { session: 'not_launched', reason: opened.error };
@@ -971,10 +995,55 @@ export function createTmuxLauncher(deps = {}) {
   }
 
   /**
+   * The runner's own arguments after its executable (or wrapper).
+   *
+   * @param {string} runner
+   * @param {LaunchInput} input
+   * @returns {string[]}
+   */
+  function runnerArgs(runner, input) {
+    const args = withLaunchFlags(
+      runner,
+      input.commandArgs,
+      input.conversation_flags === false ? [] : launchFlags(runner)
+    );
+    return runner === 'agy' ? withAgyPermissionFlag(args) : args;
+  }
+
+  /**
+   * The agy conversation id of one pane. agy never sets `@agent_session`, so
+   * the id is read later from the hub's `list`, which names each agy session
+   * with its pane (agy-runtime §3.6). `session_id` is null until the hub lists
+   * an agy session on that pane.
+   *
+   * @param {string} pane
+   * @returns {Promise<{ ok: true, session_id: string|null }|{ ok: false, error: string }>}
+   */
+  async function agySessionId(pane) {
+    const listed = await hubChecked(['list']);
+    if (!listed.ok) {
+      return listed;
+    }
+    const sessions = listed.value.sessions;
+    if (!Array.isArray(sessions)) {
+      return { ok: false, error: 'launch_failed:session_hub_invalid_response' };
+    }
+    const found = sessions.find(
+      (row) =>
+        row &&
+        row.agent === 'agy' &&
+        row.pane === pane &&
+        typeof row.session_id === 'string' &&
+        row.session_id.length > 0
+    );
+    return { ok: true, session_id: found ? found.session_id : null };
+  }
+
+  /**
    * The hub arguments that name one marked pane of a runner.
    *
    * @param {string} command
-   * @param {{ runner: 'claude'|'codex', pane: string, marker: string, key: string }} input
+   * @param {{ runner: 'claude'|'codex'|'agy', pane: string, marker: string, key: string }} input
    */
   function startupArgs(command, input) {
     return [
@@ -996,7 +1065,7 @@ export function createTmuxLauncher(deps = {}) {
    * pane. A refusal, an unreachable hub, or a reply outside the documented
    * shape is a failure the caller only logs.
    *
-   * @param {{ runner: 'claude'|'codex', pane: string, marker: string, key: string }} input
+   * @param {{ runner: 'claude'|'codex'|'agy', pane: string, marker: string, key: string }} input
    * @returns {Promise<StartupScreenResult>}
    */
   async function startupScreen(input) {
@@ -1073,7 +1142,7 @@ export function createTmuxLauncher(deps = {}) {
    * its policy row (UI-e5cq §3.1). The hub re-reads the screen, compares the
    * fingerprint and sends the keys; this side never types into the pane.
    *
-   * @param {{ runner: 'claude'|'codex', pane: string, marker: string, key: string, fingerprint: string }} input
+   * @param {{ runner: 'claude'|'codex'|'agy', pane: string, marker: string, key: string, fingerprint: string }} input
    * @returns {Promise<StartupAdvanceResult>}
    */
   async function startupAdvance(input) {
@@ -1171,6 +1240,7 @@ export function createTmuxLauncher(deps = {}) {
     focusRegistryPane,
     startupScreen,
     startupAdvance,
+    agySessionId,
     bridgeActive
   };
 }

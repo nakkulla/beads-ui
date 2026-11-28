@@ -6,6 +6,7 @@ import { parse as parseToml } from 'smol-toml';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { hubReply } from '../../test/session-hub.js';
 import { __resetConversationSettingsForTest } from '../conversation-settings.js';
+import { agyConversationArgs } from './runner/agy.js';
 import { __resetRuntimeCatalogForTest } from './runner/index.js';
 import {
   INQUIRY_PANE_MARKER,
@@ -904,11 +905,31 @@ describe('tmux-launcher runner resolution (UI-mn5u §4.2)', () => {
     expect(defaultResolveRunner('grok')).toBeNull();
   });
 
-  test('resolves no agy launcher before the conversation launch opens', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-agy-bin-'));
-    temp_dirs.push(dir);
-    fs.writeFileSync(path.join(dir, 'agy'), '#!/bin/sh\n', { mode: 0o755 });
-    vi.stubEnv('PATH', dir);
+  test('resolves agy to the launcher under the home directory, not PATH', () => {
+    const path_dir = path.join(test_dir, 'path-bin');
+    const launcher = path.join(test_dir, '.local', 'bin', 'agy');
+    fs.mkdirSync(path_dir);
+    fs.mkdirSync(path.dirname(launcher), { recursive: true });
+    fs.writeFileSync(path.join(path_dir, 'agy'), '#!/bin/sh\n', {
+      mode: 0o755
+    });
+    fs.writeFileSync(launcher, '#!/bin/sh\n', { mode: 0o755 });
+    vi.stubEnv('PATH', path_dir);
+    vi.spyOn(os, 'homedir').mockReturnValue(test_dir);
+
+    const resolved = defaultResolveRunner('agy');
+
+    expect(resolved).toBe(launcher);
+  });
+
+  test('resolves no agy launcher when the home launcher is missing', () => {
+    const path_dir = path.join(test_dir, 'path-bin');
+    fs.mkdirSync(path_dir);
+    fs.writeFileSync(path.join(path_dir, 'agy'), '#!/bin/sh\n', {
+      mode: 0o755
+    });
+    vi.stubEnv('PATH', path_dir);
+    vi.spyOn(os, 'homedir').mockReturnValue(test_dir);
 
     const resolved = defaultResolveRunner('agy');
 
@@ -1639,5 +1660,209 @@ describe('tmux-launcher startup advance (UI-e5cq §3.1)', () => {
     const result = await launcher.startupAdvance(INPUT);
 
     expect(result).toEqual({ ok: false, error: 'launch_failed:bad_request' });
+  });
+});
+
+describe('tmux-launcher agy conversations (UI-ufgo Phase 4)', () => {
+  const AGY = '/home/u/.local/bin/agy';
+
+  /**
+   * A launcher whose hub opens every window and records each argv.
+   *
+   * @param {{ flags?: string[], sessions?: any[] }} [input]
+   */
+  function agyLauncher(input = {}) {
+    /** @type {string[][]} */
+    const calls = [];
+    const launcher = createTmuxLauncher({
+      runSessionHub: async (args) => {
+        calls.push(args);
+        if (args[0] === 'find') {
+          return hubReply({ found: false });
+        }
+        if (args[0] === 'alive') {
+          return hubReply({ alive: 'alive' });
+        }
+        if (args[0] === 'list') {
+          return hubReply({
+            total: (input.sessions || []).length,
+            sessions: input.sessions || []
+          });
+        }
+        return hubReply({
+          status: 'launched',
+          tmux_session: 'bdui-inquiry',
+          window: 'UI-ufgo',
+          pane: '%9'
+        });
+      },
+      resolveRunner: (runner) => (runner === 'agy' ? AGY : null),
+      launchFlags: (runner) => (runner === 'agy' ? (input.flags ?? []) : []),
+      log: () => {}
+    });
+    /**
+     * The runner argv of the hub `open` call.
+     *
+     * @returns {string[]}
+     */
+    function openedArgv() {
+      const opened = /** @type {string[]} */ (
+        calls.find((call) => call[0] === 'open')
+      );
+      return opened.slice(opened.indexOf('--') + 1);
+    }
+    return { calls, launcher, openedArgv };
+  }
+
+  /**
+   * @param {Partial<import('./tmux-launcher.js').LaunchInput>} over
+   */
+  function agyInput(over) {
+    return {
+      marker: INQUIRY_PANE_MARKER,
+      key: 'UI-ufgo',
+      tmux_session: 'bdui-inquiry',
+      window_name: 'UI-ufgo',
+      cwd: test_dir,
+      commandArgs: [],
+      runner: 'agy',
+      ...over
+    };
+  }
+
+  test('opens a fresh agy conversation with the model and skip-permissions flags', async () => {
+    const { launcher, openedArgv } = agyLauncher({
+      flags: ['--model', 'gemini-4-neon-high']
+    });
+
+    const result = await launcher.launch(
+      agyInput({ commandArgs: agyConversationArgs({ prompt: 'hello' }) })
+    );
+
+    expect(result.session).toBe('launched');
+    expect(openedArgv()).toEqual([
+      AGY,
+      '--model',
+      'gemini-4-neon-high',
+      '--dangerously-skip-permissions',
+      '-i',
+      'hello'
+    ]);
+  });
+
+  test('resumes an agy conversation with --conversation after the flags', async () => {
+    const { launcher, openedArgv } = agyLauncher({
+      flags: ['--model', 'gemini-4-carbon-high']
+    });
+
+    await launcher.launch(
+      agyInput({
+        commandArgs: agyConversationArgs({
+          conversation_id: 'conv-1',
+          prompt: 'next'
+        })
+      })
+    );
+
+    expect(openedArgv()).toEqual([
+      AGY,
+      '--model',
+      'gemini-4-carbon-high',
+      '--dangerously-skip-permissions',
+      '--conversation',
+      'conv-1',
+      '-i',
+      'next'
+    ]);
+  });
+
+  test('puts skip-permissions once after a model the launch carries itself', async () => {
+    const { launcher, openedArgv } = agyLauncher({
+      flags: ['--model', 'gemini-4-neon-high']
+    });
+
+    await launcher.launch(
+      agyInput({
+        conversation_flags: false,
+        commandArgs: agyConversationArgs({
+          model: 'gemini-4-argon-medium',
+          prompt: 'task'
+        })
+      })
+    );
+
+    expect(openedArgv()).toEqual([
+      AGY,
+      '--model',
+      'gemini-4-argon-medium',
+      '--dangerously-skip-permissions',
+      '-i',
+      'task'
+    ]);
+  });
+
+  test('opens through the hub argv form, never the Hermes agent form', async () => {
+    const { calls, launcher } = agyLauncher();
+
+    await launcher.launch(
+      agyInput({ commandArgs: agyConversationArgs({ prompt: 'hello' }) })
+    );
+
+    const opened = /** @type {string[]} */ (
+      calls.find((call) => call[0] === 'open')
+    );
+    expect(opened).not.toContain('--agent');
+    expect(opened.slice(opened.indexOf('--') + 1)).toEqual([
+      AGY,
+      '--dangerously-skip-permissions',
+      '-i',
+      'hello'
+    ]);
+  });
+
+  test('reads an agy startup screen with --runner agy', async () => {
+    /** @type {string[][]} */
+    const calls = [];
+    const launcher = createTmuxLauncher({
+      runSessionHub: async (args) => {
+        calls.push(args);
+        return hubReply({ alive: 'alive', started: false, screen: null });
+      },
+      log: () => {}
+    });
+
+    await launcher.startupScreen({
+      runner: 'agy',
+      pane: '%9',
+      marker: SESSION_LANE_PANE_MARKER,
+      key: 'UI-ufgo'
+    });
+
+    expect(calls[0].slice(0, 3)).toEqual(['startup-screen', '--runner', 'agy']);
+  });
+
+  test('finds the agy conversation id of a pane in the hub list', async () => {
+    const { calls, launcher } = agyLauncher({
+      sessions: [
+        { session_id: 'claude-1', agent: 'claude', pane: '%9' },
+        { session_id: 'agy-other', agent: 'agy', pane: '%3' },
+        { session_id: 'agy-1', agent: 'agy', pane: '%9' }
+      ]
+    });
+
+    const found = await launcher.agySessionId('%9');
+
+    expect(found).toEqual({ ok: true, session_id: 'agy-1' });
+    expect(calls).toEqual([['list']]);
+  });
+
+  test('reads no agy conversation id while the hub lists none for the pane', async () => {
+    const { launcher } = agyLauncher({
+      sessions: [{ session_id: 'claude-1', agent: 'claude', pane: '%9' }]
+    });
+
+    const found = await launcher.agySessionId('%9');
+
+    expect(found).toEqual({ ok: true, session_id: null });
   });
 });
