@@ -78,15 +78,40 @@ let test_dir = '';
 let codex_home = '';
 
 describe('tmux interactive session inspection and exit', () => {
-  test('keeps runtime-like path segments inside the cwd', async () => {
-    const launcher = createTmuxLauncher({
-      runTmux: async () => ({
+  /**
+   * Build a launcher whose tmux renders the requested extended format.
+   *
+   * @param {string} marker
+   * @param {Record<string, string>[]} panes
+   */
+  function extendedLauncher(marker, panes) {
+    return createTmuxLauncher({
+      runTmux: async (args) => ({
         code: 0,
-        stdout:
-          'inquiry:window:%9:0:::/repo:claude:work::tree:codex:foreign:UI-1\n',
+        stdout: renderPanes(
+          args[3],
+          panes.map(({ key = '', ...fields }) => ({
+            session_name: 'hub',
+            window_name: 'window',
+            pane_dead: '0',
+            ...fields,
+            [marker]: key
+          }))
+        ),
         stderr: ''
       })
     });
+  }
+
+  test('keeps runtime-like path segments inside the cwd', async () => {
+    const launcher = extendedLauncher(RESOLVE_PANE_MARKER, [
+      {
+        pane_id: '%9',
+        pane_current_path: '/repo:claude:work::tree',
+        '@agent_runtime': 'codex',
+        key: 'foreign:UI-1'
+      }
+    ]);
 
     const result = await launcher.listPanesExtended(RESOLVE_PANE_MARKER);
 
@@ -103,13 +128,16 @@ describe('tmux interactive session inspection and exit', () => {
   });
 
   test('exposes the agent running and attention pane options', async () => {
-    const launcher = createTmuxLauncher({
-      runTmux: async () => ({
-        code: 0,
-        stdout: 'inquiry:window:%9:0:1:question:/repo:a:codex:UI-1\n',
-        stderr: ''
-      })
-    });
+    const launcher = extendedLauncher(RESOLVE_PANE_MARKER, [
+      {
+        pane_id: '%9',
+        '@agent_running': '1',
+        '@agent_attention': 'question',
+        pane_current_path: '/repo:a',
+        '@agent_runtime': 'codex',
+        key: 'UI-1'
+      }
+    ]);
 
     const result = await launcher.listPanesExtended(RESOLVE_PANE_MARKER);
 
@@ -127,12 +155,98 @@ describe('tmux interactive session inspection and exit', () => {
     });
   });
 
-  test.each(['claude', 'codex', ''])(
+  test('keeps a pane whose runtime marker is agy', async () => {
+    const launcher = extendedLauncher(SESSION_LANE_PANE_MARKER, [
+      {
+        session_name: 'hub',
+        window_name: 'dotfiles-uop05',
+        pane_id: '%26',
+        '@agent_running': '1',
+        pane_current_path: '/repo',
+        '@agent_runtime': 'agy',
+        key: 'dotfiles-uop05'
+      },
+      { pane_id: '%27', pane_current_path: '/repo' }
+    ]);
+
+    const result = await launcher.listPanesExtended(SESSION_LANE_PANE_MARKER);
+
+    expect(result).toMatchObject({
+      ok: true,
+      rows: [
+        { pane: '%26', agent_runtime: 'agy', key: 'dotfiles-uop05' },
+        { pane: '%27', agent_runtime: '', key: '' }
+      ]
+    });
+  });
+
+  test.each([
+    ['/repo', 'unknown-runtime'],
+    ['/repo:claude:work', 'unknown-runtime'],
+    ['/repo::work', 'unknown-runtime']
+  ])(
+    'fails the listing when a marked row with cwd %j has runtime %j',
+    async (pane_current_path, agent_runtime) => {
+      const launcher = extendedLauncher(SESSION_LANE_PANE_MARKER, [
+        {
+          pane_id: '%1',
+          pane_current_path: '/repo',
+          '@agent_runtime': 'claude',
+          key: 'UI-1'
+        },
+        {
+          pane_id: '%2',
+          pane_current_path,
+          '@agent_runtime': agent_runtime,
+          key: 'UI-2'
+        }
+      ]);
+
+      const result = await launcher.listPanesExtended(SESSION_LANE_PANE_MARKER);
+
+      expect(result).toMatchObject({ ok: false });
+    }
+  );
+
+  test('skips an unparsed row that carries no marker value', async () => {
+    const launcher = extendedLauncher(SESSION_LANE_PANE_MARKER, [
+      {
+        pane_id: '%1',
+        pane_current_path: '/repo',
+        '@agent_runtime': 'claude',
+        key: 'UI-1'
+      },
+      {
+        pane_id: '%2',
+        pane_current_path: '/repo:claude:work',
+        '@agent_runtime': 'unknown-runtime'
+      }
+    ]);
+
+    const result = await launcher.listPanesExtended(SESSION_LANE_PANE_MARKER);
+
+    expect(result).toMatchObject({
+      ok: true,
+      rows: [{ pane: '%1', key: 'UI-1' }]
+    });
+  });
+
+  test.each(['claude', 'codex', 'agy', 'hermes', ''])(
     'preserves cwd and marker colons for runtime %j',
     async (agent_runtime) => {
-      const runTmux = vi.fn(async () => ({
+      const runTmux = vi.fn(async (/** @type {string[]} */ args) => ({
         code: 0,
-        stdout: `inquiry:resolve-UI-1:%9:0:::/repo:with:colons:${agent_runtime}:foreign:rig:UI-1\n`,
+        stdout: renderPanes(args[3], [
+          {
+            session_name: 'inquiry',
+            window_name: 'resolve-UI-1',
+            pane_id: '%9',
+            pane_dead: '0',
+            pane_current_path: '/repo:with:colons',
+            '@agent_runtime': agent_runtime,
+            [RESOLVE_PANE_MARKER]: 'foreign:rig:UI-1'
+          }
+        ]),
         stderr: ''
       }));
       const launcher = createTmuxLauncher({ runTmux });

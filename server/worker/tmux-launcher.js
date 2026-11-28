@@ -160,15 +160,23 @@ export function paneFormat(marker) {
 }
 
 /**
+ * Runtime words `@agent_runtime` may carry; matches the session-ref vocabulary.
+ */
+const PANE_RUNTIMES = new Set(['claude', 'codex', 'agy', 'hermes', '']);
+
+/**
  * Project the recovery facts with the marker last (UI-6pif §3.4). The hook
  * owned `@agent_running`/`@agent_attention` pair sits right after `pane_dead`
  * — both are colon-free flag words, so the fixed-position split still holds
  * and the colon-bearing cwd and marker keep their tail parsing (UI-ri8n).
+ * `@agent_runtime` appears twice: the fixed-position copy names the exact
+ * cwd/marker boundary, so a cwd segment that looks like a runtime cannot
+ * stand in for an unknown runtime (UI-myb6a).
  *
  * @param {string} marker
  */
 export function paneFormatExtended(marker) {
-  return `#{session_name}:#{window_name}:#{pane_id}:#{pane_dead}:#{@agent_running}:#{@agent_attention}:#{pane_current_path}:#{@agent_runtime}:#{${marker}}`;
+  return `#{session_name}:#{window_name}:#{pane_id}:#{pane_dead}:#{@agent_running}:#{@agent_attention}:#{@agent_runtime}:#{pane_current_path}:#{@agent_runtime}:#{${marker}}`;
 }
 
 /**
@@ -512,13 +520,29 @@ export function createTmuxLauncher(deps = {}) {
         dead,
         agent_running = '',
         agent_attention = '',
+        agent_runtime = '',
         ...tail
       ] = line.split(':');
-      // Runtime is a closed vocabulary; splitting six fields would truncate
-      // a colon-bearing cwd. The final runtime boundary leaves the marker
+      // The last `:<runtime>:` boundary leaves a colon-bearing cwd and marker
       // intact; this format assumes marker keys contain no runtime delimiter.
-      const match = tail.join(':').match(/^(.*):(claude|codex|):(.*)$/);
-      if (!match || !session || !window || !pane || !dead) {
+      const rest = tail.join(':');
+      const boundary = `:${agent_runtime}:`;
+      const at = rest.lastIndexOf(boundary);
+      if (
+        !PANE_RUNTIMES.has(agent_runtime) ||
+        at < 0 ||
+        !session ||
+        !window ||
+        !pane ||
+        !dead
+      ) {
+        // A partial listing cannot prove a marked pane absent.
+        if (!line.endsWith(':')) {
+          return {
+            ok: /** @type {const} */ (false),
+            error: `unparsed pane row: ${line}`
+          };
+        }
         continue;
       }
       rows.push({
@@ -528,9 +552,9 @@ export function createTmuxLauncher(deps = {}) {
         dead,
         agent_running,
         agent_attention,
-        cwd: match[1],
-        agent_runtime: match[2],
-        key: match[3]
+        cwd: rest.slice(0, at),
+        agent_runtime,
+        key: rest.slice(at + boundary.length)
       });
     }
     return { ok: /** @type {const} */ (true), rows };
