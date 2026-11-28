@@ -1408,7 +1408,7 @@ describe('agy account switch', () => {
   test('switches to the slot the row number names and invalidates usage', async () => {
     const h = agySwitchHarness();
 
-    const response = await h.post({ number: 2 });
+    const response = await h.post({ number: 2, key: 'spare' });
 
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ ok: true, active: 'spare' });
@@ -1420,7 +1420,7 @@ describe('agy account switch', () => {
   test('answers busy without switching while an agy run is going', async () => {
     const h = agySwitchHarness({ busy: true });
 
-    const response = await h.post({ number: 2 });
+    const response = await h.post({ number: 2, key: 'spare' });
 
     expect(response.status).toBe(409);
     expect(response.body).toEqual({ ok: false, error: 'busy' });
@@ -1432,7 +1432,7 @@ describe('agy account switch', () => {
       capabilities: { save: false, switch: false, remove: false }
     });
 
-    const response = await h.post({ number: 2 });
+    const response = await h.post({ number: 2, key: 'spare' });
 
     expect(response.body).toEqual({ ok: false, error: 'not_supported' });
     expect(h.runSwitch).not.toHaveBeenCalled();
@@ -1443,18 +1443,37 @@ describe('agy account switch', () => {
       switched: { ok: false, error: 'switch_failed' }
     });
 
-    const response = await h.post({ number: 2 });
+    const response = await h.post({ number: 2, key: 'spare' });
 
     expect(response.body).toEqual({ ok: false, error: 'switch_failed' });
     expect(h.invalidateModels).not.toHaveBeenCalled();
   });
 
-  test('answers account_not_found for a number no slot holds', async () => {
+  test('answers account_changed for a number no slot holds', async () => {
     const h = agySwitchHarness();
 
-    const response = await h.post({ number: 3 });
+    const response = await h.post({ number: 3, key: 'spare' });
 
-    expect(response.body).toEqual({ ok: false, error: 'account_not_found' });
+    expect(response.body).toEqual({ ok: false, error: 'account_changed' });
+    expect(h.runSwitch).not.toHaveBeenCalled();
+  });
+
+  test('answers account_changed when the number now names another slot', async () => {
+    const h = agySwitchHarness();
+
+    const response = await h.post({ number: 1, key: 'spare' });
+
+    expect(response.body).toEqual({ ok: false, error: 'account_changed' });
+    expect(h.runSwitch).not.toHaveBeenCalled();
+  });
+
+  test('refuses a switch that names no slot key', async () => {
+    const h = agySwitchHarness();
+
+    const response = await h.post({ number: 2 });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ ok: false, error: 'invalid_key' });
     expect(h.runSwitch).not.toHaveBeenCalled();
   });
 });

@@ -18,6 +18,11 @@ const CLAUDE = {
   active: { key: 'b@example.com', email: 'b@example.com' }
 };
 
+const AGY = {
+  accounts: [{ key: 'main', email: 'main@gmail.test', alias: null }],
+  active: { key: 'main', email: 'main@gmail.test', alias: null }
+};
+
 const ENTRY = {
   auto_switch: true,
   default_account: 'a@example.com',
@@ -100,6 +105,28 @@ describe('active-login status wording (UI-32oq §4.4)', () => {
     );
 
     expect(text).toBe('활성 로그인: Claude b@example.com · Codex 확인 불가');
+  });
+
+  test('adds the agy login to the account tab line', () => {
+    const text = accountTabStatusText(
+      { claude: CLAUDE, codex: null, agy: AGY },
+      { claude: null, codex: null }
+    );
+
+    expect(text).toBe(
+      '활성 로그인: Claude b@example.com · Codex 확인 불가 · agy main@gmail.test'
+    );
+  });
+
+  test('says the agy login is unknown on the account tab line when its list fails', () => {
+    const text = accountTabStatusText(
+      { claude: CLAUDE, codex: null, agy: null },
+      { claude: null, codex: null }
+    );
+
+    expect(text).toBe(
+      '활성 로그인: Claude b@example.com · Codex 확인 불가 · agy 확인 불가'
+    );
   });
 });
 
@@ -189,6 +216,41 @@ describe('active-login status lines on 활성 계정 (UI-32oq §4.4)', () => {
       'Claude 활성 로그인 b@example.com · default a@example.com (main) 리셋 14:05 뒤 복귀'
     );
     expect(lineOf(host, 'codex')).toBe('Codex 활성 로그인 확인 불가');
+    status.destroy();
+  });
+
+  test('draws a read-only agy line naming the active agy login', async () => {
+    const store = storeWith({ claude: null, codex: null });
+
+    const { host, status } = await mountStatus(store, {
+      claude: CLAUDE,
+      codex: null,
+      agy: AGY
+    });
+
+    expect(lineOf(host, 'agy')).toBe('agy 활성 로그인 main@gmail.test');
+    status.destroy();
+  });
+
+  test('says the agy login is unknown when its list cannot be read', async () => {
+    const store = storeWith({ claude: null, codex: null });
+
+    const { host, status } = await mountStatus(store, {
+      claude: CLAUDE,
+      codex: null,
+      agy: null
+    });
+
+    expect(lineOf(host, 'agy')).toBe('agy 활성 로그인 확인 불가');
+    status.destroy();
+  });
+
+  test('draws no agy line when the catalog carries no agy entry', async () => {
+    const store = storeWith({ claude: null, codex: null });
+
+    const { host, status } = await mountStatus(store);
+
+    expect(host.querySelector('[data-active-login-line="agy"]')).toBeNull();
     status.destroy();
   });
 

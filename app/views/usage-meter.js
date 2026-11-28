@@ -98,7 +98,6 @@ const LOGIN_FAILURE_TEXT = {
   invalid_output: '로그인 도구의 출력을 읽지 못함',
   login_not_found: '로그인 세션이 이미 끝남',
   busy: 'agy 실행·대화 창이 있거나 계정 변경 중 — 끝난 뒤 다시 시도',
-  already_signed_in: '이미 로그인된 상태라 새 로그인을 받지 않음',
   save_failed: '로그인한 계정을 슬롯으로 저장하지 못함',
   not_supported: '이 도구는 아직 계정 추가를 지원하지 않음'
 };
@@ -1004,6 +1003,14 @@ export function createUsageMeter(mount_element, options = {}) {
       return;
     }
     const row_key = rowKey(provider.key, account_number);
+    // agy names its slot by number and key so a reordered list cannot move
+    // the switch onto another slot.
+    const slot_key =
+      provider.key === 'agy'
+        ? (accountsOf(provider.key).find(
+            (account) => account.number === account_number
+          )?.key ?? null)
+        : null;
     switching_rows.set(provider.key, account_number);
     switch_starts.set(provider.key, (switch_starts.get(provider.key) ?? 0) + 1);
     row_messages.delete(row_key);
@@ -1017,6 +1024,7 @@ export function createUsageMeter(mount_element, options = {}) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           number: account_number,
+          ...(slot_key !== null ? { key: slot_key } : {}),
           ...(confirm ? { confirm: true } : {})
         })
       });

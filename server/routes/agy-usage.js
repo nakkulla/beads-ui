@@ -299,6 +299,27 @@ async function loadAgyUsage(readUsage, listAccounts, now) {
 }
 
 /**
+ * When a stored payload goes stale: 180 seconds after the active read was
+ * observed, which a reused model-list read puts earlier than now; a payload
+ * without a live read counts from now.
+ *
+ * @param {AgyUsagePayload} payload
+ * @param {() => number} now
+ * @returns {number}
+ */
+function cacheExpiry(payload, now) {
+  const from_now = now() + CACHE_TTL_MS;
+  if (!payload.available) {
+    return from_now;
+  }
+  const observed_at = Date.parse(payload.fetchedAt);
+  if (!Number.isFinite(observed_at)) {
+    return from_now;
+  }
+  return Math.min(from_now, observed_at + CACHE_TTL_MS);
+}
+
+/**
  * Read through the module-level positive/negative TTL cache.
  *
  * @param {() => Promise<AgyUsageRead|null>} readUsage
@@ -317,7 +338,7 @@ async function getAgyUsage(readUsage, listAccounts, now) {
   const pending = loadAgyUsage(readUsage, listAccounts, now).then((payload) => {
     if (generation === cache_generation) {
       cached_payload = payload;
-      cache_expires_at = now() + CACHE_TTL_MS;
+      cache_expires_at = cacheExpiry(payload, now);
     }
     return payload;
   });

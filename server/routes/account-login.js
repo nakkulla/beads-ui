@@ -115,6 +115,8 @@ import {
  * flag; the end that releases it clears this first, so it is released once.
  * @property {number} trust_enters - Enter presses sent to the agy workspace
  * trust screen.
+ * @property {boolean} logout_sent - The agy `/logout` command went to a pane
+ * that opened signed in; it is sent at most once.
  */
 
 /**
@@ -206,6 +208,8 @@ const AGY_SAVE_TIMEOUT_MS = 150_000;
 const AGY_HEADER_RE =
   /(?:^|\s)([^\s@()]+@[^\s@()]+\.[^\s@()]+)\s+\(([^()\n]+)\)\s*$/;
 const AGY_TRUST_RE = /Do you trust the contents of this project\?/;
+const AGY_SIGNED_OUT_RE = /You are currently not signed in/;
+const AGY_CODE_PROMPT_RE = /Enter the authorization code/;
 const AGY_BUSY_RE = /agy-auth: busy:/;
 
 const default_log = debug('account-login');
@@ -1922,12 +1926,50 @@ export function createAccountLoginManager(options = {}) {
     if (!stillRunning(session)) {
       return;
     }
+    armAgyUrlDeadline(session);
+    later(session, POLL_MS, () => void pollAgy(session));
+  }
+
+  /**
+   * Give the agy launcher {@link AGY_URL_DEADLINE_MS} from now to show its
+   * sign-in link, replacing any deadline already armed.
+   *
+   * @param {LoginSession} session
+   */
+  function armAgyUrlDeadline(session) {
+    clearDeadline(session);
     session.deadline_timer = later(session, AGY_URL_DEADLINE_MS, () => {
       if (session.state === 'starting' && !session.finishing) {
         void stop(session, { state: 'failed', error: 'login_url_missing' });
       }
     });
-    later(session, POLL_MS, () => void pollAgy(session));
+  }
+
+  /**
+   * Whether a capture shows the agy login screen: the signed-out notice, the
+   * sign-in link, or the code prompt. A header line next to any of these is
+   * not a finished sign-in.
+   *
+   * @param {string} screen
+   * @returns {boolean}
+   */
+  function isAgyLoginScreen(screen) {
+    const text = stripAnsi(screen);
+    return (
+      AGY_SIGNED_OUT_RE.test(text) ||
+      AGY_CODE_PROMPT_RE.test(text) ||
+      loginUrlOf(screen) !== null
+    );
+  }
+
+  /**
+   * The signed-in account a capture shows once the login screen is gone, or
+   * null while the screen still asks for a sign-in.
+   *
+   * @param {string} screen
+   */
+  function agySignedInOf(screen) {
+    return isAgyLoginScreen(screen) ? null : agyHeaderOf(screen);
   }
 
   /**
@@ -1939,8 +1981,6 @@ export function createAccountLoginManager(options = {}) {
       'capture-pane',
       '-p',
       '-J',
-      '-S',
-      '-',
       '-t',
       /** @type {string} */ (session.pane_id)
     ]);
@@ -1949,9 +1989,10 @@ export function createAccountLoginManager(options = {}) {
 
   /**
    * One poll of the agy login pane. A live pane answers the workspace trust
-   * screen, shows the sign-in link, and — once the code went in — waits for
-   * the signed-in header line; a dead pane is `busy` when `exec-locked`
-   * could not take the lock, else an incomplete login.
+   * screen, logs a signed-in account out once, shows the sign-in link, and —
+   * once the code went in — waits for the signed-in header line with the
+   * login screen gone; a dead pane is `busy` when `exec-locked` could not
+   * take the lock, else an incomplete login.
    *
    * @param {LoginSession} session
    */
@@ -1994,17 +2035,21 @@ export function createAccountLoginManager(options = {}) {
    * @returns {Promise<boolean>} Whether the login reached its end.
    */
   async function readAgyScreen(session, screen) {
-    const header = agyHeaderOf(screen);
-    if (header && session.code_sent) {
-      await settleAgyLogin(session, header.email);
-      return true;
-    }
-    if (header && session.state === 'starting') {
-      // Signed in before any code: nothing was logged in by this session.
-      await stop(session, { state: 'failed', error: 'already_signed_in' });
-      return true;
+    const signed_in = agySignedInOf(screen);
+    if (session.code_sent) {
+      if (signed_in) {
+        await settleAgyLogin(session, signed_in.email);
+        return true;
+      }
+      return false;
     }
     if (session.state !== 'starting') {
+      return false;
+    }
+    if (signed_in) {
+      if (!session.logout_sent) {
+        await logOutAgy(session);
+      }
       return false;
     }
     const url = loginUrlOf(screen);
@@ -2031,15 +2076,45 @@ export function createAccountLoginManager(options = {}) {
   }
 
   /**
+   * The pane opened on a signed-in account: type `/logout` once so agy shows
+   * its sign-in screen, and count the link deadline again from here.
+   *
+   * @param {LoginSession} session
+   */
+  async function logOutAgy(session) {
+    session.logout_sent = true;
+    log('login %s agy logout', session.id);
+    const pane_id = /** @type {string} */ (session.pane_id);
+    const typed = await runTmux([
+      'send-keys',
+      '-t',
+      pane_id,
+      '-l',
+      '--',
+      '/logout'
+    ]);
+    if (typed.code === 0) {
+      await runTmux(['send-keys', '-t', pane_id, 'Enter']);
+    }
+    if (
+      session.state === 'starting' &&
+      stillRunning(session) &&
+      !session.finishing
+    ) {
+      armAgyUrlDeadline(session);
+    }
+  }
+
+  /**
    * The agy pane died: `busy` when `exec-locked` could not take the agy lock,
-   * a finished sign-in when the header already showed after the code, else an
-   * incomplete login.
+   * a finished sign-in when the header showed after the code with the login
+   * screen gone, else an incomplete login.
    *
    * @param {LoginSession} session
    */
   async function collectDeadAgyPane(session) {
     const screen = (await captureLoginPane(session)) ?? '';
-    const header = session.code_sent ? agyHeaderOf(screen) : null;
+    const header = session.code_sent ? agySignedInOf(screen) : null;
     if (header) {
       await settleAgyLogin(session, header.email);
       return;
@@ -2271,7 +2346,8 @@ export function createAccountLoginManager(options = {}) {
       window_id: null,
       pane_id: null,
       agy_held: false,
-      trust_enters: 0
+      trust_enters: 0,
+      logout_sent: false
     };
     return session;
   }
@@ -2411,7 +2487,8 @@ export function createAccountLoginManager(options = {}) {
 
   /**
    * Type the pasted Claude or agy code into the login pane, once, and only while
-   * the login waits for it. The once flag is set before tmux is called.
+   * the login waits for it. The once flag is set before tmux is called. agy
+   * types it only while the visible pane still shows its code prompt or link.
    *
    * @param {string} login_id
    * @param {unknown} raw_code
@@ -2439,6 +2516,23 @@ export function createAccountLoginManager(options = {}) {
     if (!isLoginCode(code)) {
       return { ok: false, error: 'invalid_code' };
     }
+    if (session.provider === 'agy') {
+      // Read the visible pane again; the session checks repeat after the
+      // capture, with no await between them and the once flag below.
+      const screen = await captureLoginPane(session);
+      if (session.code_sent) {
+        return { ok: false, error: 'code_already_sent' };
+      }
+      if (
+        screen === null ||
+        !agyAsksForCode(screen) ||
+        session.state !== 'awaiting_user' ||
+        session.stopping ||
+        session.finishing
+      ) {
+        return { ok: false, error: 'not_awaiting_code' };
+      }
+    }
     session.code_sent = true;
     const pane_id = /** @type {string} */ (session.pane_id);
     const typed = await runTmux(['send-keys', '-t', pane_id, '-l', '--', code]);
@@ -2462,6 +2556,19 @@ export function createAccountLoginManager(options = {}) {
       }
     }
     return { ok: true, state: session.state };
+  }
+
+  /**
+   * Whether a capture of the agy login pane still asks for the code: its
+   * code prompt or sign-in link shows.
+   *
+   * @param {string} screen
+   * @returns {boolean}
+   */
+  function agyAsksForCode(screen) {
+    return (
+      AGY_CODE_PROMPT_RE.test(stripAnsi(screen)) || loginUrlOf(screen) !== null
+    );
   }
 
   /**

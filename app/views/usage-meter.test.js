@@ -3909,6 +3909,38 @@ describe('usage meter agy row (UI-qlxsw)', () => {
     meter.destroy();
   });
 
+  test('posts the slot key with the row number when switching agy', async () => {
+    const mount = mountMeter();
+    const payload = /** @type {any} */ (
+      agyPayload({ save: true, switch: true, remove: true })
+    );
+    payload.accounts[0].key = 'main';
+    payload.accounts[1].key = 'spare';
+    const fetchMock = stubAgy(payload);
+    const meter = createUsageMeter(mount);
+    await openCard(mount, 'agy');
+
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.usage-meter__switch')
+    ).click();
+    await vi.waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(
+          (call) => call[0] === '/api/agy-account/switch'
+        )
+      ).toHaveLength(1)
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/agy-account/switch',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ number: 2, key: 'spare' })
+      })
+    );
+    meter.destroy();
+  });
+
   test('keeps 재로그인 on the active agy row', async () => {
     const mount = mountMeter();
     stubAgy(agyPayload({ save: false, switch: false, remove: false }));

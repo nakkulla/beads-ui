@@ -316,8 +316,10 @@ export function agyUsageWindows(buckets) {
 // One credential change (login, switch, remove) at a time, process-wide
 // (agy-runtime §3.5). While it runs the scheduler launches no agy run and the
 // quota and list reads stay off, so no read lands under half-moved
-// credentials.
+// credentials. Every change that began also moves the generation, so a launch
+// that passed its gate before a change that already ended still sees it.
 let credential_change_active = false;
+let credential_generation = 0;
 
 /**
  * Take the credential-change flag.
@@ -329,6 +331,7 @@ export function beginAgyCredentialChange() {
     return false;
   }
   credential_change_active = true;
+  credential_generation += 1;
   return true;
 }
 
@@ -342,6 +345,13 @@ export function endAgyCredentialChange() {
  */
 export function agyCredentialChangeActive() {
   return credential_change_active;
+}
+
+/**
+ * @returns {number} How many credential changes have begun in this process.
+ */
+export function agyCredentialGeneration() {
+  return credential_generation;
 }
 
 /**

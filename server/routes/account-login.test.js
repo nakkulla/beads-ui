@@ -2252,6 +2252,16 @@ const AGY_HEADER_SCREEN = [
   '',
   '> '
 ].join('\n');
+// The idle screen of an agy that is already signed in, on the header shape
+// of the dotfiles fixture `agy-1.5.14-idle-fresh-auto.ansi`.
+const AGY_SIGNED_IN_SCREEN = [
+  '                    Antigravity CLI 1.5.14',
+  '     ▀▀▀▀▀▀       agyuser@gmail.test (Google AI Pro)',
+  '                  Gemini 4 Neon (High)',
+  '',
+  '> Auto mode: edits & safe commands auto-approved (shift+tab to cycle)'
+].join('\n');
+const AGY_LOGOUT_KEYS = ['send-keys', '-t', '%1', '-l', '--', '/logout'];
 
 /**
  * @param {{ busy?: boolean, held?: boolean, capabilities?: { save: boolean, switch: boolean, remove: boolean }, slots?: Array<{ name: string, account: string|null }>|null }} [options]
@@ -2438,6 +2448,119 @@ describe('agy login window', () => {
 
     expect(h.tmux.calls).toContainEqual(['send-keys', '-t', '%1', 'Enter']);
   });
+
+  test('captures only the visible screen of the login pane', async () => {
+    const h = agyHarness();
+
+    await startAgyToUrl(h);
+
+    const captures = h.tmux.calls.filter((args) => args[0] === 'capture-pane');
+    expect(captures[0]).toEqual(['capture-pane', '-p', '-J', '-t', '%1']);
+  });
+});
+
+describe('agy login over a signed-in account', () => {
+  /**
+   * Start an agy login whose window comes up already signed in, and poll it
+   * a few times.
+   *
+   * @param {ReturnType<typeof agyHarness>} h
+   * @param {Record<string, unknown>} input
+   * @returns {Promise<string>}
+   */
+  async function startSignedIn(h, input) {
+    const started = await h.manager.start({ provider: 'agy', ...input });
+    if (!started.ok) {
+      throw new Error(`start failed: ${started.error}`);
+    }
+    await drain();
+    h.tmux.state.screen = AGY_SIGNED_IN_SCREEN;
+    await vi.advanceTimersByTimeAsync(3_000);
+    return started.login_id;
+  }
+
+  test('logs the signed-in account out once for an add', async () => {
+    const h = agyHarness();
+
+    await startSignedIn(h, { mode: 'add' });
+
+    const logouts = h.tmux.calls.filter(
+      (args) => JSON.stringify(args) === JSON.stringify(AGY_LOGOUT_KEYS)
+    );
+    expect(logouts).toHaveLength(1);
+  });
+
+  test('presses Enter right after typing the logout command', async () => {
+    const h = agyHarness();
+
+    await startSignedIn(h, { mode: 'add' });
+
+    const index = h.tmux.calls.findIndex(
+      (args) => JSON.stringify(args) === JSON.stringify(AGY_LOGOUT_KEYS)
+    );
+    expect(h.tmux.calls[index + 1]).toEqual(['send-keys', '-t', '%1', 'Enter']);
+  });
+
+  test('shows the sign-in link after logging out for an add', async () => {
+    const h = agyHarness();
+    const login_id = await startSignedIn(h, { mode: 'add' });
+
+    h.tmux.state.screen = AGY_LOGIN_SCREEN;
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(h.manager.status(login_id)).toMatchObject({
+      state: 'awaiting_user',
+      url: AGY_URL,
+      needs_code: true
+    });
+  });
+
+  test('shows the sign-in link after logging out for a re-login', async () => {
+    const h = agyHarness();
+    const login_id = await startSignedIn(h, { mode: 'relogin', number: 1 });
+
+    h.tmux.state.screen = AGY_LOGIN_SCREEN;
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    const logouts = h.tmux.calls.filter(
+      (args) => JSON.stringify(args) === JSON.stringify(AGY_LOGOUT_KEYS)
+    );
+    expect(logouts).toHaveLength(1);
+    expect(h.manager.status(login_id)).toMatchObject({
+      state: 'awaiting_user',
+      url: AGY_URL
+    });
+  });
+
+  test('waits for the link a full deadline counted from the logout', async () => {
+    const h = agyHarness();
+    const started = await h.manager.start({ provider: 'agy', mode: 'add' });
+    await drain();
+    h.tmux.state.screen = AGY_TRUST_SCREEN;
+    await vi.advanceTimersByTimeAsync(20_000);
+    h.tmux.state.screen = AGY_SIGNED_IN_SCREEN;
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await vi.advanceTimersByTimeAsync(25_000);
+
+    expect(h.manager.status(started.ok ? started.login_id : '')).toMatchObject({
+      state: 'starting',
+      error: null
+    });
+  });
+
+  test('fails login_url_missing when no link follows the logout in time', async () => {
+    const h = agyHarness();
+    const login_id = await startSignedIn(h, { mode: 'add' });
+
+    await vi.advanceTimersByTimeAsync(31_000);
+    await drain();
+
+    expect(h.manager.status(login_id)).toMatchObject({
+      state: 'failed',
+      error: 'login_url_missing'
+    });
+  });
 });
 
 describe('agy login URL and code', () => {
@@ -2465,6 +2588,28 @@ describe('agy login URL and code', () => {
       ['send-keys', '-t', '%1', '-l', '--', AGY_CODE],
       ['send-keys', '-t', '%1', 'Enter']
     ]);
+  });
+
+  test('refuses the code when the visible screen no longer asks for it', async () => {
+    const h = agyHarness();
+    const login_id = await startAgyToUrl(h);
+    h.tmux.state.screen = AGY_SIGNED_IN_SCREEN;
+
+    const sent = await h.manager.submitCode(login_id, AGY_CODE);
+
+    expect(sent).toEqual({ ok: false, error: 'not_awaiting_code' });
+    expect(h.tmux.calls).not.toContainEqual([
+      'send-keys',
+      '-t',
+      '%1',
+      '-l',
+      '--',
+      AGY_CODE
+    ]);
+    expect(h.manager.status(login_id)).toMatchObject({
+      state: 'awaiting_user',
+      needs_code: true
+    });
   });
 
   test('never hands the code or the link to the log', async () => {
@@ -2608,6 +2753,38 @@ describe('agy login result', () => {
     expect(h.agy.invalidate).not.toHaveBeenCalled();
     expect(h.tmux.state.windows.size).toBe(0);
     expect(h.isActive()).toBe(false);
+  });
+
+  test('keeps verifying while an account line shows beside the login screen', async () => {
+    const h = agyHarness();
+    const login_id = await startAgyToUrl(h);
+    await h.manager.submitCode(login_id, AGY_CODE);
+
+    h.tmux.state.screen = `${AGY_SIGNED_IN_SCREEN}\n${AGY_LOGIN_SCREEN}`;
+    await vi.advanceTimersByTimeAsync(3_000);
+    await drain();
+
+    expect(h.manager.status(login_id)).toMatchObject({ state: 'verifying' });
+    expect(h.runCommand).not.toHaveBeenCalled();
+    expect(h.agy.invalidate).not.toHaveBeenCalled();
+  });
+
+  test('fails a dead pane that still shows the login screen beside an account line', async () => {
+    const h = agyHarness();
+    const login_id = await startAgyToUrl(h);
+    await h.manager.submitCode(login_id, AGY_CODE);
+
+    h.tmux.state.screen = `${AGY_SIGNED_IN_SCREEN}\n${AGY_LOGIN_SCREEN}\n\nPane is dead (status 1, Sat Nov 28 03:00:00 2026)\n`;
+    h.tmux.state.exit_status = 1;
+    h.tmux.state.dead = true;
+    await vi.advanceTimersByTimeAsync(1_000);
+    await drain();
+
+    expect(h.manager.status(login_id)).toMatchObject({
+      state: 'failed',
+      error: 'login_incomplete'
+    });
+    expect(h.runCommand).not.toHaveBeenCalled();
   });
 
   test('ends the credential change when the login is cancelled', async () => {

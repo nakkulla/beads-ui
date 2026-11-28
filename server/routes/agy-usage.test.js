@@ -139,12 +139,16 @@ function fakeResponse() {
 }
 
 /**
- * @param {{ usage?: any, list?: any, now?: () => number }} [options]
+ * @param {{ usage?: any, list?: any, now?: () => number, read_at?: () => number }} [options]
  */
 function usageHarness(options = {}) {
   const readUsage = vi.fn(async () =>
     options.usage === undefined
-      ? { quota: { state: 'ok' }, groups: GROUPS, read_at: READ_AT }
+      ? {
+          quota: { state: 'ok' },
+          groups: GROUPS,
+          read_at: options.read_at ? options.read_at() : READ_AT
+        }
       : options.usage
   );
   const listAccounts = vi.fn(async () =>
@@ -338,12 +342,25 @@ describe('GET /api/agy-usage', () => {
 
   test('reuses one read for 180 seconds', async () => {
     let clock = NOW;
-    const h = usageHarness({ now: () => clock });
+    const h = usageHarness({ now: () => clock, read_at: () => clock });
 
     await h.get();
     clock += 179_999;
     await h.get();
     clock += 1;
+    await h.get();
+
+    expect(h.readUsage).toHaveBeenCalledTimes(2);
+  });
+
+  test('expires a reused observation 180 seconds after it was observed', async () => {
+    let clock = NOW;
+    const h = usageHarness({ now: () => clock });
+
+    await h.get();
+    clock = READ_AT + 179_999;
+    await h.get();
+    clock = READ_AT + 180_000;
     await h.get();
 
     expect(h.readUsage).toHaveBeenCalledTimes(2);

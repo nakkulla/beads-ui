@@ -17733,9 +17733,30 @@ describe('scheduler agy pre-run gate (UI-h0hwo Phase 2)', () => {
       expect(env.runner.spawnOrder).toEqual([]);
     });
 
-    test('switches only between runs, never while an agy run is going', async () => {
+    test('refuses the agy spawn when a credential change ran between the gate and the spawn', async () => {
       const models = agyModels();
-      const accounts = agyAccounts({ onSwitch: () => models.lose() });
+      const env = agySetup(models);
+      const add = env.worktree.add.getMockImplementation();
+      env.worktree.add.mockImplementationOnce(
+        async (/** @type {any} */ input) => {
+          beginAgyCredentialChange();
+          endAgyCredentialChange();
+          return /** @type {any} */ (add)(input);
+        }
+      );
+      seedQueue(env.store, ['A1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnOrder).toEqual([]);
+      expect(Object.values(env.store.snapshot(WS).attempts)).toMatchObject([
+        { status: 'retry_wait', cause: 'spawn_failed:agy_credential_change' }
+      ]);
+    });
+
+    test('defers the switch without a hold while an agy run is going', async () => {
+      const models = agyModels();
+      const accounts = agyAccounts();
       const env = switchSetup(models, accounts, 2);
       seedQueue(env.store, ['A1']);
       await env.scheduler.tick(WS);
@@ -17746,7 +17767,26 @@ describe('scheduler agy pre-run gate (UI-h0hwo Phase 2)', () => {
 
       expect(env.runner.spawnOrder).toEqual(['A1']);
       expect(accounts.switchTo).not.toHaveBeenCalled();
-      expect(env.store.providerHolds.holds().agy.targets).toHaveLength(1);
+      expect(env.store.providerHolds.holds().agy).toBeUndefined();
+    });
+
+    test('switches and launches the waiting run once the agy run ends', async () => {
+      const models = agyModels();
+      const accounts = agyAccounts();
+      const env = switchSetup(models, accounts, 2);
+      seedQueue(env.store, ['A1']);
+      await env.scheduler.tick(WS);
+      models.quota.mockImplementation(async () => EXHAUSTED);
+      seedQueue(env.store, ['A2']);
+      await env.scheduler.tick(WS);
+      env.runner.finish('A1', {});
+      await flush();
+      await flush();
+
+      await env.scheduler.tick(WS);
+
+      expect(accounts.switchTo).toHaveBeenCalledWith('spare');
+      expect(env.runner.spawnOrder).toEqual(['A1', 'A2']);
     });
 
     test('holds instead of switching when agy-auth cannot switch', async () => {

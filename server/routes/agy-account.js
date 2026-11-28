@@ -2,10 +2,12 @@
  * agy account switch and removal routes (agy-runtime §3.5).
  *
  * Both name a slot by the row number the usage route gave it (the slot's
- * position in `agy-auth list --json`) and run `agy-auth switch`/`remove`
- * through {@link runAgyCredentialChange}: `busy` (409) while an agy run, an
- * agy conversation window, or another credential change is live, and both the
- * model list and the usage cache dropped after a success. A capability
+ * position in `agy-auth list --json`) plus the slot key that row showed, and
+ * answer `account_changed` when the number now names another slot. Both run
+ * `agy-auth switch`/`remove` through {@link runAgyCredentialChange}: `busy`
+ * (409) while an agy run, an agy conversation window, or another credential
+ * change is live, and both the model list and the usage cache dropped after a
+ * success. A capability
  * `agy-auth` reports off answers `not_supported` before anything runs.
  *
  * @import { Request, RequestHandler, Response } from 'express'
@@ -55,7 +57,7 @@ function answer(res, result) {
 }
 
 /**
- * Switch the live agy login to the slot the row number names.
+ * Switch the live agy login to the slot the row number and key name.
  *
  * @param {{ listAccounts?: () => Promise<AgyAuthList>, runSwitch?: (name: string) => Promise<AgyChangeResult>, change?: AgyChange }} [options]
  * @returns {RequestHandler}
@@ -76,6 +78,10 @@ export function createAgySwitchHandler(options = {}) {
       res.status(400).json({ ok: false, error: request.error });
       return;
     }
+    if (request.key === null) {
+      res.status(400).json({ ok: false, error: 'invalid_key' });
+      return;
+    }
     const list = await listAccounts();
     if (!list.ok) {
       answer(res, { ok: false, error: 'account_list_unavailable' });
@@ -86,8 +92,8 @@ export function createAgySwitchHandler(options = {}) {
       return;
     }
     const slot = list.slots[request.number - 1];
-    if (!slot) {
-      answer(res, { ok: false, error: 'account_not_found' });
+    if (!slot || slot.name !== request.key) {
+      answer(res, { ok: false, error: 'account_changed' });
       return;
     }
     answer(res, await change(() => runSwitch(slot.name)));

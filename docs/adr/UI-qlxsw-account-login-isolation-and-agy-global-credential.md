@@ -39,7 +39,7 @@ ADR UI-xj50은 사용량 카드의 재로그인·계정 추가를 활성 계정�
 - 함께 움직이는 소비자: `server/routes/account-login.js`(로그인 세션 모듈), `server/routes/agy-usage.js`·`server/routes/agy-account.js`(agy 사용량·전환·삭제와 자격 변경 조정), `server/worker/agy-model-list.js`(자격 변경 표지와 보관값), `server/worker/scheduler.js`(자격 변경 중 agy 실행 거부와 자동 전환), `app/views/usage-meter.js`·`app/views/settings-dialog/account-catalog.js`(카드 로그인 패널과 계정 목록), claude-swap의 `cswap login`·`cswap session login`과 계정 목록의 `sessionLoginOwn`, dotfiles의 `agy-auth`와 agy 잠금. 되돌리려면 이들을 같이 바꿔야 한다.
 - `codex-auth login`·`cswap add`는 화면 경로에서 쓰지 않는다.
 - 같은 화면의 로그인 단추가 Claude·Codex에서는 활성 계정을 그대로 두고 agy에서는 활성 계정을 바꾼다. agy 로그인 동안에는 agy 실행이 대기한다.
-- agy가 이미 로그인된 상태면 창이 코드 없이 머리말을 보이므로 화면 재로그인은 `already_signed_in`으로 끝난다.
+- agy가 이미 로그인된 상태에서 재인증·계정 추가를 시작하면 잠금을 쥔 그 창의 agy에 `/logout`을 보내 로그인 화면으로 돌린 뒤 같은 절차를 밟는다. 그 뒤 로그인을 마치지 못하면 agy는 로그아웃 상태로 남는다.
 - 로그인 세션은 메모리에만 있어 서버 재시작이 진행 중 로그인을 잃는다. 시작 정리는 소유 서버 프로세스가 죽은 잔재(tmux 세션·`codex login` 프로세스 그룹·임시 `CODEX_HOME`)만 지워, 같은 상태 폴더를 쓰는 다른 서버의 진행 중 로그인을 건드리지 않는다.
 - 로그인 세션 모듈은 Express 없이 부를 수 있게 두어, 보류 중인 credential 자동 재로그인 흐름(UI-s4g1)이 나중에 재사용할 수 있다.
 - 시간 제한·폴링 간격 같은 값은 `server/routes/account-login.js`의 상수가 소유한다.
