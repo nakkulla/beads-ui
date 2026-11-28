@@ -958,8 +958,15 @@ export function createTmuxLauncher(deps = {}) {
         : [executable]),
       // `--no-chrome` keeps the Chrome auto-enable dialog from holding the
       // window before its first turn on an account that never answered it.
+      // `--permission-mode bypassPermissions` matches the headless runner so
+      // no permission or auto-mode prompt waits for a human in the window.
       ...(runner === 'claude'
-        ? ['--allow-dangerously-skip-permissions', '--no-chrome']
+        ? [
+            '--allow-dangerously-skip-permissions',
+            '--permission-mode',
+            'bypassPermissions',
+            '--no-chrome'
+          ]
         : []),
       ...runner_args
     ]);

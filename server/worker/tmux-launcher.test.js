@@ -1050,6 +1050,8 @@ describe('tmux-launcher conversation flags (UI-jbl1 §3.4)', () => {
       expect(opened.slice(opened.indexOf('--') + 1)).toEqual([
         '/usr/bin/claude',
         '--allow-dangerously-skip-permissions',
+        '--permission-mode',
+        'bypassPermissions',
         '--no-chrome',
         '--model',
         'sonnet',
@@ -1167,6 +1169,8 @@ describe('tmux-launcher session-lane launch input (UI-lbm5 §4.3)', () => {
       '--share-history',
       '--',
       '--allow-dangerously-skip-permissions',
+      '--permission-mode',
+      'bypassPermissions',
       '--no-chrome',
       '--session-id',
       'sid',

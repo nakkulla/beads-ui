@@ -538,7 +538,7 @@ describe('direction-inquiry same-session launch', () => {
     const outcome = await inquiry.onParkedAttempt(recoveryInput());
 
     expect(tmux.wrapper()).toContain(
-      "exec '/opt/homebrew/bin/claude' '--allow-dangerously-skip-permissions' '--no-chrome' '--resume' 'claude-sid' '이 세션은"
+      "exec '/opt/homebrew/bin/claude' '--allow-dangerously-skip-permissions' '--permission-mode' 'bypassPermissions' '--no-chrome' '--resume' 'claude-sid' '이 세션은"
     );
     expect(tmux.wrapper()).not.toContain('--fork-session');
     expect(tmux.wrapper()).not.toContain('--session-id');
@@ -1096,7 +1096,7 @@ describe('direction-inquiry click', () => {
 
     expect(resolveSessionAccounts).toHaveBeenCalledWith('/ws', BEAD, 'claude');
     expect(tmux.wrapper()).toContain(
-      "'/bin/cswap' 'run' 'repo@example.com' '--share-history' '--' '--allow-dangerously-skip-permissions' '--no-chrome' '--resume' 'claude-sid'"
+      "'/bin/cswap' 'run' 'repo@example.com' '--share-history' '--' '--allow-dangerously-skip-permissions' '--permission-mode' 'bypassPermissions' '--no-chrome' '--resume' 'claude-sid'"
     );
   });
 

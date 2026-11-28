@@ -77,6 +77,8 @@ describe('conversation model/effort flags', () => {
     expect(openedCommand(runSessionHub)).toEqual([
       '/bin/claude',
       '--allow-dangerously-skip-permissions',
+      '--permission-mode',
+      'bypassPermissions',
       '--no-chrome',
       '--model',
       'opus',
@@ -92,6 +94,8 @@ describe('conversation model/effort flags', () => {
     expect(openedCommand(runSessionHub)).toEqual([
       '/bin/claude',
       '--allow-dangerously-skip-permissions',
+      '--permission-mode',
+      'bypassPermissions',
       '--no-chrome',
       ...INPUT.commandArgs
     ]);
@@ -134,6 +138,8 @@ describe('session-hub interactive launch', () => {
       '--',
       '/bin/claude',
       '--allow-dangerously-skip-permissions',
+      '--permission-mode',
+      'bypassPermissions',
       '--no-chrome',
       ...INPUT.commandArgs
     ]);
@@ -210,6 +216,8 @@ describe('session-hub interactive launch', () => {
       '--',
       '/bin/claude',
       '--allow-dangerously-skip-permissions',
+      '--permission-mode',
+      'bypassPermissions',
       '--no-chrome',
       ...INPUT.commandArgs
     ]);
