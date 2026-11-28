@@ -5,9 +5,9 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| UI-qlxsw | [화면 계정 로그인의 격리와 agy 전역 자격](UI-qlxsw-account-login-isolation-and-agy-global-credential.md) | 2026-11-28 | 화면 로그인·계정 추가는 Claude·Codex에서 활성 계정을 바꾸지 않는 격리 로그인이고, Claude 계정 추가는 cswap login 뒤 같은 창에서 cswap session login까지 이어 세션 전용 로그인을 만들며 그 성공은 종료 코드와 계정 목록의 sessionLoginOwn으로 확인한다 — agy만 자격이 머신에 한 자리라 화면 로그인이 활성 계정을 바꾸고 그 성공은 로그인 창 머리말의 계정 줄로 확인하며, 자격을 바꾸는 동작은 agy 실행이 없을 때 하나씩만 돈다; 나머지 조항은 UI-xm29 그대로다 |
 | UI-h0hwo | [Codex·agy 모델 카탈로그의 원천은 CLI 목록이다](UI-h0hwo-model-catalog-from-cli-lists.md) | 2026-11-28 | beads-ui의 Codex 모델 선택지는 서버가 Codex CLI 목록(codex debug models)을 비동기로 읽어 dotfiles와 같은 규칙(계열별 최신 list·v2 → 별칭, 모든 적격 버전 → <계열>-<버전> 고정 이름)으로 만들고, 규칙은 JS로 복제해 dotfiles 해석기와 교차 테스트로 묶는다; 마지막 성공 목록을 영속해 읽기 실패가 카탈로그를 줄이지 않으며, effort·speed는 계열 템플릿을, 단가는 별칭이 해석된 고정 이름의 것을 상속하며, 목록에서 빠진 고정 이름의 저장값은 원문을 보존하고 실행은 기본값으로 대신한다 — agy 모델 선택지도 서버가 agy models 목록을 읽어 보관한 것이고 보관값은 읽을 때의 활성 계정에 묶여 계정이 바뀌면 버리며, 세션 모델은 id 그대로, 워크플로우 모델은 계열과 노력으로 나눠 저장한다 |
 | UI-19sj | [실패 대화 결과 줄 자동 진행](UI-19sj-conversation-automatic-proceed.md) | 2026-11-25 | 실패 대화의 결과 줄 자동 진행은 서버가 형식·실패 종류·대화를 열 때의 실패 대상·대상 커밋을 검사한 뒤에만 받아 같은 실패 지문에 한 번 실패 기록의 커밋 그대로 실패 단계를 다시 돌리고, 쓴 지문으로 다시 열리는 대화에 소진 표지를 싣는다 — 나머지 조항은 UI-8ufc 그대로다 |
-| UI-xj50 | [Claude 계정 추가와 세션 전용 로그인](UI-xj50-claude-add-session-login.md) | 2026-11-15 | 화면 로그인·계정 추가는 활성 계정을 바꾸지 않는 격리 로그인이고, Claude 계정 추가는 cswap login 뒤 같은 창에서 cswap session login까지 이어 세션 전용 로그인을 만들며 그 성공은 종료 코드와 계정 목록의 sessionLoginOwn으로 확인한다 — 나머지 조항은 UI-xm29 그대로다 |
 | UI-y7h1 | [auto 구현 리프 후보는 beads-ui 서버 전역 설정이다](UI-y7h1-auto-pool-server-global-setting.md) | 2026-11-11 | auto 구현 리프의 후보 모델과 effort 범위는 beads-ui 서버 전역 설정이 정본이고 저장소별 값 없이 dotfiles가 GET /api/auto-pool로만 읽으며, 빠진 런타임은 dotfiles 출하 기본값을 따른다 |
 | UI-jlov | [dotfiles 계약 소비와 설치본 체커 소비](UI-jlov-dotfiles-contract-and-checker-consumption.md) | 2026-11-11 | beads-ui는 dotfiles 계약을 런타임에 읽지 않고 필요한 subset만 코드 registry로 복제하며 계약 키 부재는 fail-quiet 표시 생략이다; ADR 탭 신호와 Worker 착지 알림의 보호 경로 표시는 설치본 체커를 비동기로 spawn해 --json을 소비하고 규칙을 JS로 복제하지 않으며, 보호 경로 판정 실패는 생략하지 않고 확인 못 함으로 적는다 |
 | UI-d9c1 | [한도 대응 저장소 정책·활성 계정 자동 전환과 한도 미만 후보](UI-d9c1-limit-policy-under-limit-candidates.md) | 2026-11-11 | 자동 전환 후보 거름에서 건강 임계(5h 80%·그 밖의 창 90%)를 없앤다 — Claude·Codex 수신 계정은 보고된 모든 창이 100% 미만(선제 전환이면 preempt_pct 미만)이면 되고, 수동 재개 대화상자도 같은 기준이며, 사용자 순서·크레딧 패스 등 나머지 조항은 UI-iopp 그대로다 |
@@ -168,7 +168,7 @@
 | UI-32oq | [한도 대응 저장소 정책·활성 계정 자동 전환과 default 복귀](history/UI-32oq-limit-policy-repo-and-active-login-return.md) | superseded | [UI-iopp](history/UI-iopp-limit-policy-user-order-candidates.md) |
 | UI-32oq-2 | [설정 창 하나와 대상·서버 전체 탭 묶음](history/UI-32oq-2-settings-one-window-target-and-server-tabs.md) | superseded | [UI-3713](history/UI-3713-conversation-result-words-and-handback.md) |
 | UI-57us | [session-preferred 기본 세션 레인과 Worker 전환 칩](history/UI-57us-session-preferred-default-session-lane.md) | superseded | [UI-32oq-2](history/UI-32oq-2-settings-one-window-target-and-server-tabs.md) |
-| UI-xm29 | [화면 로그인·계정 추가는 격리 로그인](history/UI-xm29-isolated-account-login.md) | superseded | [UI-xj50](UI-xj50-claude-add-session-login.md) |
+| UI-xm29 | [화면 로그인·계정 추가는 격리 로그인](history/UI-xm29-isolated-account-login.md) | superseded | [UI-xj50](history/UI-xj50-claude-add-session-login.md) |
 | UI-3713 | [설정 창 묶음과 대화 결과 줄·마무리 뒤 되돌리기](history/UI-3713-conversation-result-words-and-handback.md) | superseded | [UI-unf5](history/UI-unf5-placement-soft-order-jev-prefer.md) |
 | UI-golv | [설정 창·대화 결과 줄과 배치안 순서·카드 포함 체크](history/UI-golv-placement-card-include-check.md) | superseded | [UI-hozk](history/UI-hozk-failure-self-repair-fix-wait.md) |
 | UI-iopp | [한도 대응 저장소 정책·활성 계정 자동 전환과 사용자 순서 후보](history/UI-iopp-limit-policy-user-order-candidates.md) | superseded | [UI-d9c1](UI-d9c1-limit-policy-under-limit-candidates.md) |
@@ -178,6 +178,7 @@
 | UI-hozk | [대화 결과 줄 수정 대기와 실패 자가 수리 재실행](history/UI-hozk-failure-self-repair-fix-wait.md) | superseded | [UI-7gv4](history/UI-7gv4-worker-url-common-only.md) |
 | UI-v4cc | [보류 없는 provider 대기의 예정 시각 자동 재개](history/UI-v4cc-provider-wait-timed-resume.md) | superseded | [UI-6xw7](history/UI-6xw7-compare-executed-legs-exec-profile.md) |
 | UI-6xw7 | [비교 축은 실제 실행 레그, 설정은 exec_profile로](history/UI-6xw7-compare-executed-legs-exec-profile.md) | superseded | [UI-gmww](history/UI-gmww-lone-candidate-recommendable.md) |
+| UI-xj50 | [Claude 계정 추가와 세션 전용 로그인](history/UI-xj50-claude-add-session-login.md) | superseded | [UI-qlxsw](UI-qlxsw-account-login-isolation-and-agy-global-credential.md) |
 | UI-gmww | [비교 상대 없는 후보도 추천 배치](history/UI-gmww-lone-candidate-recommendable.md) | superseded | [UI-1fss](history/UI-1fss-quickfix-landing-failure-conversation.md) |
 | UI-1fss | [착지 배포 실패 자동 대화와 설정 세션 창](history/UI-1fss-quickfix-landing-failure-conversation.md) | superseded | [UI-6kj0](history/UI-6kj0-paused-tile-session-continue.md) |
 | UI-6kj0 | [일시정지 타일의 세션 이어가기](history/UI-6kj0-paused-tile-session-continue.md) | superseded | [UI-lx9o](history/UI-lx9o-failed-tile-single-badge-detail.md) |
