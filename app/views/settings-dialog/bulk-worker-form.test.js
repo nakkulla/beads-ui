@@ -329,6 +329,23 @@ describe('createBulkWorkerForm quick_fix tab (UI-uohc §6.2)', () => {
     expect(el(quick_fix_host, '[data-bulk-quick-fix-main]')).not.toBe(null);
   });
 
+  test('offers agy as a quick_fix delegation target (UI-ufgo)', () => {
+    const { quick_fix_host } = mountPair();
+    choose(quick_fix_host, 'quick_fix_impl_dispatch', 'delegated');
+
+    const runtime = el(
+      quick_fix_host,
+      '[data-bulk-key="quick_fix_impl_runtime"]'
+    );
+
+    expect(
+      Array.from(
+        /** @type {HTMLSelectElement} */ (runtime).options,
+        (option) => option.value
+      )
+    ).toContain('agy');
+  });
+
   test('shows the general value an empty quick_fix row inherits', () => {
     const { host, quick_fix_host } = mountPair();
     choose(quick_fix_host, 'quick_fix_impl_dispatch', 'delegated');

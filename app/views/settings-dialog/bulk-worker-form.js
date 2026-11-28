@@ -75,7 +75,7 @@ const HOLD_LABEL = { mixed: '갈림 — 유지', pending: '미확인 — 유지'
 const PRESET_ONLY_BADGE = '프리셋에만 담김 · 저장소에는 안 씀';
 
 /** A workspace quick_fix runtime is concrete; `inherit` has no controller. */
-const QUICK_FIX_IMPL_RUNTIMES = ['claude', 'codex'];
+const QUICK_FIX_IMPL_RUNTIMES = ['claude', 'codex', 'agy'];
 
 /** Disabled copy for a server that never had the quick_fix lane. */
 const QUICK_FIX_UNSUPPORTED = '서버가 quick_fix 레인을 지원하지 않습니다';

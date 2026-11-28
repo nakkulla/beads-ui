@@ -542,6 +542,28 @@ describe('createExecutionPane quick fix tab (UI-uohc §6.1)', () => {
     expect(el(qf(root), 'select[data-key="quick_fix_impl_model"]')).toBe(null);
   });
 
+  test('offers agy as a quick_fix delegation target (UI-ufgo)', async () => {
+    const { root, pane } = mount({
+      values: {
+        quick_fix_impl_dispatch: 'delegated',
+        quick_fix_impl_runtime: 'agy'
+      }
+    });
+
+    await pane.load();
+
+    const runtime = /** @type {HTMLSelectElement} */ (
+      el(qf(root), 'select[data-key="quick_fix_impl_runtime"]')
+    );
+    expect(Array.from(runtime.options).map((option) => option.value)).toEqual([
+      '',
+      'claude',
+      'codex',
+      'agy'
+    ]);
+    expect(runtime.value).toBe('agy');
+  });
+
   test('hides the quick_fix delegation speed row for a claude runtime', async () => {
     const { root, pane } = mount({
       values: {

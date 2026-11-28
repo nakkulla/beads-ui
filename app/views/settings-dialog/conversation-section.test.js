@@ -227,6 +227,46 @@ describe('conversation section load (UI-jbl1 §3.4)', () => {
     ).toBe(true);
   });
 
+  test('draws the agy model row after the Codex rows when the server offers it (UI-ufgo)', async () => {
+    const fields = {
+      ...structuredClone(FIELDS),
+      fresh_runtime: {
+        kind: 'choice',
+        default: 'claude',
+        choices: ['inherit', 'claude', 'codex', 'agy']
+      },
+      agy_model: {
+        kind: 'model',
+        runner: 'agy',
+        default: null,
+        choices: ['gemini-4-neon-high', 'gemini-4-carbon-medium']
+      }
+    };
+    const { host } = mountSection(
+      serving(
+        snapshotOf({
+          fields,
+          values: { ...snapshotOf().values, agy_model: 'gemini-4-neon-high' }
+        })
+      )
+    );
+
+    await settle();
+
+    expect(
+      Array.from(host.querySelectorAll('[data-key]'))
+        .map((row) => row.getAttribute('data-key'))
+        .slice(-2)
+    ).toEqual(['codex_effort', 'agy_model']);
+    expect(
+      Array.from(selectOf(host, 'agy_model').options, (o) => o.value)
+    ).toEqual(['', 'gemini-4-neon-high', 'gemini-4-carbon-medium']);
+    expect(selectOf(host, 'agy_model').value).toBe('gemini-4-neon-high');
+    expect(
+      Array.from(selectOf(host, 'fresh_runtime').options, (o) => o.value)
+    ).toContain('agy');
+  });
+
   test('explains both runtime rows right above the Claude model row', async () => {
     const { host } = mountSection(serving(snapshotOf()));
 

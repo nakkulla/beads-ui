@@ -97,7 +97,7 @@ const UNSET = '';
 const IMPL_TARGET_KEYS = ['impl_runtime', 'impl_model', 'impl_effort'];
 
 /** A workspace quick_fix runtime is concrete; `inherit` has no controller yet. */
-const QUICK_FIX_IMPL_RUNTIMES = ['claude', 'codex'];
+const QUICK_FIX_IMPL_RUNTIMES = ['claude', 'codex', 'agy'];
 
 /** Copy a server with no quick_fix lane locks that whole tab with (§6.1). */
 const QUICK_FIX_UNSUPPORTED = '서버가 quick_fix 레인을 지원하지 않습니다';

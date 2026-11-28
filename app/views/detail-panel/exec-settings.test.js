@@ -365,6 +365,7 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
       'astra',
       'opus',
       'fable',
+      'neon',
       'self',
       'skip'
     ]);
@@ -374,6 +375,7 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
       'astra',
       'opus',
       'fable',
+      'neon',
       'self',
       'skip'
     ]);
@@ -382,8 +384,21 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
       'codex',
       'astra',
       'fable',
+      'neon',
       'skip'
     ]);
+  });
+
+  test('offers the neon reviewer to every review step (UI-ufgo)', () => {
+    const mount = mountTemplate();
+
+    for (const key of [
+      'spec_review_model',
+      'plan_review_model',
+      'impl_review_model'
+    ]) {
+      expect(optionValues(selectFor(mount, key))).toContain('neon');
+    }
   });
 
   test('labels both Codex reviewer options distinctly', () => {

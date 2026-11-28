@@ -30,12 +30,13 @@ export const REVIEW_STEP_MODELS = [
   'astra',
   'opus',
   'fable',
+  'neon',
   'self',
   'skip'
 ];
 
 /** `plan_review_model` options — narrower by contract: no `self`, no `opus`. */
-export const PLAN_REVIEW_MODELS = ['codex', 'astra', 'fable', 'skip'];
+export const PLAN_REVIEW_MODELS = ['codex', 'astra', 'fable', 'neon', 'skip'];
 
 /** Effort vocabulary shared by all three review steps. */
 export const REVIEW_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
