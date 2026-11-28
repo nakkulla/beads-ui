@@ -1,7 +1,9 @@
 /**
- * Interactive windows use the installed session-hub CLI for opening, marker
- * lookup and liveness. The hub starts a missing tmux server and writes each
- * caller's marker before executing its runner. beads-ui retains conversation
+ * Interactive windows use the installed session-hub CLI for everything that
+ * touches a terminal multiplexer: opening, marker lookup, liveness, screen
+ * reads, focus and closing. The hub starts a missing server and writes each
+ * caller's marker before executing its runner; its configuration picks the
+ * multiplexer, so nothing here names one. beads-ui retains conversation
  * arguments, placement policy, bridge observation and reconciliation controls.
  */
 import fs from 'node:fs';
@@ -60,20 +62,49 @@ export const SESSION_LANE_PANE_MARKER = '@bdui_session_lane_bead';
 /**
  * How fresh the bridge heartbeat must be to read as active. Read-only
  * observation: a stale beat is reported, never a reason to skip a launch — the
- * session then waits for the user in tmux.
+ * session then waits for the user in its window.
  *
  * @type {number}
  */
 export const BRIDGE_MAX_AGE_MS = 15_000;
 
 /**
+ * One marked window as the hub's `windows` lists it. `pane` is the hub's
+ * window handle, any non-empty string; `window` is the name the launcher gave
+ * the window when it opened it.
+ *
  * @typedef {Object} PaneRow
  * @property {string} session
+ * @property {string} window
  * @property {string} pane
- * @property {string} key - Value of the marker this listing asked for; '' when
- * the pane carries none.
- * @property {string} dead
+ * @property {string} dead - '1' for an ended pane, else '0'.
+ * @property {string} agent_running - '1' while a turn runs, else ''.
+ * @property {string} agent_attention
+ * @property {string} cwd
+ * @property {string} agent_runtime
+ * @property {string} key - Value of the marker this listing asked for.
+ * @property {string|null} session_id - The agent session the window reports.
+ * @property {string} mux - The hub's multiplexer name for this window.
  */
+
+/**
+ * The multiplexer a record or window names; one that names none reads as
+ * `tmux`, which is what every record written before the field existed means.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function muxOf(value) {
+  return typeof value === 'string' && value.length > 0 ? value : 'tmux';
+}
+
+/**
+ * Seconds the hub may wait for a Claude window's `/exit` before it closes the
+ * window anyway.
+ *
+ * @type {number}
+ */
+const EXIT_WAIT_S = 10;
 
 /**
  * Who asked for a window (UI-1fss §4.4, superseding UI-a119 §3.1's user
@@ -92,8 +123,8 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
  * `true` when the folder had an existing non-trusted project entry, `false`
  * when it had none (UI-e5cq §3.2).
  *
- * @typedef {{ session: 'launched', placement: LaunchPlacement, tmux_session: string, tmux_window: string, pane_id: string, codex_project_untrusted?: boolean }
- *   | { session: 'already_running', placement?: LaunchPlacement, tmux_session?: string, tmux_window?: string, pane_id?: string }
+ * @typedef {{ session: 'launched', placement: LaunchPlacement, tmux_session: string, tmux_window: string, pane_id: string, mux: string, codex_project_untrusted?: boolean }
+ *   | { session: 'already_running', placement?: LaunchPlacement, tmux_session?: string, tmux_window?: string, pane_id?: string, mux?: string }
  *   | { session: 'not_launched', reason: string }} LaunchOutcome
  */
 
@@ -151,42 +182,7 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
  */
 
 /**
- * The pane listing format for one marker. Its three trailing fields are the
- * liveness triple; `session_name` leads so the SAME read also answers whether
- * the target session exists, rather than spending another tmux round trip.
- *
- * A colon is printable even in the C locale and is forbidden in session names.
- * Keep the marker last so colons within its value survive parsing.
- *
- * @param {string} marker
- * @returns {string}
- */
-export function paneFormat(marker) {
-  return `#{session_name}:#{pane_id}:#{pane_dead}:#{${marker}}`;
-}
-
-/**
- * Runtime words `@agent_runtime` may carry; matches the session-ref vocabulary.
- */
-const PANE_RUNTIMES = new Set(['claude', 'codex', 'agy', 'hermes', '']);
-
-/**
- * Project the recovery facts with the marker last (UI-6pif §3.4). The hook
- * owned `@agent_running`/`@agent_attention` pair sits right after `pane_dead`
- * — both are colon-free flag words, so the fixed-position split still holds
- * and the colon-bearing cwd and marker keep their tail parsing (UI-ri8n).
- * `@agent_runtime` appears twice: the fixed-position copy names the exact
- * cwd/marker boundary, so a cwd segment that looks like a runtime cannot
- * stand in for an unknown runtime (UI-myb6a).
- *
- * @param {string} marker
- */
-export function paneFormatExtended(marker) {
-  return `#{session_name}:#{window_name}:#{pane_id}:#{pane_dead}:#{@agent_running}:#{@agent_attention}:#{@agent_runtime}:#{pane_current_path}:#{@agent_runtime}:#{${marker}}`;
-}
-
-/**
- * Quote one value for the `sh -c` tmux runs the wrapper under. Everything
+ * Quote one value for the shell line a window command is shown as. Everything
  * inside `'…'` is literal to the shell, and an embedded quote is closed,
  * escaped and reopened — the only sequence a single-quoted string cannot carry
  * directly.
@@ -199,26 +195,9 @@ export function shellQuote(value) {
 }
 
 /**
- * The one-line shell command a marked pane runs.
- *
- * `set-option` comes FIRST and the two commands are joined by `&&` — see the
- * module header for why that ordering is the duplicate guard.
- *
- * @param {{ marker: string, key: string, argv: string[] }} input - `argv[0]` is
- * the executable; the rest are its arguments, each quoted as one word.
- * @returns {string}
- */
-export function markerWrapper(input) {
-  return [
-    `tmux set-option -p -t "$TMUX_PANE" ${input.marker} ${shellQuote(input.key)}`,
-    `&& exec ${input.argv.map((word) => shellQuote(word)).join(' ')}`
-  ].join(' ');
-}
-
-/**
  * One runner's executable, as an absolute path off the Worker's own PATH.
- * Absolute on purpose: the wrapper runs under `sh -c` inside a tmux pane whose
- * PATH is the tmux server's environment, not this process's.
+ * Absolute on purpose: the window's shell gets the multiplexer server's PATH,
+ * not this process's.
  *
  * The COMMAND NAME comes from the runner catalog (codex-orchestration-parity
  * §4.2), the same resolution the headless dispatch argv is built from, so a
@@ -403,7 +382,6 @@ function defaultLaunchFlags(runner) {
 
 /**
  * @typedef {Object} TmuxLauncherDeps
- * @property {(args: string[]) => Promise<{ code: number, stdout: string, stderr: string }>} [runTmux]
  * @property {(args: string[]) => Promise<{ code: number, stdout: string, stderr: string }>} [runSessionHub]
  * @property {() => string|null} [resolveClaude] - Legacy claude-only seam; it
  * still answers for a claude launch when `resolveRunner` is absent.
@@ -449,8 +427,6 @@ export function createTmuxLauncher(deps = {}) {
         : defaultResolveRunner(runner));
   const statFile =
     deps.statFile || ((/** @type {string} */ p) => fs.statSync(p));
-  const runTmux =
-    deps.runTmux || ((/** @type {string[]} */ args) => runShell('tmux', args));
   const runSessionHub =
     deps.runSessionHub ||
     ((/** @type {string[]} */ args) =>
@@ -508,125 +484,186 @@ export function createTmuxLauncher(deps = {}) {
   }
 
   /**
-   * Run a tmux operation without throwing across the reconciliation boundary.
+   * One hub `windows` read for every marker that asked in the same tick. The
+   * reconcile pass asks for five markers at once; one call answers all of
+   * them, and a failure fails every asker the same way.
    *
-   * @param {string[]} args
-   * @returns {Promise<{ ok: true, stdout: string }|{ ok: false, error: string }>}
+   * @param {string[]} markers - Empty only for the reachability probe.
+   * @returns {Promise<{ ok: true, windows: Record<string, any>[] }|{ ok: false, error: string }>}
    */
-  async function runChecked(args) {
-    try {
-      const result = await runTmux(args);
-      if (!result || result.code !== 0) {
-        return {
-          ok: false,
-          error: (result?.stderr || '').trim() || `exit ${result?.code}`
-        };
-      }
-      return { ok: true, stdout: result.stdout || '' };
-    } catch (err) {
-      return { ok: false, error: String(err) };
+  async function hubWindows(markers) {
+    const listed = await hubChecked([
+      'windows',
+      ...markers.flatMap((marker) => ['--marker', marker])
+    ]);
+    if (!listed.ok) {
+      return listed;
     }
+    if (!Array.isArray(listed.value.windows)) {
+      return { ok: false, error: 'launch_failed:session_hub_invalid_response' };
+    }
+    return { ok: true, windows: listed.value.windows };
   }
 
+  /** @type {{ markers: Set<string>, waiters: Array<(result: Awaited<ReturnType<typeof hubWindows>>) => void> }|null} */
+  let window_batch = null;
+
   /**
-   * List recovery facts, preserving colons in paths and marker keys.
+   * Ask the shared `windows` batch for one marker's windows.
    *
    * @param {string} marker
+   * @returns {Promise<Awaited<ReturnType<typeof hubWindows>>>}
+   */
+  function batchedWindows(marker) {
+    return new Promise((resolve) => {
+      if (window_batch === null) {
+        const batch = {
+          markers: new Set(),
+          waiters: /** @type {Array<(result: any) => void>} */ ([])
+        };
+        window_batch = batch;
+        queueMicrotask(() => {
+          window_batch = null;
+          hubWindows([...batch.markers]).then((result) => {
+            for (const waiter of batch.waiters) {
+              waiter(result);
+            }
+          });
+        });
+      }
+      window_batch.markers.add(marker);
+      window_batch.waiters.push(resolve);
+    });
+  }
+
+  /**
+   * The windows of one marker, with the facts the reconcile pass reads. A row
+   * the hub could not fully place is no proof of absence, so it fails the
+   * whole listing.
+   *
+   * @param {string} marker
+   * @returns {Promise<{ ok: true, rows: PaneRow[] }|{ ok: false, error: string }>}
    */
   async function listPanesExtended(marker) {
-    const result = await runChecked([
-      'list-panes',
-      '-a',
-      '-F',
-      paneFormatExtended(marker)
-    ]);
-    if (!result.ok) {
-      return result;
+    const listed = await batchedWindows(marker);
+    if (!listed.ok) {
+      return listed;
     }
-    /** @type {{ session: string, window: string, pane: string, dead: string, agent_running: string, agent_attention: string, cwd: string, agent_runtime: string, key: string }[]} */
+    /** @type {PaneRow[]} */
     const rows = [];
-    for (const line of result.stdout.split('\n')) {
-      if (!line) {
+    for (const row of listed.windows) {
+      const key = row?.markers?.[marker];
+      if (typeof key !== 'string' || key.length === 0) {
         continue;
       }
-      const [
-        session,
-        window,
-        pane,
-        dead,
-        agent_running = '',
-        agent_attention = '',
-        agent_runtime = '',
-        ...tail
-      ] = line.split(':');
-      // The last `:<runtime>:` boundary leaves a colon-bearing cwd and marker
-      // intact; this format assumes marker keys contain no runtime delimiter.
-      const rest = tail.join(':');
-      const boundary = `:${agent_runtime}:`;
-      const at = rest.lastIndexOf(boundary);
       if (
-        !PANE_RUNTIMES.has(agent_runtime) ||
-        at < 0 ||
-        !session ||
-        !window ||
-        !pane ||
-        !dead
+        typeof row.pane !== 'string' ||
+        row.pane.length === 0 ||
+        typeof row.tmux_session !== 'string' ||
+        row.tmux_session.length === 0
       ) {
-        // A partial listing cannot prove a marked pane absent.
-        if (!line.endsWith(':')) {
-          return {
-            ok: /** @type {const} */ (false),
-            error: `unparsed pane row: ${line}`
-          };
-        }
-        continue;
+        return { ok: false, error: `unparsed window row: ${row.pane}` };
       }
       rows.push({
-        session,
-        window,
-        pane,
-        dead,
-        agent_running,
-        agent_attention,
-        cwd: rest.slice(0, at),
-        agent_runtime,
-        key: rest.slice(at + boundary.length)
+        session: row.tmux_session,
+        window:
+          typeof row.window_name === 'string' && row.window_name.length > 0
+            ? row.window_name
+            : String(row.window ?? ''),
+        pane: row.pane,
+        dead: row.dead === true ? '1' : '0',
+        agent_running: row.running === true ? '1' : '',
+        agent_attention: typeof row.attention === 'string' ? row.attention : '',
+        cwd: typeof row.cwd === 'string' ? row.cwd : '',
+        agent_runtime: typeof row.runtime === 'string' ? row.runtime : '',
+        key,
+        session_id:
+          typeof row.session_id === 'string' && row.session_id.length > 0
+            ? row.session_id
+            : null,
+        mux: muxOf(row.mux)
       });
     }
-    return { ok: /** @type {const} */ (true), rows };
+    return { ok: true, rows };
   }
 
   /**
-   * Read one optional pane fact without treating a failed read as empty.
+   * The windows of one marker without the recovery facts.
+   * `ok: false` covers an unreachable hub, a refusal and an unreadable
+   * answer — one fact: liveness could not be judged. A reachable hub with no
+   * marked window is `ok: true` and an empty list.
    *
-   * @param {string} pane_id
-   * @param {string} name
+   * @param {string} marker
+   * @returns {Promise<{ ok: true, rows: Array<{ session: string, pane: string, key: string, dead: string, mux: string }> }|{ ok: false, error: string }>}
    */
-  async function readPaneOption(pane_id, name) {
-    const result = await runChecked([
-      'show-options',
-      '-pqv',
-      '-t',
-      pane_id,
-      name
-    ]);
-    return result.ok
-      ? { ok: /** @type {const} */ (true), value: result.stdout.trim() || null }
-      : result;
-  }
-
-  /**
-   * Submit the caller-authorized Claude exit command.
-   *
-   * @param {string} pane_id
-   */
-  async function sendExit(pane_id) {
-    const typed = await runChecked(['send-keys', '-t', pane_id, '-l', '/exit']);
-    if (!typed.ok) {
-      return typed;
+  async function listPanes(marker) {
+    const listed = await listPanesExtended(marker);
+    if (!listed.ok) {
+      return listed;
     }
-    const submitted = await runChecked(['send-keys', '-t', pane_id, 'Enter']);
-    return submitted.ok ? { ok: /** @type {const} */ (true) } : submitted;
+    return {
+      ok: true,
+      rows: listed.rows.map((row) => ({
+        session: row.session,
+        pane: row.pane,
+        key: row.key,
+        dead: row.dead,
+        mux: row.mux
+      }))
+    };
+  }
+
+  /**
+   * Whether a hub answers at all (a `windows` call that names no marker).
+   *
+   * @returns {Promise<{ ok: true }|{ ok: false, error: string }>}
+   */
+  async function probe() {
+    const listed = await hubWindows([]);
+    return listed.ok ? { ok: true } : listed;
+  }
+
+  /**
+   * Close the window a marker names. A Claude window with `wait` > 0 gets
+   * `/exit` first (the hub types it only where it is safe) and closes after
+   * the wait; `wait` 0 closes it at once.
+   *
+   * @param {{ marker: string, key: string }|undefined} target
+   * @param {number} wait - Seconds the hub may wait for `/exit`.
+   * @returns {Promise<{ ok: true }|{ ok: false, error: string }>}
+   */
+  async function closeMarked(target, wait) {
+    if (!target?.marker || !target.key) {
+      return { ok: false, error: 'window_target_missing' };
+    }
+    const closed = await hubChecked([
+      'close',
+      '--marker-option',
+      target.marker,
+      '--marker-value',
+      target.key,
+      '--wait',
+      String(wait)
+    ]);
+    if (!closed.ok) {
+      return closed;
+    }
+    if (closed.value.found !== true) {
+      return { ok: false, error: 'window_not_found' };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Ask the Claude window to exit: the hub types `/exit` where that is safe,
+   * waits for the window to end, and closes it.
+   *
+   * @param {string} pane_id
+   * @param {{ marker: string, key: string }} [target]
+   */
+  async function sendExit(pane_id, target) {
+    void pane_id;
+    return closeMarked(target, EXIT_WAIT_S);
   }
 
   /**
@@ -634,30 +671,56 @@ export function createTmuxLauncher(deps = {}) {
    *
    * @param {string} tmux_session
    * @param {string} tmux_window
+   * @param {{ marker: string, key: string }} [target]
    */
-  async function killWindow(tmux_session, tmux_window) {
-    const result = await runChecked([
-      'kill-window',
-      '-t',
-      `${tmux_session}:${tmux_window}`
+  async function killWindow(tmux_session, tmux_window, target) {
+    void tmux_session;
+    void tmux_window;
+    return closeMarked(target, 0);
+  }
+
+  /**
+   * The whole visible screen of the window a marker names.
+   *
+   * @param {{ marker: string, key: string }|undefined} target
+   * @returns {Promise<{ ok: true, screen: string }|{ ok: false, error: string }>}
+   */
+  async function windowScreen(target) {
+    if (!target?.marker || !target.key) {
+      return { ok: false, error: 'window_target_missing' };
+    }
+    const read = await hubChecked([
+      'window-screen',
+      '--marker-option',
+      target.marker,
+      '--marker-value',
+      target.key
     ]);
-    return result.ok ? { ok: /** @type {const} */ (true) } : result;
+    if (!read.ok) {
+      return read;
+    }
+    if (read.value.found !== true || typeof read.value.screen !== 'string') {
+      return { ok: false, error: 'window_not_found' };
+    }
+    return { ok: true, screen: read.value.screen };
   }
 
   /**
    * Capture the last Claude prompt, ignoring the status lines below it.
    *
    * @param {string} pane_id
+   * @param {{ marker: string, key: string }} [target]
    */
-  async function capturePaneTail(pane_id) {
-    const result = await runChecked(['capture-pane', '-p', '-t', pane_id]);
+  async function capturePaneTail(pane_id, target) {
+    void pane_id;
+    const result = await windowScreen(target);
     if (!result.ok) {
       return result;
     }
     return {
       ok: /** @type {const} */ (true),
       line:
-        result.stdout
+        result.screen
           .split('\n')
           .map((line) => line.trim())
           .filter((line) => line.startsWith('❯'))
@@ -665,48 +728,17 @@ export function createTmuxLauncher(deps = {}) {
     };
   }
 
-  /** @param {string} pane_id */
-  async function capturePaneText(pane_id) {
-    return runChecked(['capture-pane', '-p', '-t', pane_id]);
-  }
-
   /**
-   * Every pane the tmux server knows about, projected onto ONE marker.
-   * `ok: false` covers an absent server, a non-zero tmux, and a runner that
-   * threw — all one fact: liveness could not be judged.
+   * The visible screen of a marked window, as `stdout` text.
    *
-   * @param {string} marker
-   * @returns {Promise<{ ok: true, rows: PaneRow[] }|{ ok: false, error: string }>}
+   * @param {string} pane_id
+   * @param {{ marker: string, key: string }} [target]
+   * @returns {Promise<{ ok: true, stdout: string }|{ ok: false, error: string }>}
    */
-  async function listPanes(marker) {
-    /** @type {{ code: number, stdout: string, stderr: string }} */
-    let result;
-    try {
-      result = await runTmux(['list-panes', '-a', '-F', paneFormat(marker)]);
-    } catch (err) {
-      return { ok: false, error: String(err) };
-    }
-    if (!result || result.code !== 0) {
-      return {
-        ok: false,
-        error: (result?.stderr || '').trim() || `exit ${result?.code}`
-      };
-    }
-    /** @type {PaneRow[]} */
-    const rows = [];
-    for (const line of (result.stdout || '').split('\n')) {
-      if (line.length === 0) {
-        continue;
-      }
-      const [session, pane, dead, ...key_parts] = line.split(':');
-      rows.push({
-        session: session ?? '',
-        pane: pane ?? '',
-        key: key_parts.join(':'),
-        dead: dead ?? ''
-      });
-    }
-    return { ok: true, rows };
+  async function capturePaneText(pane_id, target) {
+    void pane_id;
+    const result = await windowScreen(target);
+    return result.ok ? { ok: true, stdout: result.screen } : result;
   }
 
   /**
@@ -765,7 +797,7 @@ export function createTmuxLauncher(deps = {}) {
   function hasHubLocation(value) {
     return (
       typeof value.pane === 'string' &&
-      /^%\d+$/.test(value.pane) &&
+      value.pane.length > 0 &&
       typeof value.tmux_session === 'string' &&
       value.tmux_session.length > 0 &&
       typeof value.window === 'string' &&
@@ -780,33 +812,67 @@ export function createTmuxLauncher(deps = {}) {
    * @param {string} key
    */
   async function focusPane(pane, key) {
-    const selected = await runChecked(['select-window', '-t', pane]);
+    const selected = await hubChecked(['focus', '--pane', pane]);
     if (!selected.ok) {
-      log('tmux select-window failed for %s: %s', key, selected.error);
+      log('session-hub focus failed for %s: %s', key, selected.error);
     }
   }
 
   /**
-   * Bring forward the window a Claude session registry `tmux` value names
-   * (`<session>:@<window>.%<pane>`), for a session this server did not launch
-   * and so holds no marker for (UI-gske §3.3). Only the `%<pane>` id is used.
+   * Where a session this server may not have launched runs, as the hub's
+   * `locate` answers it.
    *
-   * @param {unknown} location
-   * @returns {Promise<{ ok: true, tmux_session: string, tmux_window: string }|{ ok: false, error: string }>}
+   * @param {string} session_id
+   * @returns {Promise<{ ok: true, found: true, tmux_session: string, pane: string, mux: string }|{ ok: true, found: false }|{ ok: false, error: string }>}
    */
-  async function focusRegistryPane(location) {
-    const match =
-      typeof location === 'string'
-        ? /^([^:]+):([^.]+)\.(%\d+)$/.exec(location)
-        : null;
-    if (!match) {
+  async function locateSession(session_id) {
+    const located = await hubChecked(['locate', '--session-id', session_id]);
+    if (!located.ok) {
+      return located;
+    }
+    const value = located.value;
+    if (value.found === false) {
+      return { ok: true, found: false };
+    }
+    if (
+      value.found !== true ||
+      typeof value.pane !== 'string' ||
+      value.pane.length === 0 ||
+      typeof value.tmux_session !== 'string' ||
+      value.tmux_session.length === 0
+    ) {
+      return { ok: false, error: 'launch_failed:session_hub_invalid_response' };
+    }
+    return {
+      ok: true,
+      found: true,
+      tmux_session: value.tmux_session,
+      pane: value.pane,
+      mux: muxOf(value.mux)
+    };
+  }
+
+  /**
+   * Bring forward the window a confirmed session id runs in, for a session
+   * this server did not launch and so holds no marker for (UI-gske §3.3). The
+   * hub finds the window; no location string is read or parsed here.
+   *
+   * @param {string} session_id
+   * @returns {Promise<{ ok: true, tmux_session: string, tmux_window: string|null }|{ ok: false, error: string }>}
+   */
+  async function focusSession(session_id) {
+    const located = await locateSession(session_id);
+    if (!located.ok) {
+      return located;
+    }
+    if (!located.found) {
       return { ok: false, error: 'unknown_location' };
     }
-    const selected = await runChecked(['select-window', '-t', match[3]]);
-    if (!selected.ok) {
-      return { ok: false, error: selected.error };
+    const focused = await hubChecked(['focus', '--session-id', session_id]);
+    if (!focused.ok) {
+      return focused;
     }
-    return { ok: true, tmux_session: match[1], tmux_window: match[2] };
+    return { ok: true, tmux_session: located.tmux_session, tmux_window: null };
   }
 
   /**
@@ -846,7 +912,8 @@ export function createTmuxLauncher(deps = {}) {
         tmux_session: value.tmux_session,
         // The hub returns an @N window id; callers retain the displayed name.
         tmux_window: input.window_name,
-        pane_id: value.pane
+        pane_id: value.pane,
+        mux: muxOf(value.mux)
       }
     };
   }
@@ -1015,6 +1082,7 @@ export function createTmuxLauncher(deps = {}) {
       tmux_session: value.tmux_session,
       tmux_window: input.window_name,
       pane_id: value.pane,
+      mux: muxOf(value.mux),
       ...(runner === 'codex' ? { codex_project_untrusted } : {})
     };
   }
@@ -1272,7 +1340,7 @@ export function createTmuxLauncher(deps = {}) {
   /**
    * Whether the Discord bridge beat recently enough to relay this session's
    * questions. A stat that fails reads as inactive — the caller then tells the
-   * user to answer in tmux directly.
+   * user to answer in the window directly.
    *
    * @returns {boolean}
    */
@@ -1290,7 +1358,7 @@ export function createTmuxLauncher(deps = {}) {
   return {
     listPanes,
     listPanesExtended,
-    readPaneOption,
+    probe,
     sendExit,
     killWindow,
     capturePaneTail,
@@ -1298,7 +1366,8 @@ export function createTmuxLauncher(deps = {}) {
     readBridgeThreads,
     launch,
     focusRunning,
-    focusRegistryPane,
+    locateSession,
+    focusSession,
     startupScreen,
     startupAdvance,
     agySessionId,

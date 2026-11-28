@@ -942,7 +942,7 @@ export function externalWaitFeedbackText(feedback) {
   }
   let text;
   if (feedback.reason === 'owner_alive') {
-    text = `원래 세션이 열려 있어 새로 열지 않았습니다 · ${feedback.owner_tmux ? `tmux ${feedback.owner_tmux}` : '원래 창 위치를 확인하지 못했습니다'}`;
+    text = `원래 세션이 열려 있어 새로 열지 않았습니다 · ${feedback.owner_tmux ? `대화 세션 창 ${feedback.owner_tmux}` : '원래 창 위치를 확인하지 못했습니다'}`;
   } else if (feedback.reason === 'owner_unverified') {
     text = `원래 세션이 열려 있는지 확인하지 못해 새로 열지 않았습니다 · ${feedback.session_ref?.startsWith('codex:') ? 'Codex 생존 확인을 지원하지 않습니다' : '생존 조회 결과를 확인하지 못했습니다'}`;
   } else if (feedback.reason === 'owner_dead') {

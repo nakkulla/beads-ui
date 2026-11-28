@@ -490,8 +490,8 @@ function failureConversationLine(conversation) {
       .filter(Boolean)
       .join(':');
     return conversation.startup?.state === 'unconfirmed'
-      ? `대화: 시작 확인 못함 · ${conversation.startup.reason} · tmux ${place || '?'}`
-      : `대화: Discord 스레드 · tmux ${place || '?'}`;
+      ? `대화: 시작 확인 못함 · ${conversation.startup.reason} · ${place || '?'}`
+      : `대화: Discord 스레드 · ${place || '?'}`;
   }
   return FAILURE_CONVERSATION_FALLBACK;
 }
@@ -803,7 +803,7 @@ export function createNotifier(deps) {
           return [
             `🙋 스펙 확정 필요 — ${input.bead_id} (막힌: ${input.spec_authoring.originals.join(', ')})`,
             input.session === 'launched'
-              ? `대화: Discord 스레드 · tmux ${input.tmux_session}:${input.tmux_window}`
+              ? `대화: Discord 스레드 · ${input.tmux_session}:${input.tmux_window}`
               : `대화를 열지 못함 · ${input.reason || 'unknown'} — Worker 탭 [스펙 작성 세션]`
           ];
         }
@@ -827,7 +827,7 @@ export function createNotifier(deps) {
           const place = [text(input.tmux_session), text(input.tmux_window)]
             .filter(Boolean)
             .join(':');
-          lines.push(`대화: Discord 스레드 · tmux ${place || '?'}`);
+          lines.push(`대화: Discord 스레드 · ${place || '?'}`);
         } else {
           lines.push(
             `대화를 열지 못함 · ${text(input.reason) ?? 'unknown'} — Worker 탭 [세션에서 이어가기]`
@@ -925,9 +925,7 @@ export function createNotifier(deps) {
             .filter(Boolean)
             .join(':');
           lines.push(
-            place
-              ? `${SESSION_LANE_STARTED} · tmux ${place}`
-              : SESSION_LANE_STARTED
+            place ? `${SESSION_LANE_STARTED} · ${place}` : SESSION_LANE_STARTED
           );
         }
         const repo = repoLabel(input.repo);
@@ -1063,7 +1061,7 @@ export function createNotifier(deps) {
           `브리지: ${
             input.bridge_active === true
               ? '활성'
-              : '비활성 — 질문은 tmux에서 직접 답'
+              : '비활성 — 질문은 대화 세션 창에서 직접 답'
           }`
         );
         const repo = repoLabel(input.repo);
@@ -1291,9 +1289,9 @@ export function createNotifier(deps) {
           .filter(Boolean)
           .join(':');
         if (place) {
-          lines.push(`tmux ${place}`);
+          lines.push(`대화 세션 창 ${place}`);
         }
-        lines.push('tmux 창에서 선택해야 시작됩니다');
+        lines.push('대화 세션 창에서 선택해야 시작됩니다');
         const repo = repoLabel(input.repo);
         if (repo) {
           lines.push(`리포: ${repo}`);
@@ -1328,7 +1326,7 @@ export function createNotifier(deps) {
           .filter(Boolean)
           .join(':');
         if (place) {
-          lines.push(`tmux ${place}`);
+          lines.push(`대화 세션 창 ${place}`);
         }
         const repo = repoLabel(input.repo);
         if (repo) {

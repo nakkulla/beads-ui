@@ -90,12 +90,12 @@ function runtimeFor(store, options = {}) {
           pane_id: '%9'
         }))
     ),
-    focusRegistryPane: vi.fn(
+    focusSession: vi.fn(
       options.focus ||
         (async () => ({
           ok: true,
           tmux_session: 'dev',
-          tmux_window: '@3'
+          tmux_window: null
         }))
     ),
     bridgeActive: vi.fn(() => false)
@@ -553,20 +553,26 @@ describe('session-inquiry click', () => {
 
     const result = await runtime.click(id);
 
-    expect(launcher.focusRegistryPane).toHaveBeenCalledWith('dev:@3.%7');
+    expect(launcher.focusSession).toHaveBeenCalledExactlyOnceWith(
+      rowOf(store, id).session_id
+    );
     expect(launcher.launch).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       session: 'already_running',
       tmux_session: 'dev',
-      tmux_window: '@3'
+      tmux_window: null
     });
   });
 
-  test('answers with the alive sentence when the live session has no tmux location', async () => {
+  test.each([
+    ['the hub cannot locate the live session', 'unknown_location'],
+    ['the hub cannot focus the live session', 'tmux_unavailable']
+  ])('answers with the alive sentence when %s', async (_name, error) => {
     const store = createQueueStore();
     const id = register(store);
     const { runtime, launcher } = runtimeFor(store, {
-      liveness: { state: 'alive', owner_tmux: null }
+      liveness: { state: 'alive', owner_tmux: null },
+      focus: async () => ({ ok: false, error })
     });
 
     const result = await runtime.click(id);
@@ -577,6 +583,18 @@ describe('session-inquiry click', () => {
       reason: 'owner_alive',
       message: OWNER_ALIVE_MESSAGE
     });
+  });
+
+  test('does not ask the hub to focus a session that is not alive', async () => {
+    const store = createQueueStore();
+    const id = register(store);
+    const { runtime, launcher } = runtimeFor(store, {
+      liveness: { state: 'unverified', owner_tmux: null }
+    });
+
+    await runtime.click(id);
+
+    expect(launcher.focusSession).not.toHaveBeenCalled();
   });
 
   test('refuses an unverified registered session', async () => {
@@ -687,7 +705,6 @@ describe('session-inquiry resume launch flags', () => {
     });
     const launcher = createTmuxLauncher({
       runSessionHub,
-      runTmux: vi.fn(async () => ({ code: 0, stdout: '', stderr: '' })),
       resolveRunner: () => '/bin/claude',
       launchFlags: () => ['--model', 'opus', '--effort', 'high'],
       log: () => {}

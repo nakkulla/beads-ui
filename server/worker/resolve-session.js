@@ -1286,7 +1286,6 @@ export function failedDiscardOperation(queue, bead_id) {
  * @property {import('./session-launch-accounts.js').ResolveSessionAccounts} [resolveSessionAccounts]
  * @property {() => any} getConfig - Runtime config accessor (server/config.js).
  * @property {{ readIssue: (workspace: string, bead_id: string) => Promise<any> }} bd
- * @property {(args: string[]) => Promise<{ code: number, stdout: string, stderr: string }>} [runTmux]
  * @property {import('./tmux-launcher.js').TmuxLauncherDeps['runSessionHub']} [runSessionHub]
  * @property {() => string|null} [resolveClaude]
  * @property {(runner: string) => string|null} [resolveRunner]
@@ -1373,7 +1372,6 @@ export function createResolveSession(deps) {
   const existsSync =
     deps.existsSync || ((/** @type {string} */ p) => fs.existsSync(p));
   const launcher = createTmuxLauncher({
-    ...(deps.runTmux ? { runTmux: deps.runTmux } : {}),
     ...(deps.runSessionHub ? { runSessionHub: deps.runSessionHub } : {}),
     ...(deps.resolveClaude ? { resolveClaude: deps.resolveClaude } : {}),
     ...(deps.resolveRunner ? { resolveRunner: deps.resolveRunner } : {}),
@@ -1462,7 +1460,8 @@ export function createResolveSession(deps) {
    * Confirm the new Codex identity without delaying the scheduler's queue pass.
    * Terminal callers already run the launch-and-notify task asynchronously.
    *
-   * @param {{ pane_id: string, session_id: string }} input
+   * @param {{ pane_id: string, session_id: string, key: string }} input - `key`
+   * is the marker value the window was opened under.
    * @returns {Promise<{ state: 'confirmed'|'unconfirmed', reason: string|null }>}
    */
   async function confirmStartup(input) {
@@ -1481,24 +1480,30 @@ export function createResolveSession(deps) {
     });
     const observe = async () => {
       while (!stopped) {
-        const session = await launcher.readPaneOption(
-          input.pane_id,
-          '@agent_session'
-        );
+        const listed = await launcher.listPanesExtended(RESOLVE_PANE_MARKER);
         if (stopped) {
           break;
         }
-        if (!session.ok) {
+        if (!listed.ok) {
           return unconfirmed('observation_failed');
         }
+        const row = listed.rows.find(
+          (candidate) => candidate.key === input.key && candidate.dead === '0'
+        );
+        if (!row) {
+          return unconfirmed('pane_gone');
+        }
         if (
-          session.value &&
-          session.value !== input.session_id &&
-          isSafeSessionId(session.value)
+          row.session_id &&
+          row.session_id !== input.session_id &&
+          isSafeSessionId(row.session_id)
         ) {
           return { state: /** @type {const} */ ('confirmed'), reason: null };
         }
-        const tail = await launcher.capturePaneText(input.pane_id);
+        const tail = await launcher.capturePaneText(input.pane_id, {
+          marker: RESOLVE_PANE_MARKER,
+          key: input.key
+        });
         if (stopped) {
           break;
         }
@@ -1511,20 +1516,6 @@ export function createResolveSession(deps) {
           )
         ) {
           return unconfirmed('startup_question');
-        }
-        const panes = await launcher.listPanes(RESOLVE_PANE_MARKER);
-        if (stopped) {
-          break;
-        }
-        if (!panes.ok) {
-          return unconfirmed('observation_failed');
-        }
-        if (
-          !panes.rows.some(
-            (row) => row.pane === input.pane_id && row.dead === '0'
-          )
-        ) {
-          return unconfirmed('pane_gone');
         }
         await new Promise((resolve) => {
           poll_timer = setTimeout(resolve, 1_000);
@@ -1706,6 +1697,7 @@ export function createResolveSession(deps) {
           tmux_session: outcome.tmux_session,
           tmux_window: outcome.tmux_window,
           pane_id: outcome.pane_id,
+          mux: outcome.mux,
           cwd,
           conversation: newConversation(
             input.failure,
@@ -1721,7 +1713,11 @@ export function createResolveSession(deps) {
         session_id !== null &&
         input.placement === 'inquiry'
           ? outcome.session === 'launched'
-            ? await confirmStartup({ pane_id: outcome.pane_id, session_id })
+            ? await confirmStartup({
+                pane_id: outcome.pane_id,
+                session_id,
+                key: input.bead_id
+              })
             : {
                 state: /** @type {const} */ ('unconfirmed'),
                 reason:
@@ -1736,7 +1732,7 @@ export function createResolveSession(deps) {
             bead_id: input.bead_id,
             kind: 'interactive_session',
             seq: `resolve:${deps.now ? deps.now() : Date.now()}:${outcome.session === 'launched' ? outcome.pane_id : ''}:startup`,
-            summary: `해결 세션 시작 확인 못함 · ${startup.reason} · tmux ${outcome.session === 'launched' ? `${outcome.tmux_session}:${outcome.tmux_window}` : ''}`
+            summary: `해결 세션 시작 확인 못함 · ${startup.reason} · ${outcome.session === 'launched' ? `${outcome.tmux_session}:${outcome.tmux_window}` : ''}`
           });
         } catch (err) {
           log('startup history write failed for %s: %o', input.bead_id, err);
@@ -1849,6 +1845,7 @@ export function createResolveSession(deps) {
           tmux_session: outcome.tmux_session,
           tmux_window: outcome.tmux_window,
           pane_id: outcome.pane_id,
+          mux: outcome.mux,
           cwd: checkout,
           conversation: newConversation(input.failure),
           ...(typeof outcome.codex_project_untrusted === 'boolean'

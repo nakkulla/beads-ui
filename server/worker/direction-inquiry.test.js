@@ -10,7 +10,6 @@ import {
   createDirectionInquiry,
   fillConversationEntry,
   fillSpecAuthoringEntry,
-  inquiryWrapper,
   parkSentence,
   recoverySentence,
   shellQuote,
@@ -69,29 +68,6 @@ function makeHub(script = {}) {
         : (script.panes_after ?? []);
   }
   /** @param {string[]} args */
-  const runTmux = async (args) => {
-    calls.push(args);
-    if (args[0] === 'list-panes') {
-      if (script.list_code) {
-        return {
-          code: script.list_code,
-          stdout: '',
-          stderr: 'socket unreadable'
-        };
-      }
-      return {
-        code: 0,
-        stderr: '',
-        stdout: readRows()
-          .map(([session, pane, key, dead]) =>
-            [session, pane, dead, key].join(':')
-          )
-          .join('\n')
-      };
-    }
-    return { code: 0, stdout: '', stderr: '' };
-  };
-  /** @param {string[]} args */
   const runSessionHub = async (args) => {
     calls.push(args);
     if (args[0] === script.throw_on) {
@@ -101,6 +77,26 @@ function makeHub(script = {}) {
       return hubReply({ code: 'tmux_unavailable' }, 3);
     }
     const key = args[args.indexOf('--marker-value') + 1];
+    if (args[0] === 'windows') {
+      return hubReply({
+        windows: readRows().map(([session, pane, marker_key, dead]) => ({
+          marker: '@bdui_inquiry_bead',
+          value: marker_key,
+          markers: marker_key ? { '@bdui_inquiry_bead': marker_key } : {},
+          pane,
+          window: BEAD,
+          tmux_session: session,
+          dead: dead === '1',
+          mux: 'tmux'
+        }))
+      });
+    }
+    if (args[0] === 'focus') {
+      return hubReply({
+        focused: true,
+        pane: args[args.indexOf('--pane') + 1]
+      });
+    }
     if (args[0] === 'find') {
       const row = readRows().find((row) => row[2] === key && row[3] === '0');
       return hubReply(
@@ -128,7 +124,6 @@ function makeHub(script = {}) {
   };
   return {
     calls,
-    runTmux,
     runSessionHub,
     names: () => calls.map((c) => c[0]),
     wrapper: () => hubCommand(calls)
@@ -281,7 +276,6 @@ function makeInquiry(over = {}) {
     }),
     bd: { readIssue: over.readIssue || (async () => issue()) },
     notifier: { conversationConfirm },
-    runTmux: tmux.runTmux,
     runSessionHub: tmux.runSessionHub,
     resolveClaude,
     resolveRunner:
@@ -1206,7 +1200,7 @@ describe('direction-inquiry click', () => {
     const args = tmux.calls.find((call) => call[0] === 'open') || [];
     expect(args[args.indexOf('--session') + 1]).toBe('bdui-inquiry');
     expect(args).not.toContain('--attached');
-    expect(tmux.calls).toContainEqual(['select-window', '-t', '%9']);
+    expect(tmux.calls).toContainEqual(['focus', '--pane', '%9']);
     expect(outcome).toMatchObject({
       session: 'launched',
       tmux_session: 'bdui-inquiry',
@@ -1239,7 +1233,7 @@ describe('direction-inquiry click', () => {
 
     const outcome = await inquiry.launchForClick(parkedInput());
 
-    expect(tmux.calls).toContainEqual(['select-window', '-t', '%1']);
+    expect(tmux.calls).toContainEqual(['focus', '--pane', '%1']);
     expect(outcome).toMatchObject({
       session: 'already_running',
       placement: 'user',
@@ -1520,7 +1514,6 @@ describe('direction-inquiry no-throw contract', () => {
       bd: { readIssue: async () => issue() },
       notifier: { conversationConfirm: async () => {} },
       readAttempt: async () => attempt(),
-      runTmux: async () => ({ code: 0, stdout: '', stderr: '' }),
       resolveClaude: () => '/bin/claude',
       statFile: () => ({ mtimeMs: 0 }),
       now: () => 0,
@@ -1542,7 +1535,6 @@ describe('direction-inquiry no-throw contract', () => {
         }
       },
       readAttempt: async () => attempt(),
-      runTmux: async () => ({ code: 0, stdout: '', stderr: '' }),
       resolveClaude: () => '/bin/claude',
       statFile: () => ({ mtimeMs: 0 }),
       now: () => 0,
@@ -1567,14 +1559,13 @@ describe('direction-inquiry no-throw contract', () => {
 });
 
 describe('direction-inquiry probeTmux', () => {
-  test('logs the reachable pane count when enabled', async () => {
+  test('logs that conversation windows are reachable when enabled', async () => {
     const tmux = makeHub({ panes: [['dev', '%1', '', '0']] });
     const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
     const inquiry = createDirectionInquiry({
       getConfig: () => ({ worker_direction_inquiry: { enabled: true } }),
       bd: { readIssue: async () => issue() },
       notifier: {},
-      runTmux: tmux.runTmux,
       runSessionHub: tmux.runSessionHub,
       resolveClaude: () => '/bin/claude',
       statFile: () => ({ mtimeMs: 0 }),
@@ -1584,11 +1575,33 @@ describe('direction-inquiry probeTmux', () => {
 
     await inquiry.probeTmux();
 
-    expect(tmux.names()).toEqual(['list-panes']);
+    expect(tmux.calls).toEqual([['windows']]);
     expect(printed).toHaveBeenCalledWith(
-      'direction_inquiry: tmux reachable (1 panes)'
+      'direction_inquiry: conversation windows reachable'
     );
     printed.mockRestore();
+  });
+
+  test('warns when the hub cannot list conversation windows', async () => {
+    const tmux = makeHub({ list_code: 3 });
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const inquiry = createDirectionInquiry({
+      getConfig: () => ({ worker_direction_inquiry: { enabled: true } }),
+      bd: { readIssue: async () => issue() },
+      notifier: {},
+      runSessionHub: tmux.runSessionHub,
+      resolveClaude: () => '/bin/claude',
+      statFile: () => ({ mtimeMs: 0 }),
+      now: () => 0,
+      log: () => {}
+    });
+
+    await inquiry.probeTmux();
+
+    expect(warned).toHaveBeenCalledWith(
+      'direction_inquiry: conversation windows unreachable: tmux_unavailable'
+    );
+    warned.mockRestore();
   });
 
   test('touches nothing when the feature is off', async () => {
@@ -1597,7 +1610,6 @@ describe('direction-inquiry probeTmux', () => {
       getConfig: () => ({ worker_direction_inquiry: { enabled: false } }),
       bd: { readIssue: async () => issue() },
       notifier: {},
-      runTmux: tmux.runTmux,
       runSessionHub: tmux.runSessionHub,
       resolveClaude: () => '/bin/claude',
       statFile: () => ({ mtimeMs: 0 }),
@@ -1618,21 +1630,6 @@ describe('direction-inquiry shell quoting', () => {
 
   test('escapes an embedded single quote by closing and reopening', () => {
     expect(shellQuote("it's")).toBe("'it'\\''s'");
-  });
-});
-
-describe('direction-inquiry wrapper', () => {
-  test('writes the pane marker before it execs the runner', () => {
-    const wrapper = inquiryWrapper({
-      bead_id: BEAD,
-      claude: '/opt/homebrew/bin/claude',
-      prompt: '프롬프트'
-    });
-
-    expect(wrapper).toBe(
-      `tmux set-option -p -t "$TMUX_PANE" @bdui_inquiry_bead 'UI-7uid' && ` +
-        "exec '/opt/homebrew/bin/claude' '프롬프트'"
-    );
   });
 });
 
@@ -1698,7 +1695,7 @@ describe('direction-inquiry paused conversation (UI-6kj0)', () => {
 
     const outcome = await inquiry.launchForClick(pausedInput());
 
-    expect(tmux.calls).toContainEqual(['select-window', '-t', '%9']);
+    expect(tmux.calls).toContainEqual(['focus', '--pane', '%9']);
     expect(outcome).toMatchObject({
       session: 'launched',
       tmux_session: 'bdui-inquiry'
@@ -1719,7 +1716,15 @@ describe('direction-inquiry paused conversation (UI-6kj0)', () => {
       session: 'not_launched',
       reason: 'record_failed'
     });
-    expect(tmux.calls).toContainEqual(expect.arrayContaining(['kill-window']));
+    expect(tmux.calls).toContainEqual([
+      'close',
+      '--marker-option',
+      '@bdui_inquiry_bead',
+      '--marker-value',
+      BEAD,
+      '--wait',
+      '0'
+    ]);
   });
 
   test('ignores the paused flag on the automatic path', async () => {

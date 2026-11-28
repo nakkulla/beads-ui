@@ -60,7 +60,7 @@ export const OWNER_UNVERIFIED_MESSAGE =
  *   transitionSessionInquiry: (workspace: string, id: string, input: { state: string, closed_reason?: string|null, at: number }) => { outcome: string },
  *   recordInteractiveSession: (workspace: string, record: Record<string, unknown>) => unknown
  * }} store
- * @property {Pick<ReturnType<typeof import('../tmux-launcher.js').createTmuxLauncher>, 'launch'|'focusRegistryPane'|'bridgeActive'>} launcher
+ * @property {Pick<ReturnType<typeof import('../tmux-launcher.js').createTmuxLauncher>, 'launch'|'focusSession'|'bridgeActive'>} launcher
  * @property {(provider: 'claude'|'codex', session_id: string) => Promise<OwnerLiveness>} ownerLiveness
  * @property {() => boolean} autoLaunchEnabled - The shared conversation switch.
  * @property {() => string} tmuxSession - The detached conversation session name.
@@ -218,6 +218,7 @@ export function createSessionInquiryRuntime(deps) {
           tmux_session: outcome.tmux_session,
           tmux_window: outcome.tmux_window,
           pane_id: outcome.pane_id,
+          mux: outcome.mux,
           cwd: row.cwd,
           launched_at: at,
           last_seen_alive_at: at,
@@ -439,23 +440,19 @@ export function createSessionInquiryRuntime(deps) {
       }
       recordLiveness(row, liveness);
       if (liveness.state === 'alive') {
-        if (liveness.owner_tmux) {
-          const focused = await deps.launcher.focusRegistryPane(
-            liveness.owner_tmux
-          );
-          if (focused.ok) {
-            return answer('owner_alive', null, {
-              session: 'already_running',
-              reason: null,
-              session_id: row.session_id,
-              command,
-              placement: 'user',
-              tmux_session: focused.tmux_session,
-              tmux_window: focused.tmux_window
-            });
-          }
-          log('owner pane focus failed for %s: %s', id, focused.error);
+        const focused = await deps.launcher.focusSession(row.session_id);
+        if (focused.ok) {
+          return answer('owner_alive', null, {
+            session: 'already_running',
+            reason: null,
+            session_id: row.session_id,
+            command,
+            placement: 'user',
+            tmux_session: focused.tmux_session,
+            tmux_window: focused.tmux_window
+          });
         }
+        log('owner window focus failed for %s: %s', id, focused.error);
         return answer('owner_alive', OWNER_ALIVE_MESSAGE, {
           session_id: row.session_id,
           command

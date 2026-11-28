@@ -1315,7 +1315,9 @@ describe('수동 배포 실패 행의 [세션에서 이어가기] (UI-jbl1 §3.3
 
     expect(
       mount.querySelector('.worker-repo-op__resolve')?.getAttribute('title')
-    ).toBe('열린 대화의 tmux 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다');
+    ).toBe(
+      '열린 대화의 대화 세션 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다'
+    );
     expect(
       mount.querySelector('.interactive-session-badge')?.textContent
     ).toContain('bdui-inquiry:resolve-repo-op-op-1');

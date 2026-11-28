@@ -6189,7 +6189,7 @@ describe('failed tile with one status badge and one cause line (UI-lx9o)', () =>
       'a tmux window',
       conversation(),
       { resolve_action: true, resolve_enabled: true },
-      '해결 — [세션에서 이어가기]로 맥의 tmux 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다'
+      '해결 — [세션에서 이어가기]로 맥의 대화 세션 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다'
     ],
     [
       'a Discord link',
@@ -6207,7 +6207,7 @@ describe('failed tile with one status badge and one cause line (UI-lx9o)', () =>
       'a tmux window during a handoff',
       conversation({ conversation: { handoff: { at: 1 }, result: null } }),
       { pair_anchor: /** @type {const} */ ('handoff'), pair_held: true },
-      '해결 — 맥의 tmux 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다'
+      '해결 — 맥의 대화 세션 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다'
     ]
   ])('leads 다음 with the guidance of %s', (_name, view, fields, guidance) => {
     const tile = failedTile(

@@ -764,7 +764,7 @@ describe('recovery wait judgment', () => {
         verdict_reason: {
           code: 'decision',
           message:
-            '대화 세션이 답을 기다림 — Discord 스레드 또는 tmux 창에서 답'
+            '대화 세션이 답을 기다림 — Discord 스레드 또는 대화 세션 창에서 답'
         }
       });
       expect(result.actions.map((/** @type {any} */ a) => a.op)).toEqual([
@@ -885,7 +885,7 @@ describe('recovery wait judgment', () => {
       verdict: 'action_required',
       verdict_reason: {
         code: 'decision',
-        message: '답 대기 — Discord 스레드 또는 tmux 창에서 답'
+        message: '답 대기 — Discord 스레드 또는 대화 세션 창에서 답'
       }
     });
     expect(ops(result)).toEqual([
@@ -1445,7 +1445,7 @@ describe('wait judgment external work', () => {
       {
         label: '[세션에서 이어가기]',
         title:
-          '보존 세션을 같은 워크트리의 tmux 창에서 대화로 다시 엽니다 — Worker로 넘기면 Worker가 그 세션에서 attempt를 시작합니다',
+          '보존 세션을 같은 워크트리의 대화 세션 창에서 대화로 다시 엽니다 — Worker로 넘기면 Worker가 그 세션에서 attempt를 시작합니다',
         placement: 'card',
         confirm: undefined,
         mode: undefined
@@ -1453,7 +1453,7 @@ describe('wait judgment external work', () => {
       {
         label: '[세션에서 이어가기]',
         title:
-          '보존 세션을 같은 워크트리의 tmux 창에서 대화로 다시 엽니다 · 열리면 대기 키가 풀린다 · 원래 세션이 살아 있거나 확인되지 않으면 열지 않고 재개 명령을 복사한다',
+          '보존 세션을 같은 워크트리의 대화 세션 창에서 대화로 다시 엽니다 · 열리면 대기 키가 풀린다 · 원래 세션이 살아 있거나 확인되지 않으면 열지 않고 재개 명령을 복사한다',
         placement: 'detail',
         confirm: undefined,
         mode: 'session'

@@ -48,7 +48,7 @@ const AGY_AUTH_LIST_TIMEOUT_MS = 10_000;
 // `agy-auth switch` reads the new account's usage itself (its own bound is
 // 120 seconds) before it answers.
 const AGY_AUTH_CHANGE_TIMEOUT_MS = 150_000;
-const TMUX_TIMEOUT_MS = 10_000;
+const HUB_TIMEOUT_MS = 10_000;
 /** The active row when the signed-in account is in no saved slot. */
 const SIGNED_IN_KEY = 'active';
 const SIGNED_IN_LABEL = '현재 로그인';
@@ -429,30 +429,37 @@ export function __resetCacheForTest() {
 }
 
 /**
- * Whether a tmux pane recorded as an agy runtime is alive — an agy
- * conversation window holds the agy lock as long as it lives.
+ * Whether an agy conversation window is alive on any multiplexer: a live row
+ * of the session hub's `list --all` (state not `ended`, with a pane) whose
+ * agent is agy. Such a window holds the agy lock as long as it lives; an
+ * unreadable hub answers false and agy-auth's own lock still refuses.
  *
- * @param {{ runTmux?: (args: string[]) => Promise<{ code: number, stdout: string, stderr: string }> }} [options]
+ * @param {{ runSessionHub?: (args: string[]) => Promise<{ code: number, stdout: string, stderr: string }> }} [options]
  * @returns {Promise<boolean>}
  */
 export async function agyConversationOpen(options = {}) {
-  const runTmux =
-    options.runTmux ||
+  const runSessionHub =
+    options.runSessionHub ||
     ((/** @type {string[]} */ args) =>
-      runShell('tmux', args, { timeout_ms: TMUX_TIMEOUT_MS }));
+      runShell(path.join(os.homedir(), 'bin', 'session-hub'), args, {
+        timeout_ms: HUB_TIMEOUT_MS
+      }));
   try {
-    const result = await runTmux([
-      'list-panes',
-      '-a',
-      '-F',
-      '#{pane_dead} #{@agent_runtime}'
-    ]);
+    const result = await runSessionHub(['list', '--all']);
     if (result.code !== 0) {
       return false;
     }
-    return result.stdout
-      .split('\n')
-      .some((line) => line.trim().split(/\s+/).join(' ') === '0 agy');
+    const sessions = JSON.parse(result.stdout)?.sessions;
+    return (
+      Array.isArray(sessions) &&
+      sessions.some(
+        (row) =>
+          row?.agent === 'agy' &&
+          row.state !== 'ended' &&
+          typeof row.pane === 'string' &&
+          row.pane.length > 0
+      )
+    );
   } catch {
     return false;
   }

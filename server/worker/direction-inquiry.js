@@ -54,7 +54,6 @@ import { conversationStopLabel } from './session-stall.js';
 import {
   INQUIRY_PANE_MARKER,
   createTmuxLauncher,
-  markerWrapper,
   shellQuote
 } from './tmux-launcher.js';
 
@@ -312,30 +311,11 @@ export function recoverySentence(summary) {
 export { shellQuote };
 
 /**
- * The one-line shell command the conversation pane runs.
- *
- * `set-option` comes FIRST and the two commands are joined by `&&`: a marker
- * that cannot be written never reaches the `exec`, so the runner does not
- * start and the pane closes.
- *
- * @param {{ bead_id: string, claude: string, prompt: string }} input
- * @returns {string}
- */
-export function inquiryWrapper(input) {
-  return markerWrapper({
-    marker: PANE_MARKER,
-    key: input.bead_id,
-    argv: [input.claude, input.prompt]
-  });
-}
-
-/**
  * @typedef {Object} DirectionInquiryDeps
  * @property {import('./session-launch-accounts.js').ResolveSessionAccounts} [resolveSessionAccounts]
  * @property {() => any} getConfig - Runtime config accessor (server/config.js).
  * @property {{ readIssue: (workspace: string, bead_id: string) => Promise<any> }} bd
  * @property {{ conversationConfirm?: (input: any) => Promise<unknown>|unknown }} notifier
- * @property {(args: string[]) => Promise<{ code: number, stdout: string, stderr: string }>} [runTmux]
  * @property {import('./tmux-launcher.js').TmuxLauncherDeps['runSessionHub']} [runSessionHub]
  * @property {() => string|null} [resolveClaude]
  * @property {(runner: string) => string|null} [resolveRunner]
@@ -372,7 +352,6 @@ export function createDirectionInquiry(deps) {
   const existsSync =
     deps.existsSync || ((/** @type {string} */ p) => fs.existsSync(p));
   const launcher = createTmuxLauncher({
-    ...(deps.runTmux ? { runTmux: deps.runTmux } : {}),
     ...(deps.runSessionHub ? { runSessionHub: deps.runSessionHub } : {}),
     ...(deps.resolveClaude ? { resolveClaude: deps.resolveClaude } : {}),
     ...(deps.resolveRunner ? { resolveRunner: deps.resolveRunner } : {}),
@@ -844,7 +823,8 @@ export function createDirectionInquiry(deps) {
         try {
           await launcher.killWindow(
             launched.tmux_session,
-            launched.tmux_window
+            launched.tmux_window,
+            { marker: PANE_MARKER, key: bead_id }
           );
         } catch (err) {
           log('unrecorded paused window close failed for %s: %o', bead_id, err);
@@ -1041,21 +1021,21 @@ export function createDirectionInquiry(deps) {
       in_flight.delete(bead_id);
     },
 
-    /** Probe the configured tmux socket at startup. */
+    /** Probe the session hub's window listing at startup. */
     async probeTmux() {
       if (!readInquiryConfig().enabled) {
         return;
       }
-      const listed = await launcher.listPanes(PANE_MARKER);
+      const listed = await launcher.probe();
       // Daemons normally run without `--debug`; startup reachability must use
       // console output or this operational failure disappears entirely.
       if (!listed.ok) {
-        console.warn(`direction_inquiry: tmux unreachable: ${listed.error}`);
+        console.warn(
+          `direction_inquiry: conversation windows unreachable: ${listed.error}`
+        );
         return;
       }
-      console.log(
-        `direction_inquiry: tmux reachable (${listed.rows.length} panes)`
-      );
+      console.log('direction_inquiry: conversation windows reachable');
     }
   };
 }

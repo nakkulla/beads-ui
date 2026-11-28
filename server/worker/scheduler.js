@@ -231,7 +231,8 @@ import {
   sessionLaneEnv,
   sessionLaneHoldsWindow,
   sessionLanePaneAlive,
-  sessionLaneVerdict
+  sessionLaneVerdict,
+  sessionLaneWindowRow
 } from './session-lane.js';
 import { sessionLaunchAccountOptions } from './session-launch-accounts.js';
 import { stderrPathOf } from './session-log.js';
@@ -269,7 +270,8 @@ import {
   INQUIRY_PANE_MARKER,
   RESOLVE_PANE_MARKER,
   SESSION_LANE_PANE_MARKER,
-  SPEC_AUTHORING_PANE_MARKER
+  SPEC_AUTHORING_PANE_MARKER,
+  muxOf
 } from './tmux-launcher.js';
 import * as default_usage_receipts from './usage-receipts.js';
 import {
@@ -1566,6 +1568,17 @@ const INTERACTIVE_PANE_MARKERS = {
   session_lane: SESSION_LANE_PANE_MARKER,
   spec_authoring: SPEC_AUTHORING_PANE_MARKER
 };
+
+/**
+ * The hub window selector of one interactive record: its kind's marker and the
+ * Bead the marker value names.
+ *
+ * @param {import('./queue-store.js').InteractiveSession} record
+ * @returns {{ marker: string, key: string }}
+ */
+function recordWindowTarget(record) {
+  return { marker: INTERACTIVE_PANE_MARKERS[record.kind], key: record.bead_id };
+}
 
 /**
  * The startup event prefix of one interactive kind (UI-e5cq §3.4). The
@@ -11878,7 +11891,7 @@ export function createScheduler(deps) {
    * listing ran — is skipped until the next observation.
    *
    * @param {string} workspace
-   * @param {Array<{ pane: string, key: string, dead: string }>} rows
+   * @param {Array<{ pane: string, key: string, dead: string, session?: string, mux?: string }>} rows
    * @param {Map<string, string|null>} targets - From
    * {@link sessionLaneObservationTargets}, taken before the listing.
    */
@@ -11892,9 +11905,32 @@ export function createScheduler(deps) {
       if (
         !targets.has(attempt_id) ||
         !sessionLaneJudgeable(attempt_id, a) ||
-        (a.interactive?.pane_id ?? null) !== targets.get(attempt_id) ||
-        sessionLanePaneAlive(rows, a)
+        (a.interactive?.pane_id ?? null) !== targets.get(attempt_id)
       ) {
+        continue;
+      }
+      const found = sessionLaneWindowRow(rows, a);
+      if (found !== null) {
+        const moved =
+          typeof a.interactive?.pane_id === 'string' &&
+          (found.pane !== a.interactive.pane_id ||
+            (found.mux ?? 'tmux') !== (a.interactive.mux ?? 'tmux'));
+        if (moved) {
+          const relocated = deps.store.updateAttempt(workspace, {
+            attempt_id,
+            patch: {
+              interactive: {
+                ...a.interactive,
+                pane_id: found.pane,
+                mux: found.mux ?? 'tmux',
+                ...(typeof found.session === 'string'
+                  ? { tmux_session: found.session }
+                  : {})
+              }
+            }
+          });
+          changed = changed || relocated?.ok === true;
+        }
         continue;
       }
       const result = deps.store.updateAttempt(workspace, {
@@ -12292,8 +12328,12 @@ export function createScheduler(deps) {
     }
     const result =
       record.provider === 'codex' || record.provider === 'agy'
-        ? await launcher.killWindow(record.tmux_session, record.tmux_window)
-        : await launcher.sendExit(record.pane_id);
+        ? await launcher.killWindow(
+            record.tmux_session,
+            record.tmux_window,
+            recordWindowTarget(record)
+          )
+        : await launcher.sendExit(record.pane_id, recordWindowTarget(record));
     if (!result.ok) {
       log('conversation close failed for %s/%s: %o', workspace, key, result);
       return false;
@@ -14855,7 +14895,8 @@ export function createScheduler(deps) {
       }
       const result = await launcher.killWindow(
         record.tmux_session,
-        record.tmux_window
+        record.tmux_window,
+        recordWindowTarget(record)
       );
       if (!result.ok) {
         log('interactive kill failed for %s/%s: %o', workspace, key, result);
@@ -15709,12 +15750,31 @@ export function createScheduler(deps) {
           summary: `${label} 세션 시작 · ${source}`
         });
       }
-      const pane_row = panes[record.kind].find(
-        (pane) =>
-          pane.pane === record.pane_id &&
-          pane.key === record.bead_id &&
-          pane.dead === '0'
+      // The recorded (mux, pane id) is the window; when that pane id is gone a
+      // live window with the same marker value is the same conversation (a
+      // herdr window moved between workspaces gets a new id, UI-3xxa0 §3.2)
+      // and the record's location follows it.
+      const live_rows = panes[record.kind].filter(
+        (pane) => pane.key === record.bead_id && pane.dead === '0'
       );
+      const pane_row =
+        live_rows.find(
+          (pane) =>
+            pane.pane === record.pane_id &&
+            muxOf(pane.mux) === muxOf(record.mux)
+        ) ?? live_rows[0];
+      if (
+        pane_row &&
+        (pane_row.pane !== record.pane_id ||
+          muxOf(pane_row.mux) !== muxOf(record.mux) ||
+          pane_row.session !== record.tmux_session)
+      ) {
+        update(key, record, {
+          pane_id: pane_row.pane,
+          tmux_session: pane_row.session,
+          mux: muxOf(pane_row.mux)
+        });
+      }
       if (!pane_row) {
         // A session-lane window's end is its ATTEMPT's business (UI-lbm5
         // §4.5): the liveness observation above settles the attempt, and the
@@ -15825,30 +15885,17 @@ export function createScheduler(deps) {
         record.provider !== 'agy' &&
         (record.session_id === null || codex_startup_target)
       ) {
-        const session = await launcher.readPaneOption(
-          record.pane_id,
-          '@agent_session'
-        );
-        if (!session.ok) {
-          log(
-            'interactive session observation failed for %s/%s: %o',
-            workspace,
-            key,
-            session
-          );
-          if (record.session_id === null) {
-            continue;
-          }
-        } else {
-          if (session.value && record.session_id === null) {
-            update(key, record, {
-              session_id: session.value,
-              session_id_source: 'pane_option'
-            });
-          }
-          if (codex_startup_target && isCurrent(key, record)) {
-            await observeStartup(key, record, Boolean(session.value));
-          }
+        // The window listing carries the session id the window reports, so
+        // there is no separate read that could fail.
+        const session_value = pane_row.session_id;
+        if (session_value && record.session_id === null) {
+          update(key, record, {
+            session_id: session_value,
+            session_id_source: 'pane_option'
+          });
+        }
+        if (codex_startup_target && isCurrent(key, record)) {
+          await observeStartup(key, record, Boolean(session_value));
         }
       }
       if (!isCurrent(key, record)) {
@@ -15876,31 +15923,16 @@ export function createScheduler(deps) {
         }
         continue;
       }
-      const running = await launcher.readPaneOption(
-        record.pane_id,
-        '@agent_running'
-      );
-      const attention = await launcher.readPaneOption(
-        record.pane_id,
-        '@agent_attention'
-      );
-      if (!running.ok || !attention.ok) {
-        log(
-          'interactive idle observation failed for %s/%s: %o %o',
-          workspace,
-          key,
-          running,
-          attention
-        );
-        continue;
-      }
       let idle =
-        running.value === null &&
-        (attention.value === null ||
-          attention.value === 'done' ||
-          attention.value === 'stopped');
+        (pane_row.agent_running ?? '') === '' &&
+        ((pane_row.agent_attention ?? '') === '' ||
+          pane_row.agent_attention === 'done' ||
+          pane_row.agent_attention === 'stopped');
       if (idle && record.provider === 'claude') {
-        const tail = await launcher.capturePaneTail(record.pane_id);
+        const tail = await launcher.capturePaneTail(
+          record.pane_id,
+          recordWindowTarget(record)
+        );
         if (!tail.ok) {
           log(
             'interactive prompt observation failed for %s/%s: %o',
@@ -15929,7 +15961,10 @@ export function createScheduler(deps) {
       if (record.provider !== 'claude') {
         await kill(key, record);
       } else if (isCurrent(key, record)) {
-        const result = await launcher.sendExit(record.pane_id);
+        const result = await launcher.sendExit(
+          record.pane_id,
+          recordWindowTarget(record)
+        );
         if (result.ok) {
           update(key, record, { state: 'exiting', exit_requested_at: now() });
         } else {
@@ -15980,6 +16015,7 @@ export function createScheduler(deps) {
           pane_id: pane.pane,
           tmux_session: pane.session,
           tmux_window: pane.window,
+          mux: muxOf(pane.mux),
           cwd: pane.cwd,
           launched_at: now(),
           state: 'live',
@@ -18219,7 +18255,8 @@ export function createScheduler(deps) {
     const window = {
       pane_id: outcome.pane_id,
       tmux_session: outcome.tmux_session,
-      tmux_window: outcome.tmux_window
+      tmux_window: outcome.tmux_window,
+      mux: muxOf(outcome.mux)
     };
     writeAttemptPrompts(workspace, {
       bead_id,
@@ -19943,11 +19980,15 @@ export function createScheduler(deps) {
       if (input.action === 'focus') {
         if (changed) {
           focus_error = 'session_ref_changed';
-        } else if (liveness.state !== 'alive' || !liveness.owner_tmux) {
+        } else if (
+          liveness.state !== 'alive' ||
+          !liveness.owner_tmux ||
+          !qualified.ok
+        ) {
           focus_error = 'owner_location_unverified';
         } else {
-          const focused = await deps.interactiveLauncher?.focusRegistryPane(
-            liveness.owner_tmux
+          const focused = await deps.interactiveLauncher?.focusSession(
+            qualified.session_id
           );
           if (!focused?.ok) {
             focus_error = focused?.error || 'focus_unwired';
@@ -26622,6 +26663,10 @@ export function createScheduler(deps) {
     const key = `${attempt.bead_id}:${SESSION_LANE_KIND}`;
     const record =
       deps.store.snapshot(workspace).interactive_sessions?.[key] ?? null;
+    const window_target = {
+      marker: SESSION_LANE_PANE_MARKER,
+      key: attempt.bead_id
+    };
     const pane_id = attempt.interactive?.pane_id ?? record?.pane_id ?? null;
     const tmux_session =
       attempt.interactive?.tmux_session ?? record?.tmux_session ?? null;
@@ -26641,7 +26686,7 @@ export function createScheduler(deps) {
     const kill = async () => {
       if (typeof tmux_session === 'string' && typeof tmux_window === 'string') {
         try {
-          await launcher.killWindow(tmux_session, tmux_window);
+          await launcher.killWindow(tmux_session, tmux_window, window_target);
         } catch (err) {
           log('session lane kill failed for %s: %o', attempt.bead_id, err);
         }
@@ -26657,7 +26702,7 @@ export function createScheduler(deps) {
         await kill();
       } else {
         try {
-          await launcher.sendExit(pane_id);
+          await launcher.sendExit(pane_id, window_target);
         } catch (err) {
           log('session lane exit failed for %s: %o', attempt.bead_id, err);
         }

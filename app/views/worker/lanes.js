@@ -2207,7 +2207,7 @@ export function liveSessionLaneView(views) {
 }
 
 /** The startup-wait line's tooltip (UI-ahzh §3.4). */
-const STARTUP_WAIT_TOOLTIP = 'tmux 창에서 선택해야 세션이 시작됩니다';
+const STARTUP_WAIT_TOOLTIP = '대화 세션 창에서 선택해야 세션이 시작됩니다';
 
 /**
  * The slot-3 conversation line of a running session-lane tile (UI-lbm5

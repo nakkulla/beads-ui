@@ -5,7 +5,8 @@ import {
   sessionLaneEnv,
   sessionLaneHoldsWindow,
   sessionLanePaneAlive,
-  sessionLaneVerdict
+  sessionLaneVerdict,
+  sessionLaneWindowRow
 } from './session-lane.js';
 
 describe('sessionLaneCommandArgs (UI-lbm5 §4.3)', () => {
@@ -220,12 +221,57 @@ describe('sessionLanePaneAlive (UI-lbm5 §4.4)', () => {
     ).toBe(false);
   });
 
-  test('reads another pane of the same Bead as gone', () => {
+  test('reads a live window of the same Bead under a new pane id as the same window', () => {
     expect(
       sessionLanePaneAlive([{ key: 'UI-1', pane: '%5', dead: '0' }], {
         bead_id: 'UI-1',
         interactive: { pane_id: '%2' }
       })
+    ).toBe(true);
+  });
+
+  test('reads a window of another Bead as gone', () => {
+    expect(
+      sessionLanePaneAlive([{ key: 'UI-2', pane: '%2', dead: '0' }], {
+        bead_id: 'UI-1',
+        interactive: { pane_id: '%2' }
+      })
     ).toBe(false);
+  });
+});
+
+describe('sessionLaneWindowRow (UI-3xxa0 AC9)', () => {
+  test('prefers the row matching the recorded mux and pane id', () => {
+    const rows = [
+      { key: 'UI-1', pane: 'wR:p9', dead: '0', mux: 'herdr' },
+      { key: 'UI-1', pane: '%2', dead: '0', mux: 'tmux' }
+    ];
+
+    expect(
+      sessionLaneWindowRow(rows, {
+        bead_id: 'UI-1',
+        interactive: { pane_id: '%2' }
+      })
+    ).toBe(rows[1]);
+  });
+
+  test('returns the same-marker window when the recorded pane id is gone', () => {
+    const rows = [{ key: 'UI-1', pane: 'wR:p9', dead: '0', mux: 'herdr' }];
+
+    expect(
+      sessionLaneWindowRow(rows, {
+        bead_id: 'UI-1',
+        interactive: { pane_id: 'wR:p2', mux: 'herdr' }
+      })
+    ).toBe(rows[0]);
+  });
+
+  test('ignores a dead window of the Bead', () => {
+    expect(
+      sessionLaneWindowRow([{ key: 'UI-1', pane: '%2', dead: '1' }], {
+        bead_id: 'UI-1',
+        interactive: { pane_id: '%2' }
+      })
+    ).toBeNull();
   });
 });

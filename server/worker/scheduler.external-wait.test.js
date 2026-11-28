@@ -1310,10 +1310,18 @@ function sessionFixture(options = {}) {
   const worktree_dir = path.join(root, 'wt');
   fs.mkdirSync(worktree_dir, { recursive: true });
   const launcher = {
-    focusRegistryPane: vi.fn(async () => ({
+    focusSession: vi.fn(async () => ({
       ok: true,
       tmux_session: 'dev',
-      tmux_window: '@1'
+      tmux_window: null
+    })),
+    locateSession: vi.fn(async () => ({
+      ok: true,
+      found: true,
+      tmux_session: 'dev',
+      tmux_window: '@1',
+      pane_id: '%7',
+      mux: 'tmux'
     })),
     launch: vi.fn(
       async () =>
@@ -1410,7 +1418,7 @@ describe('external wait session resume', () => {
       });
 
       expect(result).toEqual({ ok: false, reason: 'feedback_changed' });
-      expect(env.launcher.focusRegistryPane).not.toHaveBeenCalled();
+      expect(env.launcher.focusSession).not.toHaveBeenCalled();
       expect(save).not.toHaveBeenCalled();
       expect(env.store.snapshot(WS).external_wait_feedback[WAIT]).toEqual(
         feedback
@@ -1511,8 +1519,8 @@ describe('external wait session resume', () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(env.launcher.focusRegistryPane).toHaveBeenCalledExactlyOnceWith(
-      'dev:@1.%7'
+    expect(env.launcher.focusSession).toHaveBeenCalledExactlyOnceWith(
+      'user-session'
     );
     expect(env.launcher.launch).not.toHaveBeenCalled();
     expect(recordOf(env)?.stage).toBe('completing');
@@ -1545,7 +1553,7 @@ describe('external wait session resume', () => {
       })
     );
     await env.scheduler.resumeExternalWait(WS, WAIT, { mode: 'session' });
-    env.launcher.focusRegistryPane.mockResolvedValue(
+    env.launcher.focusSession.mockResolvedValue(
       /** @type {any} */ ({ ok: false, error: 'select_failed' })
     );
     const version = env.store.snapshot(WS).external_wait_feedback[WAIT].version;
@@ -2006,7 +2014,6 @@ describe('외부 작업 완료 conversation (UI-18a5 §3.4)', () => {
         ok: true,
         rows: marker === EXTERNAL_RESUME_PANE_MARKER ? panes.rows : []
       })),
-      readPaneOption: vi.fn(async () => ({ ok: true, value: null })),
       capturePaneTail: vi.fn(async () => ({ ok: true, line: '❯ ' })),
       sendExit: vi.fn(async () => ({ ok: true })),
       killWindow: vi.fn(async () => ({ ok: true })),

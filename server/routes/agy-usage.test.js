@@ -535,44 +535,71 @@ describe('agy credential change coordination', () => {
 });
 
 describe('agy conversation window detection', () => {
-  test('finds a live pane recorded as an agy runtime', async () => {
-    const runTmux = vi.fn(async () => ({
-      code: 0,
-      stdout: '0 claude\n0 agy\n',
+  /**
+   * @param {Record<string, unknown>[]} sessions
+   * @param {number} [code]
+   */
+  const hub = (sessions, code = 0) =>
+    vi.fn(async () => ({
+      code,
+      stdout: JSON.stringify({ ok: code === 0, sessions }),
       stderr: ''
     }));
 
-    const open = await agyConversationOpen({ runTmux });
+  test('finds a live agy row on a tmux window through the hub list', async () => {
+    const runSessionHub = hub([
+      { agent: 'claude', state: 'idle', pane: '%1', mux: 'tmux' },
+      { agent: 'agy', state: 'running', pane: '%2', mux: 'tmux' }
+    ]);
+
+    const open = await agyConversationOpen({ runSessionHub });
 
     expect(open).toBe(true);
-    expect(runTmux).toHaveBeenCalledWith([
-      'list-panes',
-      '-a',
-      '-F',
-      '#{pane_dead} #{@agent_runtime}'
-    ]);
+    expect(runSessionHub).toHaveBeenCalledWith(['list', '--all']);
   });
 
-  test('ignores a dead agy pane', async () => {
-    const runTmux = vi.fn(async () => ({
-      code: 0,
-      stdout: '1 agy\n0 codex\n',
-      stderr: ''
-    }));
+  test('finds a live agy row on a herdr pane', async () => {
+    const runSessionHub = hub([
+      { agent: 'agy', state: 'idle', pane: 'wR:p2', mux: 'herdr' }
+    ]);
 
-    const open = await agyConversationOpen({ runTmux });
+    const open = await agyConversationOpen({ runSessionHub });
+
+    expect(open).toBe(true);
+  });
+
+  test('ignores an ended agy row and one without a pane', async () => {
+    const runSessionHub = hub([
+      { agent: 'agy', state: 'ended', pane: '%2', mux: 'tmux' },
+      { agent: 'agy', state: 'running', mux: 'herdr' },
+      { agent: 'codex', state: 'running', pane: '%3', mux: 'tmux' }
+    ]);
+
+    const open = await agyConversationOpen({ runSessionHub });
 
     expect(open).toBe(false);
   });
 
-  test('reads no tmux server as no window', async () => {
-    const runTmux = vi.fn(async () => ({
+  test('reads a hub failure as no window', async () => {
+    const runSessionHub = vi.fn(async () => ({
       code: 1,
       stdout: '',
-      stderr: 'no server running on /tmp/tmux-501/default'
+      stderr: 'hub unreachable'
     }));
 
-    const open = await agyConversationOpen({ runTmux });
+    const open = await agyConversationOpen({ runSessionHub });
+
+    expect(open).toBe(false);
+  });
+
+  test('reads an unparseable hub answer as no window', async () => {
+    const runSessionHub = vi.fn(async () => ({
+      code: 0,
+      stdout: 'not json',
+      stderr: ''
+    }));
+
+    const open = await agyConversationOpen({ runSessionHub });
 
     expect(open).toBe(false);
   });

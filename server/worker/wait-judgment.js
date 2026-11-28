@@ -101,7 +101,7 @@ const RELEASE_CONFIRM =
 const RESOLUTIONS = Object.freeze({
   session: '[세션에서 이어가기]로 같은 세션과 대화해 답한다',
   live_answer:
-    '열린 대화에서 답한다 — Discord 스레드, 또는 [세션에서 이어가기]로 맥의 tmux 창을 앞으로 부른다',
+    '열린 대화에서 답한다 — Discord 스레드, 또는 [세션에서 이어가기]로 맥의 대화 세션 창을 앞으로 부른다',
   takeover:
     '[세션에서 이어가기]로 해결 세션을 열어 서버의 바로 실행 기록을 확인·정리한다 — 정리되면 다음 관측에서 대기가 풀린다',
   resume_failed: '[새 세션으로] 또는 [워커로 이어가기]로 다시 이어간다',
@@ -437,9 +437,9 @@ const OPERATION_RECOVERY_RELEASE = {
 };
 
 const INQUIRY_WAITING_MESSAGE =
-  '대화 세션이 답을 기다림 — Discord 스레드 또는 tmux 창에서 답';
+  '대화 세션이 답을 기다림 — Discord 스레드 또는 대화 세션 창에서 답';
 const CONVERSATION_WAITING_MESSAGE =
-  '답 대기 — Discord 스레드 또는 tmux 창에서 답';
+  '답 대기 — Discord 스레드 또는 대화 세션 창에서 답';
 
 /** The `[워커로 이어가기]` op for a conversation-stop wait (UI-nuwy §3.6). */
 export const CONVERSATION_HANDOFF_OP = 'worker-conversation-handoff';
@@ -744,7 +744,7 @@ export function judgeWaitReasons(input) {
             op: SESSION_CONTINUE_OP,
             label: '[세션에서 이어가기]',
             title:
-              '보존 세션을 같은 워크트리의 tmux 창에서 대화로 다시 엽니다 — Worker로 넘기면 Worker가 그 세션에서 attempt를 시작합니다',
+              '보존 세션을 같은 워크트리의 대화 세션 창에서 대화로 다시 엽니다 — Worker로 넘기면 Worker가 그 세션에서 attempt를 시작합니다',
             placement: 'card',
             payload: { root_dir, bead_id: row.bead_id, wait_id: row.wait_id }
           },
@@ -752,7 +752,7 @@ export function judgeWaitReasons(input) {
             op: 'external_wait_resume',
             label: '[세션에서 이어가기]',
             title:
-              '보존 세션을 같은 워크트리의 tmux 창에서 대화로 다시 엽니다 · 열리면 대기 키가 풀린다 · 원래 세션이 살아 있거나 확인되지 않으면 열지 않고 재개 명령을 복사한다',
+              '보존 세션을 같은 워크트리의 대화 세션 창에서 대화로 다시 엽니다 · 열리면 대기 키가 풀린다 · 원래 세션이 살아 있거나 확인되지 않으면 열지 않고 재개 명령을 복사한다',
             placement: 'detail',
             payload: { ...payload, mode: 'session' }
           }
