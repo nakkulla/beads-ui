@@ -46,6 +46,37 @@ import {
 } from './exec-enums.js';
 import { resolveCatalog } from './runner-catalog.js';
 
+describe('validateExecSpeeds', () => {
+  const AGY_CATALOG = resolveCatalog({
+    agy_names: ['gemini-4-neon-high'],
+    warn: () => {}
+  });
+
+  test('rejects fast for an agy family under an auto runtime', () => {
+    const settings = {
+      impl_runtime: 'auto',
+      impl_model: 'neon',
+      impl_effort: 'high',
+      impl_speed: 'fast'
+    };
+
+    const result = enums.validateExecSpeeds(settings, AGY_CATALOG);
+
+    expect(result).toEqual({ ok: false, reason: 'impl_speed_unsupported' });
+  });
+
+  test('rejects fast for the neon reviewer', () => {
+    const settings = { impl_review_model: 'neon', impl_review_speed: 'fast' };
+
+    const result = enums.validateExecSpeeds(settings, AGY_CATALOG);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'impl_review_speed_unsupported'
+    });
+  });
+});
+
 describe('validateOrchestrationPin', () => {
   test.each(['general', 'quick_fix'])(
     'rejects Claude fast and accepts Codex fast in the %s preset',
@@ -387,9 +418,13 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
 
     const session_enums = sessionDefaultEnums(catalog);
 
-    expect(session_enums.quick_fix_impl_model).toEqual(
-      Object.keys(catalog.model_index)
-    );
+    expect(session_enums.quick_fix_impl_model).toEqual([
+      ...Object.keys(catalog.model_index),
+      'neon',
+      'carbon',
+      'argon',
+      'hydrogen'
+    ]);
     expect(session_enums.quick_fix_impl_model).not.toContain('auto');
   });
 
@@ -402,7 +437,11 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
       'delegated',
       'main'
     ]);
-    expect(session_enums.quick_fix_impl_runtime).toEqual(['claude', 'codex']);
+    expect(session_enums.quick_fix_impl_runtime).toEqual([
+      'claude',
+      'codex',
+      'agy'
+    ]);
     expect(session_enums.quick_fix_impl_effort).toEqual(
       session_enums.impl_effort
     );
@@ -420,13 +459,20 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
       'astra',
       'opus',
       'fable',
+      'neon',
       'self',
       'skip'
     ]);
   });
 
-  test('narrows plan_review to codex/astra/fable/skip (no self, no opus)', () => {
-    expect(PLAN_REVIEW_MODELS).toEqual(['codex', 'astra', 'fable', 'skip']);
+  test('narrows plan_review to codex/astra/fable/neon/skip (no self, no opus)', () => {
+    expect(PLAN_REVIEW_MODELS).toEqual([
+      'codex',
+      'astra',
+      'fable',
+      'neon',
+      'skip'
+    ]);
     expect(PLAN_REVIEW_MODELS).not.toContain('self');
     expect(PLAN_REVIEW_MODELS).not.toContain('opus');
   });
@@ -722,7 +768,13 @@ describe('worker/exec-enums execSettingEnums (catalog-driven)', () => {
     const table = execSettingEnums(catalog);
 
     expect(table.orchestration_model).toEqual(Object.keys(catalog.model_index));
-    expect(table.impl_model).toEqual(Object.keys(catalog.model_index));
+    expect(table.impl_model).toEqual([
+      ...Object.keys(catalog.model_index),
+      'neon',
+      'carbon',
+      'argon',
+      'hydrogen'
+    ]);
     expect(table.impl_model).toContain('sol');
     expect(table.impl_model).toContain('opus');
   });
@@ -789,7 +841,7 @@ describe('worker/exec-enums execSettingEnums (catalog-driven)', () => {
   });
 
   test('exposes the implementation runtime contract enum', () => {
-    expect(IMPL_RUNTIMES).toEqual(['auto', 'claude', 'codex']);
+    expect(IMPL_RUNTIMES).toEqual(['auto', 'claude', 'codex', 'agy']);
     expect(execSettingEnums().impl_runtime).toEqual(IMPL_RUNTIMES);
   });
 
@@ -1120,7 +1172,7 @@ describe('worker/exec-enums stored agy values (UI-6o70)', () => {
     expect(result).toMatchObject({ ok: true, impl_runtime: 'agy' });
   });
 
-  test('rejects an agy implementation runtime on write', () => {
+  test('accepts an agy implementation runtime on write', () => {
     const catalog = resolveCatalog({ warn: () => {} });
 
     const result = validateImplSettings(
@@ -1128,7 +1180,7 @@ describe('worker/exec-enums stored agy values (UI-6o70)', () => {
       { catalog, active_writer: true }
     );
 
-    expect(result).toEqual({ ok: false, reason: 'invalid_impl_runtime' });
+    expect(result).toEqual({ ok: true, impl_runtime: 'agy', inferred: false });
   });
 
   test('still rejects a stored gemini implementation runtime on read', () => {
@@ -1186,48 +1238,217 @@ describe('worker/exec-enums stored agy values (UI-6o70)', () => {
       ]
     });
   });
-
-  test.each([
-    ['impl_runtime', 'agy'],
-    ['quick_fix_impl_runtime', 'agy'],
-    ['spec_review_model', 'neon'],
-    ['plan_review_model', 'neon']
-  ])(
-    'refuses the stored-only value %s=%s in a session-default write',
-    (key, value) => {
-      const catalog = resolveCatalog({ warn: () => {} });
-
-      const result = validateSessionDefaultsPatch(
-        { [key]: value },
-        { catalog }
-      );
-
-      expect(result.ok).toBe(false);
-    }
-  );
 });
 
-describe('worker/exec-enums agy stays unselectable (UI-h0hwo Phase 2)', () => {
-  test('offers no listed agy id among the model choices', async () => {
-    const { __setAgyModelListForTest } = await import('./agy-model-list.js');
-    const { __resetRuntimeCatalogForTest } = await import('./runner/index.js');
-    __setAgyModelListForTest(
-      /** @type {any} */ ({
-        names: () => ['gemini-4-neon-high'],
-        revision: () => 1,
-        stop: () => {}
-      })
-    );
+/**
+ * Run `body` with a fake agy model list installed behind the process catalog.
+ *
+ * @param {string[]} names
+ * @param {() => void} body
+ */
+async function withAgyList(names, body) {
+  const { __setAgyModelListForTest } = await import('./agy-model-list.js');
+  const { __resetRuntimeCatalogForTest } = await import('./runner/index.js');
+  __setAgyModelListForTest(
+    /** @type {any} */ ({
+      names: () => names,
+      revision: () => 1,
+      status: () => null,
+      stop: () => {}
+    })
+  );
+  __resetRuntimeCatalogForTest();
+  try {
+    body();
+  } finally {
+    __setAgyModelListForTest(null);
     __resetRuntimeCatalogForTest();
-    try {
+  }
+}
+
+describe('worker/exec-enums agy write paths (UI-ufgo Phase 4)', () => {
+  test('offers agy and neon among the write vocabularies', () => {
+    const table = sessionDefaultEnums(resolveCatalog({ warn: () => {} }));
+
+    expect(IMPL_RUNTIMES).toContain('agy');
+    expect(REVIEW_STEP_MODELS).toContain('neon');
+    expect(PLAN_REVIEW_MODELS).toContain('neon');
+    expect(table.quick_fix_impl_runtime).toEqual(['claude', 'codex', 'agy']);
+    expect(table.quick_fix_impl_review_model).toContain('neon');
+  });
+
+  test('offers listed agy ids as session models and families as workflow models', async () => {
+    await withAgyList(['gemini-4-neon-high', 'gemini-4-carbon-medium'], () => {
       const table = execSettingEnums();
 
-      expect(table.orchestration_model).not.toContain('gemini-4-neon-high');
+      expect(table.orchestration_model).toContain('gemini-4-neon-high');
+      expect(table.impl_model).toEqual(
+        expect.arrayContaining(['neon', 'carbon', 'argon', 'hydrogen'])
+      );
       expect(table.impl_model).not.toContain('gemini-4-neon-high');
-      expect(table.impl_runtime).not.toContain('agy');
-    } finally {
-      __setAgyModelListForTest(null);
-      __resetRuntimeCatalogForTest();
-    }
+    });
+  });
+
+  test('accepts an agy family with an agy effort on write', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const result = validateImplSettings(
+      { impl_runtime: 'agy', impl_model: 'neon', impl_effort: 'xhigh' },
+      { catalog, active_writer: true }
+    );
+
+    expect(result).toEqual({ ok: true, impl_runtime: 'agy', inferred: false });
+  });
+
+  test('derives the agy runtime from a family under auto', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const result = validateImplSettings(
+      { impl_runtime: 'auto', impl_model: 'carbon', impl_effort: 'medium' },
+      { catalog, active_writer: true }
+    );
+
+    expect(result).toEqual({ ok: true, impl_runtime: 'auto', inferred: false });
+  });
+
+  test('refuses an agy family under a claude runtime', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const result = validateImplSettings(
+      { impl_runtime: 'claude', impl_model: 'neon' },
+      { catalog, active_writer: true }
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'provider_model_mismatch' });
+  });
+
+  test('refuses an effort no agy id carries', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const result = validateImplSettings(
+      { impl_runtime: 'agy', impl_model: 'neon', impl_effort: 'minimal' },
+      { catalog, active_writer: true }
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'illegal_impl_effort' });
+  });
+
+  test('refuses a raw agy id as a stored workflow model', async () => {
+    await withAgyList(['gemini-4-neon-high'], () => {
+      const result = validateImplSettings(
+        { impl_runtime: 'agy', impl_model: 'gemini-4-neon-high' },
+        { active_writer: true }
+      );
+
+      expect(result).toEqual({ ok: false, reason: 'unknown_impl_model' });
+    });
+  });
+
+  test('infers the agy runtime from a legacy family-only setting', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const runtime = inferImplRuntime({ impl_model: 'hydrogen' }, catalog);
+
+    expect(runtime).toBe('agy');
+  });
+});
+
+describe('worker/exec-enums splitAgyWorkflowModels (UI-ufgo Phase 4)', () => {
+  test('splits an agy id into its family and effort with the agy runtime', () => {
+    const settings = { impl_model: 'gemini-4-carbon-medium' };
+
+    const result = enums.splitAgyWorkflowModels(settings);
+
+    expect(result).toEqual({
+      ok: true,
+      settings: {
+        impl_runtime: 'agy',
+        impl_model: 'carbon',
+        impl_effort: 'medium'
+      }
+    });
+  });
+
+  test('splits the quick_fix model under its own prefix', () => {
+    const settings = {
+      quick_fix_impl_runtime: 'agy',
+      quick_fix_impl_model: 'gemini-4-neon-xhigh'
+    };
+
+    const result = enums.splitAgyWorkflowModels(settings);
+
+    expect(result).toEqual({
+      ok: true,
+      settings: {
+        quick_fix_impl_runtime: 'agy',
+        quick_fix_impl_model: 'neon',
+        quick_fix_impl_effort: 'xhigh'
+      }
+    });
+  });
+
+  test('keeps an auto runtime beside a split agy id', () => {
+    const settings = { impl_runtime: 'auto', impl_model: 'gemini-4-neon-low' };
+
+    const result = enums.splitAgyWorkflowModels(settings);
+
+    expect(result).toEqual({
+      ok: true,
+      settings: { impl_runtime: 'auto', impl_model: 'neon', impl_effort: 'low' }
+    });
+  });
+
+  test('leaves an omitted runtime unset when the stored runtime is auto', () => {
+    const settings = { impl_model: 'gemini-4-neon-high' };
+
+    const result = enums.splitAgyWorkflowModels(settings, {
+      impl_runtime: 'auto'
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      settings: { impl_model: 'neon', impl_effort: 'high' }
+    });
+  });
+
+  test('keeps an explicitly cleared runtime as a clear', () => {
+    const settings = { impl_runtime: null, impl_model: 'gemini-4-neon-high' };
+
+    const result = enums.splitAgyWorkflowModels(settings);
+
+    expect(result).toEqual({
+      ok: true,
+      settings: { impl_runtime: null, impl_model: 'neon', impl_effort: 'high' }
+    });
+  });
+
+  test('refuses an agy id beside a different effort', () => {
+    const settings = {
+      impl_model: 'gemini-4-neon-high',
+      impl_effort: 'medium'
+    };
+
+    const result = enums.splitAgyWorkflowModels(settings);
+
+    expect(result).toEqual({ ok: false, reason: 'agy_effort_conflict' });
+  });
+
+  test('refuses an agy id beside another provider runtime', () => {
+    const settings = {
+      impl_runtime: 'codex',
+      impl_model: 'gemini-4-neon-high'
+    };
+
+    const result = enums.splitAgyWorkflowModels(settings);
+
+    expect(result).toEqual({ ok: false, reason: 'provider_model_mismatch' });
+  });
+
+  test('leaves an id outside the four families for the validator to refuse', () => {
+    const settings = { impl_runtime: 'agy', impl_model: 'gemini-4-zinc-high' };
+
+    const result = enums.splitAgyWorkflowModels(settings);
+
+    expect(result).toEqual({ ok: true, settings });
   });
 });

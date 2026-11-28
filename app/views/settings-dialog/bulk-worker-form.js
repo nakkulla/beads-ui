@@ -50,6 +50,7 @@ import {
   buildExecutionOptionView,
   implEffortOptions,
   implModelOptions,
+  joinAgyWorkflowModels,
   narrowImplTarget,
   normalizeAppliesTo,
   orchestrationEffortOptions,
@@ -75,7 +76,7 @@ const HOLD_LABEL = { mixed: '갈림 — 유지', pending: '미확인 — 유지'
 const PRESET_ONLY_BADGE = '프리셋에만 담김 · 저장소에는 안 씀';
 
 /** A workspace quick_fix runtime is concrete; `inherit` has no controller. */
-const QUICK_FIX_IMPL_RUNTIMES = ['claude', 'codex'];
+const QUICK_FIX_IMPL_RUNTIMES = ['claude', 'codex', 'agy'];
 
 /** Disabled copy for a server that never had the quick_fix lane. */
 const QUICK_FIX_UNSUPPORTED = '서버가 quick_fix 레인을 지원하지 않습니다';
@@ -698,7 +699,7 @@ export function createBulkWorkerForm({
    * @param {Record<string, any>|null|undefined} settings
    */
   function applyPreset(settings) {
-    const source = isRecord(settings) ? settings : {};
+    const source = isRecord(settings) ? joinAgyWorkflowModels(settings) : {};
     cleared_speeds.clear();
     for (const key of row_keys) {
       writeValue(key, storedValue(source[canonicalKeyOf(key)]) ?? undefined);
@@ -717,7 +718,7 @@ export function createBulkWorkerForm({
    * @returns {boolean}
    */
   function equalsPreset(settings) {
-    const source = isRecord(settings) ? settings : {};
+    const source = isRecord(settings) ? joinAgyWorkflowModels(settings) : {};
     // A row still on a hold has promised to leave each repo's own value alone
     // (§3.2). The whole-preset apply path writes EVERY key the preset names and
     // deletes the ones it omits, so it would break that promise: an empty hold

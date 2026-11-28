@@ -182,6 +182,13 @@ const INHERIT_SETTINGS = {
 };
 
 /** A catalog slice the flag builder resolves model ids through. */
+/** A ready agy model list that holds the default model. */
+const AGY_MODELS = {
+  checkCredentials: () => false,
+  ready: () => true,
+  names: () => ['gemini-4-neon-high']
+};
+
 const FLAG_CATALOG = {
   runners: {
     claude: { models: { sonnet: { id: 'sonnet' } }, efforts: ['high'] },
@@ -190,7 +197,7 @@ const FLAG_CATALOG = {
 };
 
 /**
- * @param {{ resolveSessionAccounts?: import('./session-launch-accounts.js').ResolveSessionAccounts, tmux?: ReturnType<typeof makeHub>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, sessionRefFs?: any, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|null, store?: import('./resolve-session.js').ResolveSessionDeps['store'], existsSync?: (file_path: string) => boolean, settings?: Partial<import('../conversation-settings.js').ConversationSettingValues> }} [input]
+ * @param {{ resolveSessionAccounts?: import('./session-launch-accounts.js').ResolveSessionAccounts, tmux?: ReturnType<typeof makeHub>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, sessionRefFs?: any, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|'agy'|null, store?: import('./resolve-session.js').ResolveSessionDeps['store'], existsSync?: (file_path: string) => boolean, settings?: Partial<import('../conversation-settings.js').ConversationSettingValues> }} [input]
  */
 function makeLauncher(input = {}) {
   // Each test states the settings it is about; the default keeps every
@@ -222,6 +229,7 @@ function makeLauncher(input = {}) {
     conversationSettings: () => settings,
     launchFlags: (runner) =>
       conversationLaunchFlags(runner, settings, FLAG_CATALOG),
+    agyModels: AGY_MODELS,
     sessionRefOptions: {
       home_dir: HOME,
       hostname: HOST,
@@ -1949,6 +1957,72 @@ describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
     expect([outcome.mode, outcome.runner]).toEqual(['fresh', 'claude']);
     expect(launchedWrapper(tmux)).toContain(
       "exec '/usr/local/bin/claude' '--allow-dangerously-skip-permissions' '--no-chrome' '--model' 'sonnet' '--effort' 'high' '--session-id'"
+    );
+  });
+
+  test('opens a fresh agy session with the entry as its first input', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { resolver, tmux } = makeLauncher({
+      metadata: {},
+      resolveRunner: (runner) =>
+        runner === 'agy' ? '/home/.local/bin/agy' : null,
+      settings: { fresh_runtime: 'agy' },
+      store: { recordInteractiveSession }
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect([outcome.mode, outcome.runner]).toEqual(['fresh', 'agy']);
+    expect(launchedWrapper(tmux)).toContain(
+      "exec '/home/.local/bin/agy' '--model' 'gemini-4-neon-high' '--dangerously-skip-permissions' '-i' '이 세션은"
+    );
+    expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
+      provider: 'agy',
+      session_id: null,
+      session_id_source: null
+    });
+  });
+
+  test('inherits an agy current runner for a fresh failure conversation', async () => {
+    const { resolver } = makeLauncher({
+      metadata: {},
+      resolveRunner: (runner) =>
+        runner === 'agy' ? '/home/.local/bin/agy' : null,
+      currentRunner: () => 'agy'
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect([outcome.mode, outcome.runner]).toEqual(['fresh', 'agy']);
+  });
+
+  test('opens a repo-operation conversation on agy with the entry as its first input', async () => {
+    const { resolver, tmux } = makeLauncher({
+      resolveRunner: (runner) =>
+        runner === 'agy' ? '/home/.local/bin/agy' : null,
+      settings: { fresh_runtime: 'agy' }
+    });
+
+    const outcome = await resolver.resolveRepoOperation({
+      workspace: REPO,
+      repo: REPO,
+      operation_id: 'op-1',
+      failure: FAILURE
+    });
+
+    expect([outcome.launched, outcome.runner]).toEqual([true, 'agy']);
+    expect(launchedWrapper(tmux)).toContain(
+      "exec '/home/.local/bin/agy' '--model' 'gemini-4-neon-high' '--dangerously-skip-permissions' '-i' '이 세션은"
     );
   });
 

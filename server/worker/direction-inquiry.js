@@ -43,6 +43,7 @@ import {
   DEFAULT_START_TOLERANCE_MS,
   observeProcessIdentity
 } from './process-controller.js';
+import { agyConversationArgs } from './runner/agy.js';
 import { UNKNOWN_RUNNER } from './runner/index.js';
 import { resolveSessionLaunchOptions } from './session-launch-accounts.js';
 import { qualifyAttemptSession } from './session-ref.js';
@@ -293,7 +294,7 @@ export function recoverySentence(summary) {
  * @property {'attempt'|'fresh'} [source]
  * @property {string|null} fallback_reason
  * @property {string|null} session_id
- * @property {'claude'|'codex'} runner - The provider the window actually runs.
+ * @property {'claude'|'codex'|'agy'} runner - The provider the window actually runs.
  * The attempt's own runner for a same-session conversation; a fresh fallback
  * keeps the same provider.
  * @property {string|null} command
@@ -338,7 +339,7 @@ export function inquiryWrapper(input) {
  * @property {import('./tmux-launcher.js').TmuxLauncherDeps['runSessionHub']} [runSessionHub]
  * @property {() => string|null} [resolveClaude]
  * @property {(runner: string) => string|null} [resolveRunner]
- * @property {(workspace: string, issue: any) => 'claude'|'codex'|null} [currentRunner]
+ * @property {(workspace: string, issue: any) => 'claude'|'codex'|'agy'|null} [currentRunner]
  * @property {(file_path: string) => { mtimeMs: number }} [statFile]
  * @property {() => number} [now]
  * @property {{ recordInteractiveSession: (workspace: string, record: any) => ({ ok: boolean }|void) }} [store]
@@ -356,6 +357,8 @@ export function inquiryWrapper(input) {
  * Read per launch for a fresh fallback's runtime.
  * @property {(runner: string) => string[]} [launchFlags] - Passed to the
  * launcher; defaults to the stored settings' model/effort flags.
+ * @property {import('./tmux-launcher.js').TmuxLauncherDeps['agyModels']} [agyModels] -
+ * Passed to the launcher; defaults to the process-wide agy model list.
  */
 
 /**
@@ -377,6 +380,7 @@ export function createDirectionInquiry(deps) {
     ...(deps.now ? { now: deps.now } : {}),
     ...(deps.heartbeatPath ? { heartbeatPath: deps.heartbeatPath } : {}),
     ...(deps.launchFlags ? { launchFlags: deps.launchFlags } : {}),
+    ...(deps.agyModels ? { agyModels: deps.agyModels } : {}),
     log
   });
   const autoLaunchEnabled =
@@ -443,14 +447,16 @@ export function createDirectionInquiry(deps) {
    *
    * @param {string} workspace
    * @param {any} issue
-   * @returns {'claude'|'codex'|null}
+   * @returns {'claude'|'codex'|'agy'|null}
    */
   function currentRunnerOf(workspace, issue) {
     if (typeof deps.currentRunner !== 'function') {
       return 'claude';
     }
     const runner = deps.currentRunner(workspace, issue);
-    return runner === 'claude' || runner === 'codex' ? runner : null;
+    return runner === 'claude' || runner === 'codex' || runner === 'agy'
+      ? runner
+      : null;
   }
 
   /**
@@ -462,7 +468,7 @@ export function createDirectionInquiry(deps) {
    * @param {any} issue
    * @param {any} attempt
    * @param {boolean} worktree_present
-   * @returns {{ session_id: string|null, runner: 'claude'|'codex'|null, source: 'attempt'|'fresh', fallback_reason: string|null }}
+   * @returns {{ session_id: string|null, runner: 'claude'|'codex'|'agy'|null, source: 'attempt'|'fresh', fallback_reason: string|null }}
    * `runner` is null when the settings name no registered runner (UI-6o70).
    */
   function conversationTarget(workspace, issue, attempt, worktree_present) {
@@ -481,7 +487,7 @@ export function createDirectionInquiry(deps) {
     }
     // A fresh fallback takes the configured runtime (UI-jbl1 §3.4); the
     // attempt's own session above always keeps its runtime.
-    /** @type {'claude'|'codex'|null} */
+    /** @type {'claude'|'codex'|'agy'|null} */
     let fresh_runner = runner;
     try {
       fresh_runner = freshConversationRuntime(
@@ -539,7 +545,7 @@ export function createDirectionInquiry(deps) {
    * Create a uniform not-launched response.
    *
    * @param {string} reason
-   * @param {{ stop?: string|null, sentence?: string|null, runner?: 'claude'|'codex' }} [facts]
+   * @param {{ stop?: string|null, sentence?: string|null, runner?: 'claude'|'codex'|'agy' }} [facts]
    * @returns {InquiryOutcome}
    */
   function refusal(reason, facts = {}) {
@@ -566,7 +572,7 @@ export function createDirectionInquiry(deps) {
    * coordinates are the launcher's, since it alone chose the session.
    *
    * @param {import('./tmux-launcher.js').LaunchOutcome} outcome
-   * @param {{ session_id: string|null, runner: 'claude'|'codex', source: 'attempt'|'fresh', fallback_reason: string|null }} target
+   * @param {{ session_id: string|null, runner: 'claude'|'codex'|'agy', source: 'attempt'|'fresh', fallback_reason: string|null }} target
    * @param {{ tmux_session: string, bead_id: string, stop: string, sentence: string|null }} place
    * @param {string|null} launch_session_id
    * @returns {InquiryOutcome}
@@ -585,7 +591,9 @@ export function createDirectionInquiry(deps) {
       command: same
         ? target.runner === 'codex'
           ? `codex resume ${shellQuote(/** @type {string} */ (target.session_id))}`
-          : `claude --resume ${shellQuote(/** @type {string} */ (target.session_id))}`
+          : target.runner === 'agy'
+            ? `agy --conversation ${shellQuote(/** @type {string} */ (target.session_id))}`
+            : `claude --resume ${shellQuote(/** @type {string} */ (target.session_id))}`
         : target.runner === 'claude'
           ? `claude --session-id ${shellQuote(/** @type {string} */ (launch_session_id))}`
           : target.runner,
@@ -750,14 +758,21 @@ export function createDirectionInquiry(deps) {
       target.session_id === null && target.runner === 'claude'
         ? randomUUID()
         : null;
+    // agy takes its first input through `-i`; its conversation id is read
+    // from the hub later, like codex's (UI-ufgo Phase 4).
     const command_args =
-      target.session_id !== null
-        ? target.runner === 'codex'
-          ? ['resume', target.session_id, block]
-          : ['--resume', target.session_id, block]
-        : target.runner === 'claude'
-          ? ['--session-id', /** @type {string} */ (launch_session_id), block]
-          : [block];
+      target.runner === 'agy'
+        ? agyConversationArgs({
+            conversation_id: target.session_id,
+            prompt: block
+          })
+        : target.session_id !== null
+          ? target.runner === 'codex'
+            ? ['resume', target.session_id, block]
+            : ['--resume', target.session_id, block]
+          : target.runner === 'claude'
+            ? ['--session-id', /** @type {string} */ (launch_session_id), block]
+            : [block];
     const cwd = worktree_present ? worktree : checkout;
     // Both open in the inquiry session; only a click selects the window
     // (UI-1fss §4.4).

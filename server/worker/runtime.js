@@ -234,7 +234,7 @@ export function createWorkerRuntime() {
    *
    * @param {string} workspace
    * @param {any} issue
-   * @returns {'claude'|'codex'|null}
+   * @returns {'claude'|'codex'|'agy'|null}
    */
   function currentRunner(workspace, issue) {
     try {
@@ -243,7 +243,9 @@ export function createWorkerRuntime() {
         issue || {}
       );
       const runner = resolved.ok ? resolved.exec.runner : null;
-      return runner === 'claude' || runner === 'codex' ? runner : null;
+      return runner === 'claude' || runner === 'codex' || runner === 'agy'
+        ? runner
+        : null;
     } catch {
       return null;
     }

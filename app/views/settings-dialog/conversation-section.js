@@ -37,7 +37,8 @@ export const CONFLICT_FOLLOW_LABEL = '원래 세션·실행 설정';
 const RUNTIME_LABELS = /** @type {Record<string, string>} */ ({
   inherit: '원래 세션 따름',
   claude: 'claude',
-  codex: 'codex'
+  codex: 'codex',
+  agy: 'agy'
 });
 
 /**
@@ -68,6 +69,11 @@ export const CONVERSATION_ROWS = [
     key: 'codex_effort',
     label: 'Codex effort',
     note: '모델·effort는 그 런타임으로 여는 모든 대화(클릭·자동, 멈춤·실패·외부 작업 완료)에 붙습니다. CLI 기본값이면 플래그를 붙이지 않습니다.'
+  },
+  {
+    key: 'agy_model',
+    label: 'agy 모델',
+    note: '새 세션 런타임이 agy일 때 씁니다. agy는 effort가 모델 id 안에 있어 effort 칸이 없습니다.'
   }
 ];
 

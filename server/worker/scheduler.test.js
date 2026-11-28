@@ -3747,7 +3747,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
   });
 
   /**
-   * @param {{ bead?: Record<string, any>, park?: string|null, admission?: any, timeline?: any, kind?: 'inquiry'|'resolve'|'external_resume', provider?: 'claude'|'codex', directionInquiry?: any }} [options]
+   * @param {{ bead?: Record<string, any>, park?: string|null, admission?: any, timeline?: any, kind?: 'inquiry'|'resolve'|'external_resume', provider?: 'claude'|'codex'|'agy', directionInquiry?: any }} [options]
    */
   function conversationEnv(options = {}) {
     let at = 1000;
@@ -3982,6 +3982,19 @@ describe('same-session conversation return (UI-nuwy)', () => {
       }
     });
     expect(env.runner.spawnOrder).toEqual(['S1']);
+  });
+
+  test('kills an agy conversation window on handoff instead of typing /exit', async () => {
+    const env = conversationEnv({ provider: 'agy' });
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    say(env, '인계 · 범위 확장 승인');
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.launcher.sendExit).not.toHaveBeenCalled();
+    expect(env.launcher.killWindow).toHaveBeenCalledWith('bdui-inquiry', 'S1');
+    expect(record(env)).toMatchObject({ state: 'exiting' });
   });
 
   test('resumes the same session after the window is confirmed gone', async () => {
@@ -43484,6 +43497,208 @@ describe('session lane (UI-lbm5)', () => {
 
       expect(env.launcher.launch).toHaveBeenCalledOnce();
       expect(env.runner.spawnOrder).toEqual([]);
+    });
+  });
+
+  describe('agy session lane (UI-ufgo Phase 4)', () => {
+    const AGY_LANE_MODEL = 'gemini-4-neon-high';
+
+    /**
+     * An injected agy model list holding one id.
+     *
+     * @param {{ moved?: boolean }} [options] - Whether the credential
+     * fingerprint moved before the dispatch read it.
+     */
+    function laneAgyModels(options = {}) {
+      let ready = true;
+      return {
+        names: () => (ready ? [AGY_LANE_MODEL] : []),
+        ready: () => ready,
+        revision: () => 1,
+        status: () => ({ source: 'list', read_at: 1 }),
+        checkCredentials: vi.fn(() => {
+          if (options.moved === true) {
+            ready = false;
+          }
+          return options.moved === true;
+        }),
+        quota: vi.fn(async () => ({ state: 'ok' })),
+        stop: () => {}
+      };
+    }
+
+    /**
+     * @param {ReturnType<typeof laneAgyModels>} models
+     * @param {Record<string, any>} [extra]
+     */
+    function agyLaneEnv(models, extra = {}) {
+      __setAgyModelListForTest(/** @type {any} */ (models));
+      __resetRuntimeCatalogForTest();
+      return laneEnv({
+        config: {
+          S1: { labels: ['worker-ineligible'], model: AGY_LANE_MODEL }
+        },
+        extra: { agyModels: models, ...extra }
+      });
+    }
+
+    afterEach(() => {
+      endAgyCredentialChange();
+      __setAgyModelListForTest(null);
+      __resetRuntimeCatalogForTest();
+    });
+
+    test('opens the session lane on agy with the model and the first input', async () => {
+      const env = agyLaneEnv(laneAgyModels());
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const input = env.launchInput();
+      expect(env.runner.spawnOrder).toEqual([]);
+      expect(input.runner).toBe('agy');
+      expect(input.commandArgs.slice(0, 2)).toEqual([
+        '--model',
+        AGY_LANE_MODEL
+      ]);
+      expect(input.commandArgs.at(-2)).toBe('-i');
+      expect(env.laneAttempt('S1')).toMatchObject({
+        status: 'running',
+        exec: 'session',
+        runner: 'agy',
+        session_id: null
+      });
+      expect(env.laneRecord('S1')).toMatchObject({
+        provider: 'agy',
+        session_id: null,
+        session_id_source: null
+      });
+    });
+
+    test('captures the agy conversation id from the hub list after the launch', async () => {
+      const env = agyLaneEnv(laneAgyModels());
+      Object.assign(env.launcher, {
+        agySessionId: vi.fn(async () => ({ ok: true, session_id: 'conv-1' }))
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.launcher.readPaneOption).not.toHaveBeenCalledWith(
+        '%7',
+        '@agent_session'
+      );
+      expect(env.laneRecord('S1')).toMatchObject({
+        session_id: 'conv-1',
+        session_id_source: 'hub_list'
+      });
+    });
+
+    test('defers an agy run whose credential fingerprint moved after a conversation opened', async () => {
+      const env = agyLaneEnv(laneAgyModels({ moved: true }));
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.launcher.launch).not.toHaveBeenCalled();
+      expect(Object.values(env.store.snapshot(WS).attempts)).toEqual([]);
+      expect(env.store.snapshot(WS).admission.S1).toMatchObject({
+        reason: 'agy_model_list_unavailable'
+      });
+    });
+
+    /**
+     * An agy lane window launched and marked by its hook, with injected hub
+     * list and startup-screen answers.
+     *
+     * @param {any} listed - The hub list answer.
+     * @param {any} screen - The hub startup-screen answer.
+     */
+    async function agyStartupEnv(listed, screen) {
+      const env = agyLaneEnv(laneAgyModels());
+      const startupScreen = vi.fn(async () => screen);
+      Object.assign(env.launcher, {
+        agySessionId: vi.fn(async () => listed),
+        startupScreen
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      return { ...env, startupScreen };
+    }
+
+    test('reads the agy startup screen though the hub already lists a conversation id', async () => {
+      const env = await agyStartupEnv(
+        { ok: true, session_id: 'conv-1' },
+        { ok: true, alive: 'alive', started: false, screen: null }
+      );
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.startupScreen).toHaveBeenCalledWith(
+        expect.objectContaining({ runner: 'agy', pane: '%7' })
+      );
+      expect(env.laneRecord('S1').startup_passed_at ?? null).toBeNull();
+      expect(env.laneRecord('S1').session_id).toBe('conv-1');
+    });
+
+    test('reads the agy startup screen when the hub list fails', async () => {
+      const env = await agyStartupEnv(
+        { ok: false, error: 'session_hub_unavailable' },
+        { ok: true, alive: 'alive', started: false, screen: null }
+      );
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.startupScreen).toHaveBeenCalledOnce();
+    });
+
+    test('passes the agy start when the hub reads the input box', async () => {
+      const env = await agyStartupEnv(
+        { ok: true, session_id: null },
+        { ok: true, alive: 'alive', started: true, screen: null }
+      );
+      env.panes.rows[0].agent_running = '';
+      env.clock.at = 1500;
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.laneRecord('S1').startup_passed_at).toBe(1500);
+    });
+
+    test('kills an agy session-lane window on withdrawal instead of typing /exit', async () => {
+      const env = agyLaneEnv(laneAgyModels());
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = env.laneAttempt('S1').attempt_id;
+
+      const result = await env.scheduler.withdraw(WS, attempt_id);
+
+      expect(result).toEqual({ ok: true });
+      expect(env.launcher.sendExit).not.toHaveBeenCalled();
+      expect(env.launcher.killWindow).toHaveBeenCalledWith(
+        'bdui-inquiry',
+        'S1'
+      );
+    });
+
+    test('retries the agy session lane when a credential change began after the gate', async () => {
+      const env = agyLaneEnv(laneAgyModels());
+      const add = env.worktree.add.getMockImplementation();
+      env.worktree.add.mockImplementationOnce(
+        async (/** @type {any} */ input) => {
+          beginAgyCredentialChange();
+          return /** @type {any} */ (add)(input);
+        }
+      );
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.launcher.launch).not.toHaveBeenCalled();
+      expect(Object.values(env.store.snapshot(WS).attempts)).toMatchObject([
+        { status: 'retry_wait', cause: 'spawn_failed:agy_credential_change' }
+      ]);
     });
   });
 

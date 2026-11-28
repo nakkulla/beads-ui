@@ -551,9 +551,11 @@
  * @typedef {Object} InteractiveSession
  * @property {string} bead_id
  * @property {'resolve'|'inquiry'|'external_resume'|'session_lane'|'spec_authoring'} kind
- * @property {'claude'|'codex'} provider
+ * @property {'claude'|'codex'|'agy'} provider
  * @property {string|null} session_id
- * @property {'launch'|'pane_option'|null} session_id_source
+ * @property {'launch'|'pane_option'|'hub_list'|null} session_id_source - How
+ * the id was learned: the launch itself, a codex pane option, or the agy
+ * conversation the hub lists for the pane (UI-ufgo Phase 4).
  * @property {'fork'|'fresh'|'resume'|null} mode
  * @property {'attempt'|'session_ref'|'fresh'|'recovered'|null} source
  * @property {string|null} forked_from
@@ -4354,7 +4356,9 @@ function normalizeInteractiveSessions(raw) {
         'session_lane',
         'spec_authoring'
       ].includes(/** @type {string} */ (value.kind)) ||
-      (value.provider !== 'claude' && value.provider !== 'codex') ||
+      (value.provider !== 'claude' &&
+        value.provider !== 'codex' &&
+        value.provider !== 'agy') ||
       (value.state !== 'live' && value.state !== 'exiting') ||
       typeof value.launched_at !== 'number' ||
       !Number.isFinite(value.launched_at)
@@ -4407,7 +4411,8 @@ function normalizeInteractiveSessions(raw) {
       session_id: stringOrNull('session_id'),
       session_id_source:
         value.session_id_source === 'launch' ||
-        value.session_id_source === 'pane_option'
+        value.session_id_source === 'pane_option' ||
+        value.session_id_source === 'hub_list'
           ? value.session_id_source
           : null,
       mode:

@@ -34,6 +34,7 @@ import {
   SESSION_REVIEW_KEYS,
   implPresetEnums,
   normalizeAppliesTo,
+  splitAgyWorkflowModels,
   validateImplPresetSettings
 } from './worker/exec-enums.js';
 import { execPresetsFilePath } from './worker/state-paths.js';
@@ -329,9 +330,15 @@ export function createExecPresetStore(options = {}) {
     }
     const profile = normalizeAppliesTo(applies_to);
     const enums = settingEnums(profile);
+    // A chosen agy id is saved as the contract's (family, effort) pair, so
+    // an apply copies the stored pair as it is (agy-runtime §3.3).
+    const split = splitAgyWorkflowModels(settings);
+    if (!split.ok) {
+      return null;
+    }
     /** @type {Record<string, string>} */
     const normalized_settings = {};
-    for (const [key, value] of Object.entries(settings)) {
+    for (const [key, value] of Object.entries(split.settings)) {
       const allowed = enums[key];
       if (
         !Array.isArray(allowed) ||

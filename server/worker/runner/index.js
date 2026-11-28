@@ -57,54 +57,25 @@ export function isUnknownRunnerError(error) {
 
 /** @type {ResolvedCatalog|null} */
 let cached_dispatch = null;
-/** @type {ResolvedCatalog|null} */
-let cached_catalog = null;
-/** The `codex:agy` list revisions the cached catalogs were built from. */
+/** The `codex:agy` list revisions the cached catalog was built from. */
 let cached_key = '';
 
 /**
- * Resolve both cached catalogs again when either model list moved.
+ * Resolve the cached catalog again when either model list moved.
  */
 function refreshCatalogs() {
   const codex = codexModelList();
   const agy = agyModelList();
   const key = `${codex.revision()}:${agy.revision()}`;
-  if (!cached_dispatch || !cached_catalog || cached_key !== key) {
+  if (!cached_dispatch || cached_key !== key) {
     cached_key = key;
     cached_dispatch = resolveCatalog({
       overrides: getConfig().runner_overrides,
       codex_names: codex.names(),
       agy_names: agy.names()
     });
-    cached_catalog = withoutAgy(cached_dispatch);
   }
-  const status = codex.status();
-  cached_dispatch.codex_list = status;
-  cached_catalog.codex_list = status;
-}
-
-/**
- * The catalog minus the agy runner and every model it owns.
- *
- * @param {ResolvedCatalog} catalog
- * @returns {ResolvedCatalog}
- */
-function withoutAgy(catalog) {
-  /** @type {Record<string, RunnerCatalogEntry>} */
-  const runners = {};
-  for (const [name, entry] of Object.entries(catalog.runners)) {
-    if (name !== 'agy') {
-      runners[name] = entry;
-    }
-  }
-  /** @type {Record<string, string>} */
-  const model_index = {};
-  for (const [model, runner] of Object.entries(catalog.model_index)) {
-    if (runner !== 'agy') {
-      model_index[model] = runner;
-    }
-  }
-  return { runners, model_index };
+  cached_dispatch.codex_list = codex.status();
 }
 
 /**
@@ -118,21 +89,20 @@ function withoutAgy(catalog) {
  * Codex model list changes (UI-gpac §3.3), and `codex_list` carries where the
  * Codex names came from.
  *
- * It carries no agy runner and no agy model (UI-h0hwo): agy opens to the
- * pickers, presets and saved settings only in Phase 4, so until then nothing a
- * user can choose or store may name it. {@link dispatchCatalog} is the same
- * resolution with agy kept, for the launch path alone.
+ * It carries the agy runner and the ids of the last agy model list since the
+ * agy runtime opened its pickers, presets and saved settings (UI-ufgo), so it
+ * is the same catalog as {@link dispatchCatalog}.
  *
  * @returns {ResolvedCatalog}
  */
 export function runtimeCatalog() {
-  refreshCatalogs();
-  return /** @type {ResolvedCatalog} */ (cached_catalog);
+  return dispatchCatalog();
 }
 
 /**
- * The launch-path catalog: {@link runtimeCatalog} plus the agy runner and the
- * ids of the last agy model list. Swapped when either model list changes.
+ * The launch-path catalog: the builtin runners (agy included), the Codex CLI
+ * list names, the ids of the last agy model list and the `[runner]`
+ * overrides. Swapped when either model list changes.
  *
  * @returns {ResolvedCatalog}
  */
@@ -150,7 +120,6 @@ export function dispatchCatalog() {
  */
 export function __resetRuntimeCatalogForTest() {
   cached_dispatch = null;
-  cached_catalog = null;
   cached_key = '';
 }
 

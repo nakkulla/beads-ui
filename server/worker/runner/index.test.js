@@ -265,15 +265,15 @@ describe('runner/index registry (worker-multi-provider-runner §B)', () => {
   });
 });
 
-describe('runner/index agy catalog boundary (UI-h0hwo Phase 2)', () => {
-  test('keeps agy out of the runtime catalog', () => {
+describe('runner/index agy catalog (UI-ufgo Phase 4)', () => {
+  test('carries the listed agy ids in the runtime catalog', () => {
     __setAgyModelListForTest(stubAgyList(['gemini-4-neon-high']));
     __resetRuntimeCatalogForTest();
 
     const catalog = runtimeCatalog();
 
-    expect(Object.keys(catalog.runners)).not.toContain('agy');
-    expect(Object.values(catalog.model_index)).not.toContain('agy');
+    expect(catalog.runners.agy.command).toBe('agy');
+    expect(catalog.model_index['gemini-4-neon-high']).toBe('agy');
   });
 
   test('carries the listed agy ids in the dispatch catalog', () => {

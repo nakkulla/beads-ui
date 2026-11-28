@@ -193,7 +193,7 @@ function lineTimestamp(line) {
  * line uncut (a long result line must stay whole), and `excerpt` the whole
  * message with whitespace collapsed, cut to 400 code points.
  *
- * @param {{ provider: 'claude'|'codex', file: string, since_offset?: number, fs?: Pick<typeof nodeFs, 'statSync'|'openSync'|'readSync'|'closeSync'> }} input
+ * @param {{ provider: 'claude'|'codex'|'agy', file: string, since_offset?: number, fs?: Pick<typeof nodeFs, 'statSync'|'openSync'|'readSync'|'closeSync'> }} input
  * @returns {{ text: string, at: number|null, first_line: string, excerpt: string }|null}
  */
 export function readLastAssistantMessage(input) {

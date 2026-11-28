@@ -285,3 +285,82 @@ describe('model visibility store codex pinned names (UI-gpac §3.6)', () => {
     ]);
   });
 });
+
+describe('model visibility store agy ids (UI-ufgo §3.3)', () => {
+  const DEFAULTS = [
+    'gemini-4-neon-high',
+    'gemini-4-neon-xhigh',
+    'gemini-4-carbon-high',
+    'gemini-4-carbon-medium',
+    'gemini-4-hydrogen-medium'
+  ];
+  const LISTED = [...DEFAULTS, 'gemini-4-argon-medium', 'gemini-4-neon-low'];
+  const AGY_CATALOG = resolveCatalog({ agy_names: LISTED, warn: () => {} });
+
+  test('hides every listed agy id but the five defaults when no choice was saved', () => {
+    const store = makeStore();
+
+    store.observeAgyModels(LISTED);
+
+    const disabled = store.snapshot(AGY_CATALOG).disabled_models;
+    expect(
+      disabled.filter((name) => name.startsWith('gemini-4-')).sort()
+    ).toEqual(['gemini-4-argon-medium', 'gemini-4-neon-low']);
+  });
+
+  test('keeps an agy id the user enabled across list refreshes', () => {
+    const store = makeStore();
+    store.observeAgyModels(LISTED);
+    const current = store.snapshot(AGY_CATALOG);
+    store.set(
+      {
+        expected_revision: current.revision,
+        disabled_models: current.disabled_models.filter(
+          (name) => name !== 'gemini-4-argon-medium'
+        )
+      },
+      AGY_CATALOG
+    );
+
+    store.observeAgyModels([...LISTED, 'gemini-4-argon-high']);
+
+    const disabled = store.snapshot(
+      resolveCatalog({
+        agy_names: [...LISTED, 'gemini-4-argon-high'],
+        warn: () => {}
+      })
+    ).disabled_models;
+    expect(disabled).not.toContain('gemini-4-argon-medium');
+    expect(disabled).toContain('gemini-4-argon-high');
+  });
+
+  test('hides no agy id when the list holds none of the five defaults', () => {
+    const store = makeStore();
+    const names = ['gemini-4-argon-medium', 'gemini-4-neon-low'];
+
+    store.observeAgyModels(names);
+
+    expect(
+      store
+        .snapshot(resolveCatalog({ agy_names: names, warn: () => {} }))
+        .disabled_models.filter((name) => name.startsWith('gemini-4-'))
+    ).toEqual([]);
+  });
+
+  test('keeps the seen agy ids through a write', () => {
+    const store = makeStore();
+    store.observeAgyModels(LISTED);
+    const current = store.snapshot(AGY_CATALOG);
+
+    store.set(
+      {
+        expected_revision: current.revision,
+        disabled_models: current.disabled_models
+      },
+      AGY_CATALOG
+    );
+
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(saved.seen_agy_models).toEqual(expect.arrayContaining(LISTED));
+  });
+});

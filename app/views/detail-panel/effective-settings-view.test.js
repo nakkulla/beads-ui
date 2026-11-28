@@ -1029,3 +1029,39 @@ describe('effective-settings preset preview (UI-1lee)', () => {
     );
   });
 });
+
+describe('effective-settings card agy workflow model (UI-ufgo)', () => {
+  test('selects a pinned agy family and effort as its agy id', () => {
+    const catalog = {
+      runners: {
+        claude: {
+          command: 'claude',
+          models: { opus: { id: 'opus' } },
+          efforts: ['low', 'medium', 'high', 'xhigh']
+        },
+        agy: {
+          command: 'agy',
+          efforts: [],
+          models: {
+            'gemini-4-neon-high': { id: 'gemini-4-neon-high' },
+            'gemini-4-neon-xhigh': { id: 'gemini-4-neon-xhigh' }
+          }
+        }
+      }
+    };
+
+    const mount = renderCard({
+      catalog,
+      metadata: { impl_runtime: 'agy', impl_model: 'neon', impl_effort: 'high' }
+    });
+
+    expect(mount.querySelector('[data-edit-key="impl_model"]')).toHaveProperty(
+      'value',
+      'gemini-4-neon-high'
+    );
+    expect(mount.querySelector('[data-edit-key="impl_effort"]')).toHaveProperty(
+      'value',
+      'high'
+    );
+  });
+});

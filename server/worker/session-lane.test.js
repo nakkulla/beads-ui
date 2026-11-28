@@ -74,6 +74,29 @@ describe('sessionLaneCommandArgs (UI-lbm5 §4.3)', () => {
 
     expect(args).toEqual(['resume', '-m', 'sol', 'th-1', 'S\n\nT']);
   });
+
+  test('starts agy on its model with the contract prefixed to the first input', () => {
+    const args = sessionLaneCommandArgs({
+      runner: 'agy',
+      model: 'gemini-4-neon-high',
+      effort: 'high',
+      system_prompt: 'S',
+      task_prompt: 'T'
+    });
+
+    expect(args).toEqual(['--model', 'gemini-4-neon-high', '-i', 'S\n\nT']);
+  });
+
+  test('resumes an agy conversation by its id', () => {
+    const args = sessionLaneCommandArgs({
+      runner: 'agy',
+      resume_session_id: 'conv-1',
+      system_prompt: 'S',
+      task_prompt: 'T'
+    });
+
+    expect(args).toEqual(['--conversation', 'conv-1', '-i', 'S\n\nT']);
+  });
 });
 
 describe('sessionLaneEnv (UI-lbm5 §4.3)', () => {

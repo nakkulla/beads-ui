@@ -60,6 +60,7 @@ import {
   operationIncidentFingerprint,
   selfRepairFailureIdentity
 } from './resolution-ladder.js';
+import { agyConversationArgs } from './runner/agy.js';
 import { UNKNOWN_RUNNER } from './runner/index.js';
 import { sessionInquiryIdOf } from './session-inquiry/contract.js';
 import { resolveSessionLaunchOptions } from './session-launch-accounts.js';
@@ -102,6 +103,26 @@ function forkArgs(runner, session_id, prompt, launch_session_id, cwd) {
         /** @type {string} */ (launch_session_id),
         prompt
       ];
+}
+
+/**
+ * The argv of a FRESH conversation: claude takes the id it was launched with,
+ * agy its first input through `-i` (its conversation id is read from the hub
+ * later, UI-ufgo Phase 4), and codex the bare prompt.
+ *
+ * @param {'claude'|'codex'|'agy'} runner
+ * @param {string|null} launch_session_id
+ * @param {string} prompt
+ * @returns {string[]}
+ */
+function freshArgs(runner, launch_session_id, prompt) {
+  if (runner === 'claude') {
+    return ['--session-id', /** @type {string} */ (launch_session_id), prompt];
+  }
+  if (runner === 'agy') {
+    return agyConversationArgs({ prompt });
+  }
+  return [prompt];
 }
 
 /**
@@ -1275,7 +1296,7 @@ export function failedDiscardOperation(queue, bead_id) {
  * @property {(...args: any[]) => void} [log]
  * @property {string} [heartbeatPath]
  * @property {{ home_dir?: string, hostname?: string, fs?: any, now?: () => number }} [sessionRefOptions]
- * @property {(workspace: string, issue: any) => 'claude'|'codex'|null} [currentRunner] -
+ * @property {(workspace: string, issue: any) => 'claude'|'codex'|'agy'|null} [currentRunner] -
  * The provider CURRENT execution settings resolve to. Consulted ONLY when the
  * bead names no session at all (codex-orchestration-parity §4.1): a recorded
  * source that merely cannot be forked keeps its own provider, so a tool error
@@ -1287,6 +1308,8 @@ export function failedDiscardOperation(queue, bead_id) {
  * the fresh runtime here, the model/effort flags in the launcher.
  * @property {(runner: string) => string[]} [launchFlags] - Passed to the
  * launcher; defaults to the stored settings.
+ * @property {import('./tmux-launcher.js').TmuxLauncherDeps['agyModels']} [agyModels] -
+ * Passed to the launcher; defaults to the process-wide agy model list.
  */
 
 /**
@@ -1299,7 +1322,7 @@ export function failedDiscardOperation(queue, bead_id) {
  * @property {string|null} fallback_reason - Why the recorded session was not
  * forked; null on a fork.
  * @property {string|null} session_id
- * @property {'claude'|'codex'|null} runner - The provider the window actually runs.
+ * @property {'claude'|'codex'|'agy'|null} runner - The provider the window actually runs.
  * A fork keeps the RECORDED session's provider, and so does the fresh fallback
  * a missing or unusable transcript forces (§4.1). Only a bead with no recorded
  * session at all follows current execution settings.
@@ -1358,6 +1381,7 @@ export function createResolveSession(deps) {
     ...(deps.now ? { now: deps.now } : {}),
     ...(deps.heartbeatPath ? { heartbeatPath: deps.heartbeatPath } : {}),
     ...(deps.launchFlags ? { launchFlags: deps.launchFlags } : {}),
+    ...(deps.agyModels ? { agyModels: deps.agyModels } : {}),
     log
   });
 
@@ -1387,9 +1411,9 @@ export function createResolveSession(deps) {
    * The runtime a FRESH conversation runs (UI-jbl1 §3.4): the setting, else
    * the provider this launch would have inherited.
    *
-   * @param {'claude'|'codex'|null} inherited - null when the current runner is
+   * @param {'claude'|'codex'|'agy'|null} inherited - null when the current runner is
    * not a registered one.
-   * @returns {'claude'|'codex'|null}
+   * @returns {'claude'|'codex'|'agy'|null}
    */
   function freshRunner(inherited) {
     try {
@@ -1543,7 +1567,7 @@ export function createResolveSession(deps) {
    * @param {string} workspace
    * @param {string} bead_id
    * @param {any} attempt
-   * @returns {Promise<{ session_id: string|null, runner: 'claude'|'codex'|null, source: 'attempt'|'session_ref'|'fresh', fallback_reason: string|null }>}
+   * @returns {Promise<{ session_id: string|null, runner: 'claude'|'codex'|'agy'|null, source: 'attempt'|'session_ref'|'fresh', fallback_reason: string|null }>}
    */
   async function forkTarget(workspace, bead_id, attempt) {
     /**
@@ -1553,7 +1577,7 @@ export function createResolveSession(deps) {
      * Claude (UI-6o70).
      *
      * @param {any} issue
-     * @returns {'claude'|'codex'|null}
+     * @returns {'claude'|'codex'|'agy'|null}
      */
     function currentRunner(issue) {
       if (typeof deps.currentRunner !== 'function') {
@@ -1561,7 +1585,9 @@ export function createResolveSession(deps) {
       }
       try {
         const runner = deps.currentRunner(workspace, issue);
-        return runner === 'codex' || runner === 'claude' ? runner : null;
+        return runner === 'codex' || runner === 'claude' || runner === 'agy'
+          ? runner
+          : null;
       } catch (err) {
         log('current runner resolution failed for %s: %o', bead_id, err);
         return 'claude';
@@ -1644,16 +1670,12 @@ export function createResolveSession(deps) {
         checkout
       });
       const launch_session_id = runner === 'claude' ? randomUUID() : null;
+      // A fork keeps the recorded provider, which is claude or codex only.
+      const fork_runner = /** @type {'claude'|'codex'} */ (target.runner);
       const command_args =
         session_id === null
-          ? runner === 'claude'
-            ? [
-                '--session-id',
-                /** @type {string} */ (launch_session_id),
-                prompt
-              ]
-            : [prompt]
-          : forkArgs(runner, session_id, prompt, launch_session_id, cwd);
+          ? freshArgs(runner, launch_session_id, prompt)
+          : forkArgs(fork_runner, session_id, prompt, launch_session_id, cwd);
       const outcome = await launcher.launch({
         ...(await resolveSessionLaunchOptions(
           deps.resolveSessionAccounts,
@@ -1735,7 +1757,7 @@ export function createResolveSession(deps) {
             ? runner === 'claude'
               ? `claude --session-id ${shellQuote(/** @type {string} */ (launch_session_id))}`
               : runner
-            : forkCommand(runner, session_id, launch_session_id, cwd),
+            : forkCommand(fork_runner, session_id, launch_session_id, cwd),
         bridge_active: launcher.bridgeActive(),
         placement:
           outcome.session === 'not_launched'
@@ -1767,13 +1789,15 @@ export function createResolveSession(deps) {
           ? input.repo
           : input.workspace;
       const row_key = repoOperationRowKey(input.operation_id);
-      /** @type {'claude'|'codex'|null} */
+      /** @type {'claude'|'codex'|'agy'|null} */
       let inherited = 'claude';
       if (typeof deps.currentRunner === 'function') {
         try {
           const current = deps.currentRunner(input.workspace, null);
           inherited =
-            current === 'codex' || current === 'claude' ? current : null;
+            current === 'codex' || current === 'claude' || current === 'agy'
+              ? current
+              : null;
         } catch (err) {
           log('current runner resolution failed for %s: %o', row_key, err);
         }
@@ -1807,14 +1831,7 @@ export function createResolveSession(deps) {
         // pane listing's fixed fields, so the window name uses a dash.
         window_name: `resolve-repo-op-${input.operation_id.slice(0, 12)}`,
         cwd: checkout,
-        commandArgs:
-          runner === 'claude'
-            ? [
-                '--session-id',
-                /** @type {string} */ (launch_session_id),
-                prompt
-              ]
-            : [prompt],
+        commandArgs: freshArgs(runner, launch_session_id, prompt),
         runner,
         placement: input.placement === 'inquiry' ? 'inquiry' : 'user'
       });

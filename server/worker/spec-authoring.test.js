@@ -754,7 +754,7 @@ describe('spec conversation clicks', () => {
   });
 
   test('refuses unknown_runner instead of launching claude for an unregistered inherited runner', async () => {
-    const h = fixture({ currentRunner: () => 'agy' });
+    const h = fixture({ currentRunner: () => 'gemini' });
 
     const result = await h.authoring.launchForClick({
       workspace: ROOT,
@@ -787,6 +787,39 @@ describe('spec conversation clicks', () => {
 
     expect(h.launcher.launch).toHaveBeenCalledWith(
       expect.objectContaining({ runner: 'codex' })
+    );
+  });
+
+  test('launches agy for an inherited agy runner with the entry as its first input', async () => {
+    const h = fixture({ currentRunner: () => 'agy' });
+
+    await h.authoring.launchForClick({ workspace: ROOT, bead_id: B });
+
+    const input = h.launcher.launch.mock.calls[0]?.[0];
+    expect(input.runner).toBe('agy');
+    expect(input.commandArgs).toEqual([
+      '-i',
+      expect.stringContaining(`- 대상 Bead: ${B}`)
+    ]);
+    expect(
+      h.store.snapshot(ROOT).interactive_sessions[`${B}:spec_authoring`]
+    ).toMatchObject({
+      provider: 'agy',
+      session_id: null,
+      session_id_source: null
+    });
+  });
+
+  test('launches the fixed agy conversation runtime', async () => {
+    const h = fixture({
+      currentRunner: () => 'claude',
+      conversationSettings: () => ({ fresh_runtime: 'agy' })
+    });
+
+    await h.authoring.launchForClick({ workspace: ROOT, bead_id: B });
+
+    expect(h.launcher.launch).toHaveBeenCalledWith(
+      expect.objectContaining({ runner: 'agy' })
     );
   });
 

@@ -1588,7 +1588,7 @@ function startupEventPrefix(kind) {
  * @property {string} line
  * @property {string} key
  * @property {number} launched_at
- * @property {'claude'|'codex'} provider
+ * @property {'claude'|'codex'|'agy'} provider
  * @property {string|null} session_id
  */
 
@@ -12276,7 +12276,8 @@ export function createScheduler(deps) {
 
   /**
    * Close a conversation window after a result line or the click (§3.4-§3.6):
-   * Claude gets `/exit`, a Codex window is killed. The record turns `exiting`;
+   * Claude gets `/exit`, a Codex or agy window is killed (neither takes
+   * Claude's `/exit`). The record turns `exiting`;
    * only a later pass that sees the pane gone continues the handoff.
    *
    * @param {string} workspace
@@ -12290,7 +12291,7 @@ export function createScheduler(deps) {
       return false;
     }
     const result =
-      record.provider === 'codex'
+      record.provider === 'codex' || record.provider === 'agy'
         ? await launcher.killWindow(record.tmux_session, record.tmux_window)
         : await launcher.sendExit(record.pane_id);
     if (!result.ok) {
@@ -14535,7 +14536,7 @@ export function createScheduler(deps) {
      * @param {import('./queue-store.js').InteractiveSession} record
      * @param {boolean} started - The pass-side start sign: a filled codex
      * `@agent_session`, a claude turn marker, or a claude transcript message
-     * after launch.
+     * after launch. An agy window has none (`false`); the hub read decides.
      */
     async function observeStartup(key, record, started) {
       if (!awaitingStart(key, record)) {
@@ -14690,9 +14691,9 @@ export function createScheduler(deps) {
         return;
       }
       // A codex window at its input box is not waiting, but only its
-      // `@agent_session` is its start.
+      // `@agent_session` is its start. An agy window's start is this read.
       if (read.started) {
-        if (record.provider === 'claude') {
+        if (record.provider === 'claude' || record.provider === 'agy') {
           pass();
         } else if (record.startup_wait != null) {
           update(key, record, { startup_wait: null });
@@ -15785,9 +15786,45 @@ export function createScheduler(deps) {
           await observeStartup(key, record, marked || answered);
         }
       }
+      // An agy window's start is the hub's own screen read alone: its hook
+      // marks the pane and the hub records a conversation id while folder
+      // trust or sign-in still shows. The conversation id is read from the
+      // hub list apart from that judgment (agy-runtime §3.6).
+      if (record.provider === 'agy') {
+        if (startup_target && isCurrent(key, record)) {
+          await observeStartup(key, record, false);
+        }
+        if (record.session_id === null && isCurrent(key, record)) {
+          const listed =
+            typeof launcher.agySessionId === 'function'
+              ? await launcher.agySessionId(record.pane_id)
+              : {
+                  ok: /** @type {const} */ (false),
+                  error: 'agy_session_id_unavailable'
+                };
+          if (!listed.ok) {
+            log(
+              'interactive session observation failed for %s/%s: %o',
+              workspace,
+              key,
+              listed
+            );
+            continue;
+          }
+          if (listed.session_id) {
+            update(key, record, {
+              session_id: listed.session_id,
+              session_id_source: 'hub_list'
+            });
+          }
+        }
+      }
       const codex_startup_target =
         startup_target && record.provider === 'codex';
-      if (record.session_id === null || codex_startup_target) {
+      if (
+        record.provider !== 'agy' &&
+        (record.session_id === null || codex_startup_target)
+      ) {
         const session = await launcher.readPaneOption(
           record.pane_id,
           '@agent_session'
@@ -15888,7 +15925,8 @@ export function createScheduler(deps) {
         }
         continue;
       }
-      if (record.provider === 'codex') {
+      // Only claude is known to take `/exit`; codex and agy windows close.
+      if (record.provider !== 'claude') {
         await kill(key, record);
       } else if (isCurrent(key, record)) {
         const result = await launcher.sendExit(record.pane_id);
@@ -18060,7 +18098,11 @@ export function createScheduler(deps) {
     if (!launcher) {
       return refuse('launcher_unavailable');
     }
-    if (runner_name !== 'claude' && runner_name !== 'codex') {
+    if (
+      runner_name !== 'claude' &&
+      runner_name !== 'codex' &&
+      runner_name !== 'agy'
+    ) {
       return refuse(`${runner_name}_unsupported`);
     }
     deps.store.updateAttempt(workspace, {
@@ -18095,7 +18137,8 @@ export function createScheduler(deps) {
         : null;
     // claude's session id is chosen HERE and recorded on the attempt, so the
     // transcript is readable from the first pass; codex names its own and the
-    // pane option fills it once observed (§4.3).
+    // pane option fills it once observed (§4.3), and agy's is read from the
+    // hub list later (agy-runtime §3.6).
     const session_id =
       resume_session_id ?? (runner_name === 'claude' ? randomUUID() : null);
     const { system_prompt, task_prompt } = applyPreamble(
@@ -18131,6 +18174,22 @@ export function createScheduler(deps) {
       catalog
     });
     const start_oid = await branchTip(repo, bead_id);
+    // The same last agy check the headless spawn makes (launchSession), read
+    // with no await before the launch: a credential change that began, or
+    // began and ended, since the dispatch gate refuses this window as the
+    // same transient refusal.
+    const gate_generation = input.agy_credential_generation;
+    if (
+      runner_name === 'agy' &&
+      (agyCredentialChangeActive() ||
+        (typeof gate_generation === 'number' &&
+          gate_generation !== agyCredentialGeneration()))
+    ) {
+      const refusal = `spawn_failed:${AGY_CREDENTIAL_CHANGE}`;
+      log('session lane launch refused for %s: %s', attempt_id, refusal);
+      await finalizeLaunchRefusal(input, refusal, false);
+      return { ok: false, reason: refusal };
+    }
     const started_at = now();
     /** @type {import('./tmux-launcher.js').LaunchOutcome} */
     let outcome;
@@ -26545,7 +26604,7 @@ export function createScheduler(deps) {
 
   /**
    * Close a running session-lane window and confirm it gone (UI-lbm5 §4.5):
-   * claude is sent `/exit`, codex is killed; panes are re-listed until the
+   * claude is sent `/exit`, codex and agy are killed; panes are re-listed until the
    * window is gone, and a window still open after the grace is killed. Only a
    * SUCCESSFUL listing without the pane counts as gone — that answer is
    * recorded on the attempt (`interactive.gone_at`) and the window's record
@@ -26590,7 +26649,11 @@ export function createScheduler(deps) {
     };
     let alive = await observe();
     if (alive === true) {
-      if (attempt.runner === 'codex' || typeof pane_id !== 'string') {
+      if (
+        attempt.runner === 'codex' ||
+        attempt.runner === 'agy' ||
+        typeof pane_id !== 'string'
+      ) {
         await kill();
       } else {
         try {

@@ -384,6 +384,31 @@ describe('interactive session persistence', () => {
     });
   });
 
+  test('keeps an agy session-lane record whose id the hub list supplied', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        interactive_sessions: {
+          x: record({
+            kind: 'session_lane',
+            provider: 'agy',
+            session_id: 'conv-1',
+            session_id_source: 'hub_list'
+          })
+        }
+      })
+    );
+
+    const sessions = createQueueStore().load(WS).interactive_sessions;
+
+    expect(sessions['B1:session_lane']).toMatchObject({
+      provider: 'agy',
+      session_id: 'conv-1',
+      session_id_source: 'hub_list'
+    });
+  });
+
   test('persists a conversation state through a patch and cold reload', () => {
     const store = createQueueStore();
     store.recordInteractiveSession(

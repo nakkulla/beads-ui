@@ -38,6 +38,7 @@ import {
   WORKFLOW_MODES,
   implEffortOptions,
   implModelOptions,
+  joinAgyWorkflowModels,
   normalizeAppliesTo,
   orchestrationModelOptions,
   speedVisible
@@ -222,7 +223,7 @@ export function optionsForKey(key, effective, catalog) {
  * is expanded — the three-state editor.
  *
  * @param {EffectiveRow} row
- * @param {{ expanded: boolean, options: ReadonlyArray<{ value: string, label: string, full_value: string|null }>, default_label: string, default_full_value: string|null, onEdit: (key: string, value: string|null) => void }} view
+ * @param {{ selected: unknown, expanded: boolean, options: ReadonlyArray<{ value: string, label: string, full_value: string|null }>, default_label: string, default_full_value: string|null, onEdit: (key: string, value: string|null) => void }} view
  * @returns {TemplateResult}
  */
 function rowTemplate(row, view) {
@@ -265,7 +266,8 @@ function rowTemplate(row, view) {
               html`<option
                 value=${option.value}
                 title=${option.full_value || ''}
-                ?selected=${row.source === 'pin' && row.value === option.value}
+                ?selected=${row.source === 'pin' &&
+                view.selected === option.value}
               >
                 ${option.label}
               </option>`
@@ -368,9 +370,14 @@ export function effectiveSettingsCardTemplate(model, handlers) {
   );
   /** @type {Record<string, EffectiveRow>} */
   const effective = Object.fromEntries(rows.map((row) => [row.key, row]));
+  // A pinned agy (family, effort) pair is offered and selected as its id.
   /** @type {Record<string, unknown>} */
-  const effective_values = Object.fromEntries(
-    rows.filter((row) => row.value !== null).map((row) => [row.key, row.value])
+  const effective_values = joinAgyWorkflowModels(
+    Object.fromEntries(
+      rows
+        .filter((row) => row.value !== null)
+        .map((row) => [row.key, row.value])
+    )
   );
   const full_summary = rows
     .filter((row) => row.full_value && row.display !== row.full_value)
@@ -505,6 +512,7 @@ export function effectiveSettingsCardTemplate(model, handlers) {
                     controller_runtime: model.controller_runtime || null
                   });
                   return rowTemplate(row, {
+                    selected: effective_values[row.key] ?? row.value,
                     expanded: model.expanded,
                     options: option_view.options,
                     default_label: option_view.unset_label,

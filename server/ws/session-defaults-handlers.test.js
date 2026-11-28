@@ -624,6 +624,122 @@ describe('set-session-defaults root_dir (UI-eey2 §9.5)', () => {
   });
 });
 
+describe('set-session-defaults agy runtime (UI-ufgo Phase 4)', () => {
+  test('stores agy as the repo default runtime and neon as a reviewer', async () => {
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          schema: 1,
+          impl_runtime: 'agy',
+          quick_fix_impl_runtime: 'agy',
+          impl_review_model: 'neon'
+        }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    const { ws, sent } = fakeWs();
+
+    await handleSetSessionDefaults(ws, {
+      id: 'set',
+      type: 'set-session-defaults',
+      payload: {
+        values: {
+          impl_runtime: 'agy',
+          quick_fix_impl_runtime: 'agy',
+          impl_review_model: 'neon'
+        }
+      }
+    });
+
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
+      ws,
+      'workflow_session_defaults',
+      {
+        schema: 1,
+        impl_runtime: 'agy',
+        quick_fix_impl_runtime: 'agy',
+        impl_review_model: 'neon'
+      }
+    );
+    expect(sent[0].ok).toBe(true);
+  });
+
+  test('stores a chosen agy id as its family and effort', async () => {
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          schema: 1,
+          quick_fix_impl_runtime: 'agy',
+          quick_fix_impl_model: 'carbon',
+          quick_fix_impl_effort: 'medium'
+        }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    const { ws } = fakeWs();
+
+    await handleSetSessionDefaults(ws, {
+      id: 'set',
+      type: 'set-session-defaults',
+      payload: { values: { quick_fix_impl_model: 'gemini-4-carbon-medium' } }
+    });
+
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
+      ws,
+      'workflow_session_defaults',
+      {
+        schema: 1,
+        quick_fix_impl_runtime: 'agy',
+        quick_fix_impl_model: 'carbon',
+        quick_fix_impl_effort: 'medium'
+      }
+    );
+  });
+
+  test('keeps a stored auto runtime when only an agy id changes', async () => {
+    kvGetJsonInWorkspace.mockResolvedValue({
+      ok: true,
+      value: { schema: 1, impl_runtime: 'auto' }
+    });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    const { ws } = fakeWs();
+
+    await handleSetSessionDefaults(ws, {
+      id: 'set',
+      type: 'set-session-defaults',
+      payload: { values: { impl_model: 'gemini-4-neon-high' } }
+    });
+
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
+      ws,
+      'workflow_session_defaults',
+      {
+        schema: 1,
+        impl_runtime: 'auto',
+        impl_model: 'neon',
+        impl_effort: 'high'
+      }
+    );
+  });
+
+  test('refuses an agy id beside a different effort before touching bd', async () => {
+    const { ws, sent } = fakeWs();
+
+    await handleSetSessionDefaults(ws, {
+      id: 'set',
+      type: 'set-session-defaults',
+      payload: {
+        values: { impl_model: 'gemini-4-neon-high', impl_effort: 'low' }
+      }
+    });
+
+    expect(sent[0].error.code).toBe('bad_request');
+    expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
+  });
+});
+
 describe('get-workspace-accounts (UI-d3cb §4)', () => {
   test('returns the three-state layer with its values', async () => {
     kvGetJsonInWorkspace.mockResolvedValue({

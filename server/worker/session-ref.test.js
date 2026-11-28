@@ -155,6 +155,32 @@ describe('qualifyInteractiveForkSource', () => {
     });
   });
 
+  test('opens a fresh agy session instead of forking a local agy attempt', () => {
+    const input = {
+      attempt: { runner: 'agy', session_id: 'agy-sid' },
+      metadata: {},
+      options: {
+        ...options,
+        fs: /** @type {any} */ (
+          fakeFs({
+            files: {
+              '/home/u/.gemini/antigravity-cli/brain/agy-sid/.system_generated/logs/transcript_full.jsonl': 100
+            }
+          })
+        )
+      }
+    };
+
+    const result = qualifyInteractiveForkSource(input);
+
+    expect(result).toEqual({
+      session_id: null,
+      provider: 'agy',
+      source: 'fresh',
+      fallback_reason: 'attempt_unforkable'
+    });
+  });
+
   test('falls through an attempt that never recorded a session', () => {
     const input = {
       attempt: { runner: 'codex', session_id: null },

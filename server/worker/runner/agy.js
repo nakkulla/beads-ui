@@ -91,6 +91,25 @@ export function agyLauncherPath(home = os.homedir()) {
 }
 
 /**
+ * The arguments after the agy launcher for one interactive conversation:
+ * `--model <id>` when the launch picks its own model, `--conversation <id>` to
+ * resume, and `-i <prompt>` for the first turn. `--dangerously-skip-permissions`
+ * is not here: the tmux launcher adds it to every agy window, once.
+ *
+ * @param {{ model?: string|null, conversation_id?: string|null, prompt?: string|null }} input
+ * @returns {string[]}
+ */
+export function agyConversationArgs(input) {
+  return [
+    ...(input.model ? ['--model', input.model] : []),
+    ...(input.conversation_id ? ['--conversation', input.conversation_id] : []),
+    ...(typeof input.prompt === 'string' && input.prompt.length > 0
+      ? ['-i', input.prompt]
+      : [])
+  ];
+}
+
+/**
  * @param {any} bead
  * @returns {string}
  */

@@ -4,7 +4,11 @@ import {
   REVIEWER_OPTION_LABELS,
   resolveExecutionSettings
 } from '../../utils/execution-defaults.js';
-import { IMPL_RUNTIMES } from '../settings-dialog/session-model.js';
+import {
+  IMPL_RUNTIMES,
+  agyWorkflowPair,
+  joinAgyWorkflowModels
+} from '../settings-dialog/session-model.js';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
@@ -30,12 +34,13 @@ export const REVIEW_STEP_MODELS = [
   'astra',
   'opus',
   'fable',
+  'neon',
   'self',
   'skip'
 ];
 
 /** `plan_review_model` options — narrower by contract: no `self`, no `opus`. */
-export const PLAN_REVIEW_MODELS = ['codex', 'astra', 'fable', 'skip'];
+export const PLAN_REVIEW_MODELS = ['codex', 'astra', 'fable', 'neon', 'skip'];
 
 /** Effort vocabulary shared by all three review steps. */
 export const REVIEW_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
@@ -407,8 +412,13 @@ export function effortsForModel(runner_catalog, model) {
   if (!runners || !model) {
     return [];
   }
-  for (const [, entry] of runners) {
+  for (const [name, entry] of runners) {
     if (Object.hasOwn(entry.models, model)) {
+      if (name === 'agy') {
+        // An agy id carries its effort (agy-runtime §3.3).
+        const pair = agyWorkflowPair(model);
+        return pair ? [pair.effort] : [];
+      }
       return effortsOf(entry, entry.models[model]);
     }
   }
@@ -484,15 +494,15 @@ export function runtimeEffortUnion(runner_catalog, runtime) {
  * @returns {{ impl_runtime: string, impl_model: string, impl_effort: string }}
  */
 export function normalizeImplTarget(target, runner_catalog) {
-  const normalized = {
+  // A pinned agy (family, effort) pair is edited as the id it came from.
+  const normalized = joinAgyWorkflowModels({
     impl_runtime: target.impl_runtime || '',
     impl_model: target.impl_model || '',
     impl_effort: target.impl_effort || ''
-  };
-  const effective_runtime =
-    normalized.impl_runtime === 'claude' || normalized.impl_runtime === 'codex'
-      ? normalized.impl_runtime
-      : null;
+  });
+  const effective_runtime = isImplRuntime(normalized.impl_runtime)
+    ? normalized.impl_runtime
+    : null;
   const model_runtime = modelRunnerOf(runner_catalog, normalized.impl_model);
   // Only an explicit `auto` runtime keeps an exact model of either provider; a
   // cleared runtime still drops the linked exact values, as it always did, so
@@ -519,7 +529,46 @@ export function normalizeImplTarget(target, runner_catalog) {
   ) {
     normalized.impl_effort = '';
   }
+  const pair = agyWorkflowPair(normalized.impl_model);
+  if (pair) {
+    normalized.impl_effort = pair.effort;
+  }
   return normalized;
+}
+
+/**
+ * A concrete implementation provider (not `auto`, not unset).
+ *
+ * @param {string} runtime
+ * @returns {boolean}
+ */
+function isImplRuntime(runtime) {
+  return runtime === 'claude' || runtime === 'codex' || runtime === 'agy';
+}
+
+/**
+ * Model groups for a workflow model slot: the agy group offers only
+ * the four families' ids, the values the server can split (agy-runtime §3.3).
+ *
+ * @param {any} runner_catalog
+ * @param {string} selected
+ * @param {string|null} [runner_filter]
+ * @returns {SelectGroup[]}
+ */
+function implModelGroups(runner_catalog, selected, runner_filter = null) {
+  const groups = modelGroups(runner_catalog, selected, runner_filter).map(
+    (group) =>
+      group.label === 'agy'
+        ? {
+            ...group,
+            options: group.options.filter((o) => agyWorkflowPair(o.value))
+          }
+        : group
+  );
+  const known = groups.some((g) => g.options.some((o) => o.value === selected));
+  return selected && !known && groups[0]?.label !== null
+    ? [incompatibleGroup(selected), ...groups]
+    : groups;
 }
 
 /**
@@ -547,10 +596,9 @@ export function execSettingRows(input) {
   const orchestration_model = effectiveOf('orchestration_model');
   const impl_model = effectiveOf('impl_model');
   const requested_runtime = effectiveOf('impl_runtime');
-  const impl_runtime =
-    requested_runtime === 'claude' || requested_runtime === 'codex'
-      ? requested_runtime
-      : null;
+  const impl_runtime = isImplRuntime(requested_runtime)
+    ? requested_runtime
+    : null;
 
   return EXEC_KEYS.flatMap((key) => {
     const selected = selectedOf(key);
@@ -563,9 +611,9 @@ export function execSettingRows(input) {
       groups = valueGroups(IMPL_RUNTIMES, selected, IMPL_RUNTIME_OPTION_LABELS);
     } else if (key === 'impl_model') {
       groups = impl_runtime
-        ? modelGroups(runner_catalog, selected, impl_runtime)
+        ? implModelGroups(runner_catalog, selected, impl_runtime)
         : requested_runtime === 'auto' || requested_runtime === ''
-          ? modelGroups(runner_catalog, selected)
+          ? implModelGroups(runner_catalog, selected)
           : selected
             ? [incompatibleGroup(selected)]
             : [];
@@ -891,9 +939,12 @@ export function execSettingsTemplate(
   default_source = '',
   execution_defaults = null
 ) {
-  const md = (effective_issue && effective_issue.metadata) || {};
-  const globals =
-    exec_defaults && typeof exec_defaults === 'object' ? exec_defaults : {};
+  const md = joinAgyWorkflowModels(
+    (effective_issue && effective_issue.metadata) || {}
+  );
+  const globals = joinAgyWorkflowModels(
+    exec_defaults && typeof exec_defaults === 'object' ? exec_defaults : {}
+  );
   /** @param {string} key */
   const selectedOf = (key) => (typeof md[key] === 'string' ? md[key] : '');
   const resolved = resolveExecutionSettings({

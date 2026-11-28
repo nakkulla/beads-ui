@@ -68,7 +68,10 @@ import {
   bindDepartureBroadcast,
   resumeLimitPolicyRebind
 } from './ws/limit-policy-settings-handlers.js';
-import { observeCodexModelList } from './ws/model-visibility-handlers.js';
+import {
+  observeAgyModelList,
+  observeCodexModelList
+} from './ws/model-visibility-handlers.js';
 import {
   notifyMonitorCatalogChanged,
   notifyMonitorRegistryChanged,
@@ -162,11 +165,12 @@ observeCodexModelList({
   pinned_names: codex_model_list.listedPinnedNames(),
   legacy_names: legacy_model_names
 });
-codex_model_list.onChange(() => {
-  observeCodexModelList({
-    pinned_names: codex_model_list.listedPinnedNames(),
-    legacy_names: legacy_model_names
-  });
+/**
+ * Push the catalog-derived views after a model list changed.
+ *
+ * @param {string} source - Log label of the list (`codex`/`agy`).
+ */
+function notifyModelListChanged(source) {
   notifyMonitorCatalogChanged();
   notifyAutoPoolCatalogChanged();
   for (const workspace of workerQueueSubscribedWorkspaces()) {
@@ -177,21 +181,40 @@ codex_model_list.onChange(() => {
       );
     } catch (err) {
       log(
-        'codex model list: worker queue push failed for %s: %o',
+        '%s model list: worker queue push failed for %s: %o',
+        source,
         workspace,
         err
       );
     }
   }
+}
+codex_model_list.onChange(() => {
+  observeCodexModelList({
+    pinned_names: codex_model_list.listedPinnedNames(),
+    legacy_names: legacy_model_names
+  });
+  notifyModelListChanged('codex');
 });
 codex_model_list.start();
 
 // The agy model list gates every agy launch (agy-runtime §3.3): the last list
 // read under the current credentials is adopted before the first dispatch,
-// then the CLI is read now and hourly. No picker reads it before Phase 4, so
-// a change notifies nothing.
+// then the CLI is read now and hourly. A change hides the new ids outside the
+// default-visible five and pushes the choices like a Codex list change.
 const agy_model_list = agyModelList();
 agy_model_list.loadPersisted();
+/**
+ * @returns {ReadonlyArray<string>|null}
+ */
+function agyListedNames() {
+  return agy_model_list.ready() ? agy_model_list.names() : null;
+}
+observeAgyModelList({ names: agyListedNames() });
+agy_model_list.onChange(() => {
+  observeAgyModelList({ names: agyListedNames() });
+  notifyModelListChanged('agy');
+});
 agy_model_list.start();
 
 // Worker queue placement judgment (UI-izba §4.2): the jev pair cache is read

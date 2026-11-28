@@ -488,6 +488,31 @@ describe('handleUpdateImplTarget', () => {
     expect(sent[0].ok).toBe(true);
   });
 
+  test('pins a chosen agy id as its family and effort (UI-ufgo)', async () => {
+    const { ws, sent } = fakeWs();
+
+    await handleUpdateImplTarget(ws, {
+      id: 'target-agy',
+      type: 'update-impl-target',
+      payload: {
+        id: 'UI-1',
+        impl_runtime: 'agy',
+        impl_model: 'gemini-4-neon-xhigh',
+        impl_effort: 'auto'
+      }
+    });
+
+    expect(runBdInWorkspace).toHaveBeenCalledWith(
+      ws,
+      buildImplTargetArgs('UI-1', {
+        impl_runtime: 'agy',
+        impl_model: 'neon',
+        impl_effort: 'xhigh'
+      })
+    );
+    expect(sent[0].ok).toBe(true);
+  });
+
   test.each([
     [{ impl_runtime: 'codex', impl_model: 'auto', impl_effort: 'auto' }],
     [{ impl_runtime: 'auto', impl_model: 'auto', impl_effort: 'auto' }],

@@ -142,6 +142,28 @@ describe('resolveExecutionSettings', () => {
     });
   });
 
+  test('resolves the neon reviewer from the generated preset', () => {
+    const rows = resolveExecutionSettings({
+      pin: { impl_review_model: 'neon' },
+      execution_defaults: {
+        supported: true,
+        schema_version: EXECUTION_DEFAULTS.schema_version,
+        session: EXECUTION_DEFAULTS
+      },
+      runner_catalog: resolveCatalog({ warn: () => {} })
+    });
+
+    expect(rows.impl_review_model).toMatchObject({
+      value: 'neon',
+      display: 'neon',
+      resolution: 'explicit'
+    });
+    expect(rows.impl_review_effort).toMatchObject({
+      value: 'xhigh',
+      resolution: 'default'
+    });
+  });
+
   test('offers runtime catalog codex names, not the pin resolver keys, as tokens', () => {
     const execution_defaults = {
       supported: true,
@@ -702,6 +724,76 @@ describe('resolveExecutionSettings', () => {
       value: 'astra',
       display: 'astra (비호환)',
       full_value: 'astra',
+      resolution: 'incompatible'
+    });
+  });
+
+  test('shows a stored agy family and effort as the listed agy id', () => {
+    const runner_catalog = resolveCatalog({
+      agy_names: ['gemini-4-neon-high', 'gemini-4-carbon-medium'],
+      warn: () => {}
+    });
+
+    const rows = resolveExecutionSettings({
+      global: { impl_runtime: 'agy', impl_model: 'neon', impl_effort: 'high' },
+      execution_defaults: {
+        supported: true,
+        schema_version: EXECUTION_DEFAULTS.schema_version,
+        session: EXECUTION_DEFAULTS
+      },
+      runner_catalog
+    });
+
+    expect(rows.impl_model).toMatchObject({
+      value: 'neon',
+      display: 'gemini-4-neon-high',
+      full_value: 'gemini-4-neon-high',
+      resolution: 'explicit'
+    });
+  });
+
+  test('shows a stored agy family with an auto effort as a valid choice', () => {
+    const runner_catalog = resolveCatalog({
+      agy_names: ['gemini-4-neon-high'],
+      warn: () => {}
+    });
+
+    const rows = resolveExecutionSettings({
+      global: { impl_runtime: 'agy', impl_model: 'neon', impl_effort: 'auto' },
+      execution_defaults: {
+        supported: true,
+        schema_version: EXECUTION_DEFAULTS.schema_version,
+        session: EXECUTION_DEFAULTS
+      },
+      runner_catalog
+    });
+
+    expect(rows.impl_model).toMatchObject({
+      value: 'neon',
+      display: 'neon',
+      resolution: 'explicit'
+    });
+  });
+
+  test('marks an agy family whose joined id the list lacks as incompatible', () => {
+    const runner_catalog = resolveCatalog({
+      agy_names: ['gemini-4-neon-high'],
+      warn: () => {}
+    });
+
+    const rows = resolveExecutionSettings({
+      global: { impl_runtime: 'agy', impl_model: 'argon', impl_effort: 'low' },
+      execution_defaults: {
+        supported: true,
+        schema_version: EXECUTION_DEFAULTS.schema_version,
+        session: EXECUTION_DEFAULTS
+      },
+      runner_catalog
+    });
+
+    expect(rows.impl_model).toMatchObject({
+      value: 'argon',
+      display: 'gemini-4-argon-low (비호환)',
       resolution: 'incompatible'
     });
   });

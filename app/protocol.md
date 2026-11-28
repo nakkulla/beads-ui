@@ -1603,9 +1603,19 @@ The workspace-global execution layer lives in `bd kv workflow_session_defaults`
 (key name, allowed keys, and the drop-and-warn rules are owned by dotfiles
 `workflow.yaml workspace_kv_defaults`; this repo is a consumer).
 
-`impl_runtime` is `auto | claude | codex`, where `auto` means the controller
-picks the provider per delegated unit at run time and beads-ui derives no
-provider from it — only an exact `impl_model` token names one.
+`impl_runtime` is `auto | claude | codex | agy`, where `auto` means the
+controller picks the provider per delegated unit at run time and beads-ui
+derives no provider from it — only an exact `impl_model` token names one.
+
+An agy workflow model (`impl_model`, `quick_fix_impl_model`) is stored as the
+pair (family, effort): a written `gemini-4-<family>-<effort>` id is split into
+`impl_model=<family>` and `impl_effort=<effort>` by `set-session-defaults`,
+`update-impl-target`, and `impl-preset-create`/`impl-preset-update`, so a preset
+apply writes the stored pair (agy-runtime §3.3). Only the four families
+`neon|carbon|argon|hydrogen` split; a different explicit effort is
+`agy_effort_conflict`, an agy id under a runtime other than `agy`/`auto` is
+`provider_model_mismatch`, and a missing runtime becomes `agy`. Readers merge
+the pair back into the id for display. The review model keys also take `neon`.
 
 - `get-session-defaults` payload: `{ root_dir? }` — replies
   `{ values: Record<string,string|boolean>, warnings: string[], worker_url }`.
@@ -1656,7 +1666,7 @@ provider from it — only an exact `impl_model` token names one.
   holds. `workflow_mode` is not a preset key in either profile. Both mutations
   validate enum membership and the runtime/model/effort triple against that
   profile's vocabulary: `general` allows `auto` for `impl_runtime`/`impl_model`,
-  `quick_fix` takes `claude|codex` and a bare catalog model token. A `fast`
+  `quick_fix` takes `claude|codex|agy` and a bare catalog model token. A `fast`
   implementation speed requires a runner whose catalog exposes that speed tier.
   Refusal reasons name the canonical key, with no profile prefix.
 - `subscribe-impl-presets` / `unsubscribe-impl-presets` payload: `{ id? }` —
@@ -1778,9 +1788,12 @@ pricing ignore it. State lives in `$XDG_STATE_HOME/bdui/model-visibility.json`.
   `ok { id, unsubscribed }`. Closing the connection drops its subscription.
 - `model-visibility-snapshot` payload:
   `{ type, id, revision, disabled_models, runners }` where `runners` is
-  `{ claude: [{ name, id }], codex: [...] }` in catalog order and
+  `{ claude: [{ name, id }], codex: [...], agy: [...] }` in catalog order (`agy`
+  lists the current account's agy model ids, empty while no list stands) and
   `disabled_models` lists only catalog names (unknown stored names are ignored
-  on read).
+  on read). An agy id outside the default-visible five is hidden the first time
+  the agy list shows it; a change of the agy list pushes a fresh snapshot to
+  every subscriber.
 - `model-visibility-set` `{ expected_revision, disabled_models }` replaces the
   whole list (duplicates are dropped). Success → `ok { snapshot }`, then the new
   snapshot is pushed to every subscriber. Rejections write nothing and carry the
