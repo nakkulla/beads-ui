@@ -7914,7 +7914,12 @@ summary.repo-ops-log-viewer__attempt-head {
 /* 헤더 사용량 리본 — 모바일 폭 맞춤 (UI-eey2 §11.1, 전 탭 공통, CSS만).
    ≤900 규칙만으로는 Claude 그룹(5h·7d·모델 창 + 배지)과 Codex 그룹이 한 줄에
    남아 뷰포트 밖으로 잘린다. ≤640에서는 리본을 헤더 아래 **전폭 두 행**으로
-   내리고, 막대는 숨기는 대신 남은 폭을 창끼리 나눠 갖게 한다. */
+   내리고, 막대는 숨기는 대신 남은 폭을 창끼리 나눠 갖게 한다.
+   창은 라벨·막대 최소폭·%보다 좁아지지 않는다 — 한 줄에 다 들어가지 않으면
+   (agy의 5h·7d·Claude·GPT 5h·Claude·GPT 7d) 같은 provider 줄 안에서 다음 줄로
+   넘긴다. 줄어들어 라벨과 %가 겹치면 어느 창의 몇 %인지 읽을 수 없다(≤900
+   규칙과 같은 이유로 축약하지 않는다). 토글은 `.op-btn`의 min-height라 넘긴
+   줄만큼 높아진다. */
 @media (max-width: 640px) {
   .usage-meter-mount {
     flex: 1 1 100%;
@@ -7931,9 +7936,10 @@ summary.repo-ops-log-viewer__attempt-head {
 
   .usage-meter__group {
     display: flex;
+    flex-wrap: wrap;
     width: 100%;
     min-width: 0;
-    gap: var(--sp-6);
+    gap: var(--sp-3) var(--sp-6);
   }
 
   .usage-meter__provider {
@@ -7942,7 +7948,7 @@ summary.repo-ops-log-viewer__attempt-head {
 
   .usage-meter__window {
     flex: 1 1 0;
-    min-width: 0;
+    min-width: max-content;
   }
 
   .usage-meter__track {

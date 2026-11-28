@@ -89,6 +89,17 @@ describe('monitor tab styles (UI-eey2)', () => {
     expect(ribbon).toMatch(/\.usage-meter__group\s*{[^}]*width:\s*100%/);
   });
 
+  test('wraps usage windows within a provider row instead of overlapping them on a ≤640px viewport', () => {
+    const block = monitorBlock();
+    const ribbon = block.slice(block.indexOf('.usage-meter-mount'));
+
+    expect(ribbon).toMatch(/\.usage-meter__group\s*{[^}]*flex-wrap:\s*wrap/);
+    expect(ribbon).toMatch(
+      /\.usage-meter__window\s*{[^}]*min-width:\s*max-content/
+    );
+    expect(ribbon).not.toMatch(/\.usage-meter__window\s*{[^}]*min-width:\s*0/);
+  });
+
   test('blurs the unfocused lanes instead of hiding them (§4.2)', () => {
     const block = monitorBlock();
     const focus = block.slice(block.indexOf('.mon.has-focus'));
