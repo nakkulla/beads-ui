@@ -341,7 +341,10 @@ describe('auto pool store agy runtime (UI-h0hwo Phase 2)', () => {
   });
 
   test('refuses every agy name while the pin carries no agy catalog', () => {
-    const store = makeStore();
+    const base = /** @type {Record<string, any>} */ (IMPLEMENTATION);
+    const model_catalog = { ...base.model_catalog };
+    delete model_catalog.agy;
+    const store = makeStore({ ...base, model_catalog });
 
     const result = store.set({
       expected_revision: 0,
