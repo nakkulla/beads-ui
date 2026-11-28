@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import pin from '../../generated/contracts/execution-defaults.json' with { type: 'json' };
+import { AGY_FAMILIES } from './agy-model-list.js';
 import {
   ACTIVE_RUNNERS,
   CODEX_FAMILY_TEMPLATES,
@@ -46,12 +47,23 @@ describe('worker/runner-catalog parity with the pinned execution defaults', () =
     }
   });
 
+  test('carries every pinned agy family in the agy family vocabulary', () => {
+    const families = pin.implementation.model_catalog.agy.families;
+
+    const known = [...AGY_FAMILIES];
+
+    expect([...families].sort()).toEqual(known.sort());
+  });
+
   test('indexes every pinned reviewer model alias', () => {
     const { model_index } = resolveCatalog();
+    const agy_families = pin.implementation.model_catalog.agy.families;
 
-    const aliases = Object.values(pin.review.reviewers).map(
-      (entry) => entry.model
-    );
+    // An agy reviewer names a family; its id (`gemini-4-<family>-<effort>`)
+    // comes from the account's `agy models` list, not the static index.
+    const aliases = Object.values(pin.review.reviewers)
+      .map((entry) => entry.model)
+      .filter((model) => !agy_families.includes(model));
 
     for (const alias of aliases) {
       expect(Object.keys(model_index), alias).toContain(alias);

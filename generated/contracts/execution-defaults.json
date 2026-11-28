@@ -19,6 +19,10 @@
       "fable": {
         "model": "fable",
         "effort": "high"
+      },
+      "neon": {
+        "model": "neon",
+        "effort": "xhigh"
       }
     },
     "runtime_transports": {
@@ -26,13 +30,22 @@
         "codex": "codex-runner-bridge",
         "astra": "codex-runner-bridge",
         "opus": "claude-agent-readonly",
-        "fable": "claude-agent-readonly"
+        "fable": "claude-agent-readonly",
+        "neon": "agy-runner"
       },
       "codex": {
         "codex": "codex-native-spawn",
         "astra": "codex-native-spawn",
         "opus": "claude-runner",
-        "fable": "claude-runner"
+        "fable": "claude-runner",
+        "neon": "agy-runner"
+      },
+      "agy": {
+        "codex": "codex-runner-bridge",
+        "astra": "codex-runner-bridge",
+        "opus": "claude-runner",
+        "fable": "claude-runner",
+        "neon": "agy-runner"
       }
     }
   },
@@ -68,6 +81,15 @@
           "luna"
         ],
         "resolve": "codex_cli_latest_v2"
+      },
+      "agy": {
+        "families": [
+          "neon",
+          "carbon",
+          "argon",
+          "hydrogen"
+        ],
+        "resolve": "agy_cli_models"
       }
     },
     "exact_model_default_effort": {
@@ -94,6 +116,11 @@
         "auto": "orchestrator-or-runtime-model-default",
         "explicit": "catalog-validated",
         "receipt": "actual-effort"
+      },
+      "implement-agy": {
+        "auto": "orchestrator-or-runtime-model-default",
+        "explicit": "catalog-validated",
+        "receipt": "actual-effort"
       }
     },
     "effort_catalog": {
@@ -109,6 +136,12 @@
         "high",
         "xhigh",
         "max"
+      ],
+      "agy": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
       ]
     },
     "runtime_transports": {
@@ -120,6 +153,10 @@
         "claude": {
           "dispatch": "implement-claude",
           "receipt": "implement-claude"
+        },
+        "agy": {
+          "dispatch": "implement-agy",
+          "receipt": "implement-agy"
         }
       },
       "claude": {
@@ -130,6 +167,24 @@
         "codex": {
           "dispatch": "implement-codex",
           "receipt": "implement-codex"
+        },
+        "agy": {
+          "dispatch": "implement-agy",
+          "receipt": "implement-agy"
+        }
+      },
+      "agy": {
+        "claude": {
+          "dispatch": "implement-claude",
+          "receipt": "implement-claude"
+        },
+        "codex": {
+          "dispatch": "implement-codex",
+          "receipt": "implement-codex"
+        },
+        "agy": {
+          "dispatch": "implement-agy",
+          "receipt": "implement-agy"
         }
       }
     },
@@ -145,6 +200,38 @@
       "implement-codex": {
         "default": "default",
         "fast": "fast"
+      }
+    },
+    "auto_pool_defaults": {
+      "claude": {
+        "models": [
+          "sonnet",
+          "opus"
+        ],
+        "effort": {
+          "min": "medium",
+          "max": "xhigh"
+        }
+      },
+      "codex": {
+        "models": [
+          "terra",
+          "sol"
+        ],
+        "effort": {
+          "min": "medium",
+          "max": "xhigh"
+        }
+      },
+      "agy": {
+        "models": [
+          "carbon",
+          "neon"
+        ],
+        "effort": {
+          "min": "medium",
+          "max": "high"
+        }
       }
     }
   }

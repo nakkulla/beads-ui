@@ -142,6 +142,28 @@ describe('resolveExecutionSettings', () => {
     });
   });
 
+  test('resolves the neon reviewer from the generated preset', () => {
+    const rows = resolveExecutionSettings({
+      pin: { impl_review_model: 'neon' },
+      execution_defaults: {
+        supported: true,
+        schema_version: EXECUTION_DEFAULTS.schema_version,
+        session: EXECUTION_DEFAULTS
+      },
+      runner_catalog: resolveCatalog({ warn: () => {} })
+    });
+
+    expect(rows.impl_review_model).toMatchObject({
+      value: 'neon',
+      display: 'neon',
+      resolution: 'explicit'
+    });
+    expect(rows.impl_review_effort).toMatchObject({
+      value: 'xhigh',
+      resolution: 'default'
+    });
+  });
+
   test('offers runtime catalog codex names, not the pin resolver keys, as tokens', () => {
     const execution_defaults = {
       supported: true,
