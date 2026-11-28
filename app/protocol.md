@@ -1788,9 +1788,12 @@ pricing ignore it. State lives in `$XDG_STATE_HOME/bdui/model-visibility.json`.
   `ok { id, unsubscribed }`. Closing the connection drops its subscription.
 - `model-visibility-snapshot` payload:
   `{ type, id, revision, disabled_models, runners }` where `runners` is
-  `{ claude: [{ name, id }], codex: [...] }` in catalog order and
+  `{ claude: [{ name, id }], codex: [...], agy: [...] }` in catalog order (`agy`
+  lists the current account's agy model ids, empty while no list stands) and
   `disabled_models` lists only catalog names (unknown stored names are ignored
-  on read).
+  on read). An agy id outside the default-visible five is hidden the first time
+  the agy list shows it; a change of the agy list pushes a fresh snapshot to
+  every subscriber.
 - `model-visibility-set` `{ expected_revision, disabled_models }` replaces the
   whole list (duplicates are dropped). Success → `ok { snapshot }`, then the new
   snapshot is pushed to every subscriber. Rejections write nothing and carry the
