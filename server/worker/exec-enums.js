@@ -617,7 +617,11 @@ export function validateExecSpeeds(settings, catalog = runtimeCatalog()) {
       prefix.endsWith('_review') && typeof token === 'string'
         ? (reviewers?.[token]?.model ?? token)
         : token;
+    // An agy family (`neon`) is no catalog model name, yet names its runner.
     const runtime =
+      (typeof model === 'string' && AGY_FAMILIES.includes(model)
+        ? 'agy'
+        : null) ||
       modelRunner(catalog, model) ||
       (prefix === 'impl' &&
       typeof settings.impl_runtime === 'string' &&

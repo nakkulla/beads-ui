@@ -46,6 +46,37 @@ import {
 } from './exec-enums.js';
 import { resolveCatalog } from './runner-catalog.js';
 
+describe('validateExecSpeeds', () => {
+  const AGY_CATALOG = resolveCatalog({
+    agy_names: ['gemini-4-neon-high'],
+    warn: () => {}
+  });
+
+  test('rejects fast for an agy family under an auto runtime', () => {
+    const settings = {
+      impl_runtime: 'auto',
+      impl_model: 'neon',
+      impl_effort: 'high',
+      impl_speed: 'fast'
+    };
+
+    const result = enums.validateExecSpeeds(settings, AGY_CATALOG);
+
+    expect(result).toEqual({ ok: false, reason: 'impl_speed_unsupported' });
+  });
+
+  test('rejects fast for the neon reviewer', () => {
+    const settings = { impl_review_model: 'neon', impl_review_speed: 'fast' };
+
+    const result = enums.validateExecSpeeds(settings, AGY_CATALOG);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'impl_review_speed_unsupported'
+    });
+  });
+});
+
 describe('validateOrchestrationPin', () => {
   test.each(['general', 'quick_fix'])(
     'rejects Claude fast and accepts Codex fast in the %s preset',
