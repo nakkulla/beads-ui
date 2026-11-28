@@ -27,8 +27,16 @@ vi.mock('../bd-effect-gate.js', async (importOriginal) => {
 
 vi.mock('../bd.js', () => ({ runBd: vi.fn(), runBdJson: vi.fn() }));
 
-/** The pinned projection's `implementation` block — no `auto_pool_defaults`. */
-const IMPLEMENTATION = loadExecutionDefaults().session?.implementation ?? null;
+/** The pinned projection's `implementation` block, `auto_pool_defaults` removed. */
+const IMPLEMENTATION = (() => {
+  const pinned = loadExecutionDefaults().session?.implementation;
+  if (!pinned) {
+    return null;
+  }
+  const implementation = /** @type {Record<string, any>} */ ({ ...pinned });
+  delete implementation.auto_pool_defaults;
+  return implementation;
+})();
 
 /** A Codex catalog with two aliases and two pinned names. */
 const CATALOG = /** @type {any} */ ({
