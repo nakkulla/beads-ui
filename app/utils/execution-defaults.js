@@ -781,7 +781,38 @@ export function resolveExecutionSettings(input) {
         rows.impl_model = result('auto', 'base', 'auto', 'auto', 'default');
       }
       const model_value = /** @type {string} */ (rows.impl_model.value);
-      if (
+      const agy_families = session.implementation?.model_catalog?.agy?.families;
+      const agy_family =
+        (runtime === null || runtime === 'agy') &&
+        Array.isArray(agy_families) &&
+        agy_families.includes(model_value);
+      if (agy_family) {
+        // The slot stores an agy (family, effort) pair; the screens edit the
+        // `gemini-4-<family>-<effort>` id it joins into (agy-runtime §3.3).
+        const effort = usableString(rows.impl_effort.value);
+        const agy_id =
+          effort !== null && effort !== 'auto'
+            ? `gemini-4-${model_value}-${effort}`
+            : null;
+        const agy_offered = runtimeModelTokens('agy', session, runner_catalog);
+        if (
+          agy_id !== null &&
+          agy_offered.length > 0 &&
+          !agy_offered.includes(agy_id)
+        ) {
+          rows.impl_model = {
+            ...incompatibleResult(rows.impl_model),
+            display: `${agy_id} (비호환)`,
+            full_value: agy_id
+          };
+        } else {
+          rows.impl_model.display = agy_id ?? model_value;
+          rows.impl_model.full_value = agy_id ?? model_value;
+          if (impl_origins.impl_model === 'quick_fix') {
+            rows.impl_model.display = `${rows.impl_model.display} (quick_fix)`;
+          }
+        }
+      } else if (
         model_value !== 'auto' &&
         offered.length > 0 &&
         !offered.includes(model_value)
