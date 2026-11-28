@@ -15785,9 +15785,57 @@ export function createScheduler(deps) {
           await observeStartup(key, record, marked || answered);
         }
       }
+      // An agy window names no `@agent_session`: its conversation id is read
+      // from the hub list, which is also its start sign beside a turn marker
+      // (agy-runtime §3.6).
+      if (record.provider === 'agy') {
+        if (record.session_id === null || startup_target) {
+          const listed =
+            typeof launcher.agySessionId === 'function'
+              ? await launcher.agySessionId(record.pane_id)
+              : {
+                  ok: /** @type {const} */ (false),
+                  error: 'agy_session_id_unavailable'
+                };
+          if (!listed.ok) {
+            log(
+              'interactive session observation failed for %s/%s: %o',
+              workspace,
+              key,
+              listed
+            );
+            if (record.session_id === null) {
+              continue;
+            }
+          } else {
+            if (listed.session_id && record.session_id === null) {
+              update(key, record, {
+                session_id: listed.session_id,
+                session_id_source: 'hub_list'
+              });
+            }
+            if (startup_target && isCurrent(key, record)) {
+              const marked =
+                (typeof pane_row.agent_running === 'string' &&
+                  pane_row.agent_running.length > 0 &&
+                  pane_row.agent_running !== '0') ||
+                (typeof pane_row.agent_attention === 'string' &&
+                  pane_row.agent_attention.length > 0);
+              await observeStartup(
+                key,
+                record,
+                Boolean(listed.session_id) || marked
+              );
+            }
+          }
+        }
+      }
       const codex_startup_target =
         startup_target && record.provider === 'codex';
-      if (record.session_id === null || codex_startup_target) {
+      if (
+        record.provider !== 'agy' &&
+        (record.session_id === null || codex_startup_target)
+      ) {
         const session = await launcher.readPaneOption(
           record.pane_id,
           '@agent_session'
@@ -15888,7 +15936,8 @@ export function createScheduler(deps) {
         }
         continue;
       }
-      if (record.provider === 'codex') {
+      // Only claude is known to take `/exit`; codex and agy windows close.
+      if (record.provider !== 'claude') {
         await kill(key, record);
       } else if (isCurrent(key, record)) {
         const result = await launcher.sendExit(record.pane_id);
@@ -18060,7 +18109,11 @@ export function createScheduler(deps) {
     if (!launcher) {
       return refuse('launcher_unavailable');
     }
-    if (runner_name !== 'claude' && runner_name !== 'codex') {
+    if (
+      runner_name !== 'claude' &&
+      runner_name !== 'codex' &&
+      runner_name !== 'agy'
+    ) {
       return refuse(`${runner_name}_unsupported`);
     }
     deps.store.updateAttempt(workspace, {
@@ -18095,7 +18148,8 @@ export function createScheduler(deps) {
         : null;
     // claude's session id is chosen HERE and recorded on the attempt, so the
     // transcript is readable from the first pass; codex names its own and the
-    // pane option fills it once observed (§4.3).
+    // pane option fills it once observed (§4.3), and agy's is read from the
+    // hub list later (agy-runtime §3.6).
     const session_id =
       resume_session_id ?? (runner_name === 'claude' ? randomUUID() : null);
     const { system_prompt, task_prompt } = applyPreamble(
@@ -18131,6 +18185,22 @@ export function createScheduler(deps) {
       catalog
     });
     const start_oid = await branchTip(repo, bead_id);
+    // The same last agy check the headless spawn makes (launchSession), read
+    // with no await before the launch: a credential change that began, or
+    // began and ended, since the dispatch gate refuses this window as the
+    // same transient refusal.
+    const gate_generation = input.agy_credential_generation;
+    if (
+      runner_name === 'agy' &&
+      (agyCredentialChangeActive() ||
+        (typeof gate_generation === 'number' &&
+          gate_generation !== agyCredentialGeneration()))
+    ) {
+      const refusal = `spawn_failed:${AGY_CREDENTIAL_CHANGE}`;
+      log('session lane launch refused for %s: %s', attempt_id, refusal);
+      await finalizeLaunchRefusal(input, refusal, false);
+      return { ok: false, reason: refusal };
+    }
     const started_at = now();
     /** @type {import('./tmux-launcher.js').LaunchOutcome} */
     let outcome;

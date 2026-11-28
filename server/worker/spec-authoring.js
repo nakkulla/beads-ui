@@ -17,6 +17,7 @@ import { fillSpecAuthoringEntry } from './direction-inquiry.js';
 import { queryForeignBlockerStatus } from './foreign-blocker-status.js';
 import { createNotifier } from './notify.js';
 import { emitQueueChanged } from './queue-events.js';
+import { agyConversationArgs } from './runner/agy.js';
 import { UNKNOWN_RUNNER } from './runner/index.js';
 import { resolveSessionLaunchOptions } from './session-launch-accounts.js';
 import {
@@ -413,7 +414,7 @@ export function createSpecAuthoring(deps) {
       (deps.conversationSettings || getConversationSettings)(),
       inherited
     );
-    if (runner !== 'claude' && runner !== 'codex') {
+    if (runner !== 'claude' && runner !== 'codex' && runner !== 'agy') {
       return refused(UNKNOWN_RUNNER);
     }
     const accounts = await resolveSessionLaunchOptions(
@@ -473,7 +474,13 @@ export function createSpecAuthoring(deps) {
       cwd: root,
       runner,
       placement: automatic ? 'inquiry' : 'user',
-      commandArgs: session_id ? ['--session-id', session_id, block] : [block]
+      // agy takes its first input through `-i` and, like codex, names its own
+      // session id, read later (agy-runtime §3.6).
+      commandArgs: session_id
+        ? ['--session-id', session_id, block]
+        : runner === 'agy'
+          ? agyConversationArgs({ prompt: block })
+          : [block]
     });
     if (outcome.session === 'launched') {
       const at = now();

@@ -43487,6 +43487,134 @@ describe('session lane (UI-lbm5)', () => {
     });
   });
 
+  describe('agy session lane (UI-ufgo Phase 4)', () => {
+    const AGY_LANE_MODEL = 'gemini-4-neon-high';
+
+    /**
+     * An injected agy model list holding one id.
+     *
+     * @param {{ moved?: boolean }} [options] - Whether the credential
+     * fingerprint moved before the dispatch read it.
+     */
+    function laneAgyModels(options = {}) {
+      let ready = true;
+      return {
+        names: () => (ready ? [AGY_LANE_MODEL] : []),
+        ready: () => ready,
+        revision: () => 1,
+        status: () => ({ source: 'list', read_at: 1 }),
+        checkCredentials: vi.fn(() => {
+          if (options.moved === true) {
+            ready = false;
+          }
+          return options.moved === true;
+        }),
+        quota: vi.fn(async () => ({ state: 'ok' })),
+        stop: () => {}
+      };
+    }
+
+    /**
+     * @param {ReturnType<typeof laneAgyModels>} models
+     * @param {Record<string, any>} [extra]
+     */
+    function agyLaneEnv(models, extra = {}) {
+      __setAgyModelListForTest(/** @type {any} */ (models));
+      __resetRuntimeCatalogForTest();
+      return laneEnv({
+        config: {
+          S1: { labels: ['worker-ineligible'], model: AGY_LANE_MODEL }
+        },
+        extra: { agyModels: models, ...extra }
+      });
+    }
+
+    afterEach(() => {
+      endAgyCredentialChange();
+      __setAgyModelListForTest(null);
+      __resetRuntimeCatalogForTest();
+    });
+
+    test('opens the session lane on agy with the model and the first input', async () => {
+      const env = agyLaneEnv(laneAgyModels());
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const input = env.launchInput();
+      expect(env.runner.spawnOrder).toEqual([]);
+      expect(input.runner).toBe('agy');
+      expect(input.commandArgs.slice(0, 2)).toEqual([
+        '--model',
+        AGY_LANE_MODEL
+      ]);
+      expect(input.commandArgs.at(-2)).toBe('-i');
+      expect(env.laneAttempt('S1')).toMatchObject({
+        status: 'running',
+        exec: 'session',
+        runner: 'agy',
+        session_id: null
+      });
+      expect(env.laneRecord('S1')).toMatchObject({
+        provider: 'agy',
+        session_id: null,
+        session_id_source: null
+      });
+    });
+
+    test('captures the agy conversation id from the hub list after the launch', async () => {
+      const env = agyLaneEnv(laneAgyModels());
+      Object.assign(env.launcher, {
+        agySessionId: vi.fn(async () => ({ ok: true, session_id: 'conv-1' }))
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.launcher.readPaneOption).not.toHaveBeenCalledWith(
+        '%7',
+        '@agent_session'
+      );
+      expect(env.laneRecord('S1')).toMatchObject({
+        session_id: 'conv-1',
+        session_id_source: 'hub_list'
+      });
+    });
+
+    test('defers an agy run whose credential fingerprint moved after a conversation opened', async () => {
+      const env = agyLaneEnv(laneAgyModels({ moved: true }));
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.launcher.launch).not.toHaveBeenCalled();
+      expect(Object.values(env.store.snapshot(WS).attempts)).toEqual([]);
+      expect(env.store.snapshot(WS).admission.S1).toMatchObject({
+        reason: 'agy_model_list_unavailable'
+      });
+    });
+
+    test('retries the agy session lane when a credential change began after the gate', async () => {
+      const env = agyLaneEnv(laneAgyModels());
+      const add = env.worktree.add.getMockImplementation();
+      env.worktree.add.mockImplementationOnce(
+        async (/** @type {any} */ input) => {
+          beginAgyCredentialChange();
+          return /** @type {any} */ (add)(input);
+        }
+      );
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.launcher.launch).not.toHaveBeenCalled();
+      expect(Object.values(env.store.snapshot(WS).attempts)).toMatchObject([
+        { status: 'retry_wait', cause: 'spawn_failed:agy_credential_change' }
+      ]);
+    });
+  });
+
   describe('liveness', () => {
     test('keeps a live session-lane attempt without a pid running across reconcile', async () => {
       const env = laneEnv();
