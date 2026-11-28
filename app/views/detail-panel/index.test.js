@@ -169,7 +169,7 @@ test('shows both owner actions beside completing external feedback', () => {
   expect(feedback?.textContent).toContain(
     '원래 세션이 열려 있어 새로 열지 않았습니다'
   );
-  expect(feedback?.textContent).toContain('tmux dev:@1.%7');
+  expect(feedback?.textContent).toContain('대화 세션 창 dev:@1.%7');
   expect(feedback?.textContent).toContain('마지막 확인');
   expect(buttons.map((button) => button.textContent?.trim())).toEqual([
     '원래 창으로 이동',
@@ -262,7 +262,9 @@ test('renders the live conversation resolution in the detail body', () => {
 
   const text = mount.querySelector('.detail-external-wait')?.textContent;
 
-  expect(text).toContain('[세션에서 이어가기]로 맥의 tmux 창을 앞으로 불러');
+  expect(text).toContain(
+    '[세션에서 이어가기]로 맥의 대화 세션 창을 앞으로 불러'
+  );
   expect(text).not.toContain('사유 자체의 해결 문장');
 });
 

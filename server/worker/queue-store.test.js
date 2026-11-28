@@ -361,6 +361,7 @@ describe('interactive session persistence', () => {
     expect(sessions).toEqual({
       'B1:resolve': {
         ...record(),
+        mux: 'tmux',
         session_id: null,
         session_id_source: null,
         mode: null,
@@ -382,6 +383,35 @@ describe('interactive session persistence', () => {
         conversation: null
       }
     });
+  });
+
+  test('keeps the hub multiplexer name through a cold load', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        interactive_sessions: {
+          x: record({ pane_id: 'wR:p2', mux: 'herdr' })
+        }
+      })
+    );
+
+    const sessions = createQueueStore().load(WS).interactive_sessions;
+
+    expect(sessions['B1:resolve']).toMatchObject({
+      pane_id: 'wR:p2',
+      mux: 'herdr'
+    });
+  });
+
+  test('reads a record without the multiplexer name as tmux', () => {
+    const store = createQueueStore();
+
+    store.recordInteractiveSession(WS, record());
+
+    expect(store.snapshot(WS).interactive_sessions['B1:resolve'].mux).toBe(
+      'tmux'
+    );
   });
 
   test('keeps an agy session-lane record whose id the hub list supplied', () => {

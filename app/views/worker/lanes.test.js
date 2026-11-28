@@ -159,7 +159,7 @@ describe('session-lane startup wait line (UI-ahzh)', () => {
       mount
         .querySelector('.rtile__activity--session-lane')
         ?.getAttribute('title')
-    ).toBe('tmux 창에서 선택해야 세션이 시작됩니다');
+    ).toBe('대화 세션 창에서 선택해야 세션이 시작됩니다');
   });
 
   test('draws the conversation word when there is no startup wait', () => {
@@ -9508,7 +9508,7 @@ describe('해결 줄 (UI-9w5l §3.3)', () => {
     );
 
     expect(popupLines()[0]).toBe(
-      '해결 — [세션에서 이어가기]로 맥의 tmux 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다'
+      '해결 — [세션에서 이어가기]로 맥의 대화 세션 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다'
     );
   });
 

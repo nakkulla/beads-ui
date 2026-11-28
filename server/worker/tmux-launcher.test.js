@@ -16,52 +16,129 @@ import {
   INQUIRY_PANE_MARKER,
   RESOLVE_PANE_MARKER,
   SESSION_LANE_PANE_MARKER,
+  SPEC_AUTHORING_PANE_MARKER,
   createTmuxLauncher,
   defaultResolveRunner,
-  markerWrapper,
-  paneFormatExtended,
+  muxOf,
   withLaunchFlags
 } from './tmux-launcher.js';
 
 /**
- * Render the requested tmux format with C-locale TAB sanitization.
+ * One row of the hub `windows` answer.
  *
- * @param {string} format
- * @param {Record<string, string>[]} panes
+ * @param {string} marker
+ * @param {string} key
+ * @param {Record<string, unknown>} [fields]
  */
-function renderPanes(format, panes) {
-  return panes
-    .map(
-      (pane) =>
-        format
-          .replace(/#\{([^}]+)\}/g, (_, field) => pane[field] ?? '')
-          .replaceAll('\t', '_') + '\n'
-    )
-    .join('');
+function hubWindow(marker, key, fields = {}) {
+  return {
+    marker,
+    value: key,
+    markers: { [marker]: key },
+    pane: '%1',
+    window: '@1',
+    tmux_session: 'hub',
+    dead: false,
+    window_name: 'window',
+    cwd: '/repo',
+    running: false,
+    attention: null,
+    runtime: 'claude',
+    session_id: null,
+    mux: 'tmux',
+    ...fields
+  };
 }
 
-describe('tmux-launcher C-locale pane listing', () => {
-  test.each(['', 'UI-gcf6', 'foreign:rig:UI-gcf6'])(
+/**
+ * A launcher whose only boundary is a hub that answers every call with one
+ * scripted reply.
+ *
+ * @param {Parameters<typeof hubReply>[0]|((args: string[]) => ReturnType<typeof hubReply>)} reply
+ */
+function hubLauncher(reply) {
+  const runSessionHub = vi.fn(async (/** @type {string[]} */ args) =>
+    typeof reply === 'function' ? reply(args) : hubReply(reply)
+  );
+  return { launcher: createTmuxLauncher({ runSessionHub }), runSessionHub };
+}
+
+describe('hub pane liveness', () => {
+  test('asks the pane backend with the marker and maps the answer', async () => {
+    const { launcher, runSessionHub } = hubLauncher({ alive: 'dead' });
+
+    const alive = await launcher.paneAlive('%26', {
+      marker: RESOLVE_PANE_MARKER,
+      key: 'UI-1'
+    });
+
+    expect(alive).toBe('dead');
+    expect(runSessionHub).toHaveBeenCalledExactlyOnceWith([
+      'alive',
+      '--pane',
+      '%26',
+      '--marker-option',
+      RESOLVE_PANE_MARKER,
+      '--marker-value',
+      'UI-1'
+    ]);
+  });
+
+  test.each(['alive', 'unknown'])(
+    'passes the %s answer through',
+    async (answer) => {
+      const { launcher } = hubLauncher({ alive: answer });
+
+      const alive = await launcher.paneAlive('%1', {
+        marker: RESOLVE_PANE_MARKER,
+        key: 'UI-1'
+      });
+
+      expect(alive).toBe(answer);
+    }
+  );
+
+  test('reads a hub error or a stray answer as unknown', async () => {
+    const failing = hubLauncher(() =>
+      hubReply({ code: 'tmux_unavailable' }, 3)
+    );
+    const stray = hubLauncher({ alive: 'maybe' });
+    const target = { marker: RESOLVE_PANE_MARKER, key: 'UI-1' };
+
+    const results = await Promise.all([
+      failing.launcher.paneAlive('%1', target),
+      stray.launcher.paneAlive('%1', target)
+    ]);
+
+    expect(results).toEqual(['unknown', 'unknown']);
+  });
+
+  test('reads a missing pane id or target as unknown without asking the hub', async () => {
+    const { launcher, runSessionHub } = hubLauncher({ alive: 'dead' });
+
+    const results = await Promise.all([
+      launcher.paneAlive(null, { marker: RESOLVE_PANE_MARKER, key: 'UI-1' }),
+      launcher.paneAlive('%1', null)
+    ]);
+
+    expect(results).toEqual(['unknown', 'unknown']);
+    expect(runSessionHub).not.toHaveBeenCalled();
+  });
+});
+
+describe('hub window listing', () => {
+  test.each(['UI-gcf6', 'foreign:rig:UI-gcf6'])(
     'preserves marker value %j and pane liveness',
     async (key) => {
-      const launcher = createTmuxLauncher({
-        runTmux: async (args) => ({
-          code: 0,
-          stdout: renderPanes(args[3], [
-            {
-              session_name: 'bdui-inquiry',
-              pane_id: '%1',
-              pane_dead: '0',
-              [INQUIRY_PANE_MARKER]: key
-            },
-            {
-              session_name: 'other_session',
-              pane_id: '%2',
-              pane_dead: '1'
-            }
-          ]),
-          stderr: ''
-        })
+      const { launcher } = hubLauncher({
+        windows: [
+          hubWindow(INQUIRY_PANE_MARKER, key, { tmux_session: 'bdui-inquiry' }),
+          hubWindow(INQUIRY_PANE_MARKER, 'UI-dead', {
+            pane: '%2',
+            dead: true,
+            tmux_session: 'other_session'
+          })
+        ]
       });
 
       const result = await launcher.listPanes(INQUIRY_PANE_MARKER);
@@ -69,12 +146,226 @@ describe('tmux-launcher C-locale pane listing', () => {
       expect(result).toEqual({
         ok: true,
         rows: [
-          { session: 'bdui-inquiry', pane: '%1', dead: '0', key },
-          { session: 'other_session', pane: '%2', dead: '1', key: '' }
+          {
+            session: 'bdui-inquiry',
+            pane: '%1',
+            dead: '0',
+            key,
+            mux: 'tmux'
+          },
+          {
+            session: 'other_session',
+            pane: '%2',
+            dead: '1',
+            key: 'UI-dead',
+            mux: 'tmux'
+          }
         ]
       });
     }
   );
+
+  test('asks the hub for the marker with one windows call', async () => {
+    const { launcher, runSessionHub } = hubLauncher({ windows: [] });
+
+    await launcher.listPanes(RESOLVE_PANE_MARKER);
+
+    expect(runSessionHub).toHaveBeenCalledExactlyOnceWith([
+      'windows',
+      '--marker',
+      RESOLVE_PANE_MARKER
+    ]);
+  });
+
+  test('answers every marker asked in one tick with a single windows call', async () => {
+    const { launcher, runSessionHub } = hubLauncher({
+      windows: [
+        hubWindow(INQUIRY_PANE_MARKER, 'UI-1', { pane: '%1' }),
+        hubWindow(RESOLVE_PANE_MARKER, 'UI-2', { pane: '%2' })
+      ]
+    });
+
+    const [inquiry, resolve, spec] = await Promise.all([
+      launcher.listPanes(INQUIRY_PANE_MARKER),
+      launcher.listPanesExtended(RESOLVE_PANE_MARKER),
+      launcher.listPanes(SPEC_AUTHORING_PANE_MARKER)
+    ]);
+
+    expect(runSessionHub).toHaveBeenCalledExactlyOnceWith([
+      'windows',
+      '--marker',
+      INQUIRY_PANE_MARKER,
+      '--marker',
+      RESOLVE_PANE_MARKER,
+      '--marker',
+      SPEC_AUTHORING_PANE_MARKER
+    ]);
+    expect(inquiry).toMatchObject({ ok: true, rows: [{ key: 'UI-1' }] });
+    expect(resolve).toMatchObject({ ok: true, rows: [{ key: 'UI-2' }] });
+    expect(spec).toEqual({ ok: true, rows: [] });
+  });
+
+  test('fails every asker of one batch when the hub call fails', async () => {
+    const { launcher } = hubLauncher(() =>
+      hubReply({ code: 'tmux_unavailable' }, 3)
+    );
+
+    const results = await Promise.all([
+      launcher.listPanes(INQUIRY_PANE_MARKER),
+      launcher.listPanesExtended(RESOLVE_PANE_MARKER)
+    ]);
+
+    expect(results).toEqual([
+      { ok: false, error: 'tmux_unavailable' },
+      { ok: false, error: 'tmux_unavailable' }
+    ]);
+  });
+
+  test('names a window the hub left unnamed by its marker value', async () => {
+    const { launcher } = hubLauncher({
+      windows: [
+        hubWindow(RESOLVE_PANE_MARKER, 'UI-nm1', {
+          window: '@7',
+          window_name: null
+        })
+      ]
+    });
+
+    const result = await launcher.listPanesExtended(RESOLVE_PANE_MARKER);
+
+    expect(result).toMatchObject({
+      ok: true,
+      rows: [{ key: 'UI-nm1', window: 'UI-nm1' }]
+    });
+  });
+
+  test('reads a reachable hub with no marked window as an empty list', async () => {
+    const { launcher } = hubLauncher({ windows: [] });
+
+    const result = await launcher.listPanes(INQUIRY_PANE_MARKER);
+
+    expect(result).toEqual({ ok: true, rows: [] });
+  });
+
+  test('reads a failed lookup as a failure, never as an empty list', async () => {
+    const { launcher } = hubLauncher(() =>
+      hubReply({ code: 'tmux_unavailable' }, 3)
+    );
+
+    const result = await launcher.listPanes(INQUIRY_PANE_MARKER);
+
+    expect(result).toEqual({ ok: false, error: 'tmux_unavailable' });
+  });
+
+  test('fails the listing on an answer without a windows array', async () => {
+    const { launcher } = hubLauncher({ windows: 'none' });
+
+    const result = await launcher.listPanes(INQUIRY_PANE_MARKER);
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'launch_failed:session_hub_invalid_response'
+    });
+  });
+
+  test('reports a thrown hub call as a failed observation', async () => {
+    const launcher = createTmuxLauncher({
+      runSessionHub: async () => {
+        throw new Error('offline');
+      },
+      log: () => {}
+    });
+
+    const result = await launcher.listPanes(INQUIRY_PANE_MARKER);
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'launch_failed:session_hub_unavailable'
+    });
+  });
+
+  test.each(['%9', 'wR:p2', '7', 'w-1:3'])(
+    'keeps the non-tmux pane handle %j and its backend',
+    async (pane) => {
+      const { launcher } = hubLauncher({
+        windows: [
+          hubWindow(INQUIRY_PANE_MARKER, 'UI-1', { pane, mux: 'herdr' })
+        ]
+      });
+
+      const result = await launcher.listPanes(INQUIRY_PANE_MARKER);
+
+      expect(result).toMatchObject({
+        ok: true,
+        rows: [{ pane, mux: 'herdr' }]
+      });
+    }
+  );
+
+  test('reads a row without a mux field as tmux', async () => {
+    const row = hubWindow(INQUIRY_PANE_MARKER, 'UI-1');
+    delete (/** @type {Record<string, unknown>} */ (row).mux);
+    const { launcher } = hubLauncher({ windows: [row] });
+
+    const result = await launcher.listPanes(INQUIRY_PANE_MARKER);
+
+    expect(result).toMatchObject({ ok: true, rows: [{ mux: 'tmux' }] });
+  });
+
+  test.each([
+    [undefined, 'tmux'],
+    ['', 'tmux'],
+    [null, 'tmux'],
+    ['tmux', 'tmux'],
+    ['herdr', 'herdr']
+  ])('reads backend value %j as %j', (value, expected) => {
+    expect(muxOf(value)).toBe(expected);
+  });
+
+  test('fails the listing when a marked row lacks its pane', async () => {
+    const { launcher } = hubLauncher({
+      windows: [
+        hubWindow(INQUIRY_PANE_MARKER, 'UI-1'),
+        hubWindow(INQUIRY_PANE_MARKER, 'UI-2', { pane: '' })
+      ]
+    });
+
+    const result = await launcher.listPanes(INQUIRY_PANE_MARKER);
+
+    expect(result).toMatchObject({ ok: false });
+  });
+
+  test('skips a window that carries no marker value', async () => {
+    const { launcher } = hubLauncher({
+      windows: [
+        hubWindow(INQUIRY_PANE_MARKER, 'UI-1'),
+        { ...hubWindow(INQUIRY_PANE_MARKER, ''), pane: '%2', markers: {} }
+      ]
+    });
+
+    const result = await launcher.listPanes(INQUIRY_PANE_MARKER);
+
+    expect(result).toMatchObject({ ok: true, rows: [{ pane: '%1' }] });
+  });
+
+  test('probes reachability with a windows call that names no marker', async () => {
+    const { launcher, runSessionHub } = hubLauncher({ windows: [] });
+
+    const result = await launcher.probe();
+
+    expect(result).toEqual({ ok: true });
+    expect(runSessionHub).toHaveBeenCalledExactlyOnceWith(['windows']);
+  });
+
+  test('reports an unreachable hub from the probe', async () => {
+    const { launcher } = hubLauncher(() =>
+      hubReply({ code: 'tmux_unavailable' }, 3)
+    );
+
+    const result = await launcher.probe();
+
+    expect(result).toEqual({ ok: false, error: 'tmux_unavailable' });
+  });
 });
 
 /** @type {string[]} */
@@ -82,41 +373,17 @@ const temp_dirs = [];
 let test_dir = '';
 let codex_home = '';
 
-describe('tmux interactive session inspection and exit', () => {
-  /**
-   * Build a launcher whose tmux renders the requested extended format.
-   *
-   * @param {string} marker
-   * @param {Record<string, string>[]} panes
-   */
-  function extendedLauncher(marker, panes) {
-    return createTmuxLauncher({
-      runTmux: async (args) => ({
-        code: 0,
-        stdout: renderPanes(
-          args[3],
-          panes.map(({ key = '', ...fields }) => ({
-            session_name: 'hub',
-            window_name: 'window',
-            pane_dead: '0',
-            ...fields,
-            [marker]: key
-          }))
-        ),
-        stderr: ''
-      })
-    });
-  }
-
+describe('hub window facts', () => {
   test('keeps runtime-like path segments inside the cwd', async () => {
-    const launcher = extendedLauncher(RESOLVE_PANE_MARKER, [
-      {
-        pane_id: '%9',
-        pane_current_path: '/repo:claude:work::tree',
-        '@agent_runtime': 'codex',
-        key: 'foreign:UI-1'
-      }
-    ]);
+    const { launcher } = hubLauncher({
+      windows: [
+        hubWindow(RESOLVE_PANE_MARKER, 'foreign:UI-1', {
+          pane: '%9',
+          cwd: '/repo:claude:work::tree',
+          runtime: 'codex'
+        })
+      ]
+    });
 
     const result = await launcher.listPanesExtended(RESOLVE_PANE_MARKER);
 
@@ -132,17 +399,17 @@ describe('tmux interactive session inspection and exit', () => {
     });
   });
 
-  test('exposes the agent running and attention pane options', async () => {
-    const launcher = extendedLauncher(RESOLVE_PANE_MARKER, [
-      {
-        pane_id: '%9',
-        '@agent_running': '1',
-        '@agent_attention': 'question',
-        pane_current_path: '/repo:a',
-        '@agent_runtime': 'codex',
-        key: 'UI-1'
-      }
-    ]);
+  test('exposes the agent running and attention facts', async () => {
+    const { launcher } = hubLauncher({
+      windows: [
+        hubWindow(RESOLVE_PANE_MARKER, 'UI-1', {
+          pane: '%9',
+          running: true,
+          attention: 'question',
+          session_id: 'sess-1'
+        })
+      ]
+    });
 
     const result = await launcher.listPanesExtended(RESOLVE_PANE_MARKER);
 
@@ -152,118 +419,29 @@ describe('tmux interactive session inspection and exit', () => {
         {
           agent_running: '1',
           agent_attention: 'question',
-          cwd: '/repo:a',
-          agent_runtime: 'codex',
-          key: 'UI-1'
+          session_id: 'sess-1'
         }
       ]
-    });
-  });
-
-  test('keeps a pane whose runtime marker is agy', async () => {
-    const launcher = extendedLauncher(SESSION_LANE_PANE_MARKER, [
-      {
-        session_name: 'hub',
-        window_name: 'dotfiles-uop05',
-        pane_id: '%26',
-        '@agent_running': '1',
-        pane_current_path: '/repo',
-        '@agent_runtime': 'agy',
-        key: 'dotfiles-uop05'
-      },
-      { pane_id: '%27', pane_current_path: '/repo' }
-    ]);
-
-    const result = await launcher.listPanesExtended(SESSION_LANE_PANE_MARKER);
-
-    expect(result).toMatchObject({
-      ok: true,
-      rows: [
-        { pane: '%26', agent_runtime: 'agy', key: 'dotfiles-uop05' },
-        { pane: '%27', agent_runtime: '', key: '' }
-      ]
-    });
-  });
-
-  test.each([
-    ['/repo', 'unknown-runtime'],
-    ['/repo:claude:work', 'unknown-runtime'],
-    ['/repo::work', 'unknown-runtime']
-  ])(
-    'fails the listing when a marked row with cwd %j has runtime %j',
-    async (pane_current_path, agent_runtime) => {
-      const launcher = extendedLauncher(SESSION_LANE_PANE_MARKER, [
-        {
-          pane_id: '%1',
-          pane_current_path: '/repo',
-          '@agent_runtime': 'claude',
-          key: 'UI-1'
-        },
-        {
-          pane_id: '%2',
-          pane_current_path,
-          '@agent_runtime': agent_runtime,
-          key: 'UI-2'
-        }
-      ]);
-
-      const result = await launcher.listPanesExtended(SESSION_LANE_PANE_MARKER);
-
-      expect(result).toMatchObject({ ok: false });
-    }
-  );
-
-  test('skips an unparsed row that carries no marker value', async () => {
-    const launcher = extendedLauncher(SESSION_LANE_PANE_MARKER, [
-      {
-        pane_id: '%1',
-        pane_current_path: '/repo',
-        '@agent_runtime': 'claude',
-        key: 'UI-1'
-      },
-      {
-        pane_id: '%2',
-        pane_current_path: '/repo:claude:work',
-        '@agent_runtime': 'unknown-runtime'
-      }
-    ]);
-
-    const result = await launcher.listPanesExtended(SESSION_LANE_PANE_MARKER);
-
-    expect(result).toMatchObject({
-      ok: true,
-      rows: [{ pane: '%1', key: 'UI-1' }]
     });
   });
 
   test.each(['claude', 'codex', 'agy', 'hermes', ''])(
     'preserves cwd and marker colons for runtime %j',
-    async (agent_runtime) => {
-      const runTmux = vi.fn(async (/** @type {string[]} */ args) => ({
-        code: 0,
-        stdout: renderPanes(args[3], [
-          {
-            session_name: 'inquiry',
+    async (runtime) => {
+      const { launcher } = hubLauncher({
+        windows: [
+          hubWindow(RESOLVE_PANE_MARKER, 'foreign:rig:UI-1', {
+            tmux_session: 'inquiry',
             window_name: 'resolve-UI-1',
-            pane_id: '%9',
-            pane_dead: '0',
-            pane_current_path: '/repo:with:colons',
-            '@agent_runtime': agent_runtime,
-            [RESOLVE_PANE_MARKER]: 'foreign:rig:UI-1'
-          }
-        ]),
-        stderr: ''
-      }));
-      const launcher = createTmuxLauncher({ runTmux });
+            pane: '%9',
+            cwd: '/repo:with:colons',
+            runtime
+          })
+        ]
+      });
 
       const result = await launcher.listPanesExtended(RESOLVE_PANE_MARKER);
 
-      expect(runTmux).toHaveBeenCalledExactlyOnceWith([
-        'list-panes',
-        '-a',
-        '-F',
-        paneFormatExtended(RESOLVE_PANE_MARKER)
-      ]);
       expect(result).toEqual({
         ok: true,
         rows: [
@@ -275,101 +453,136 @@ describe('tmux interactive session inspection and exit', () => {
             agent_running: '',
             agent_attention: '',
             cwd: '/repo:with:colons',
-            agent_runtime,
-            key: 'foreign:rig:UI-1'
+            agent_runtime: runtime,
+            key: 'foreign:rig:UI-1',
+            session_id: null,
+            mux: 'tmux'
           }
         ]
       });
     }
   );
 
-  test.each([' session-id \n', '', '  \n'])(
-    'reads optional pane value %j',
-    async (stdout) => {
-      const runTmux = vi.fn(async () => ({ code: 0, stdout, stderr: '' }));
-      const launcher = createTmuxLauncher({ runTmux });
-
-      const result = await launcher.readPaneOption('%9', '@agent_session');
-
-      expect(runTmux).toHaveBeenCalledExactlyOnceWith([
-        'show-options',
-        '-pqv',
-        '-t',
-        '%9',
-        '@agent_session'
-      ]);
-      expect(result).toEqual({ ok: true, value: stdout.trim() || null });
-    }
-  );
-
-  test('reports a thrown option read as a failed observation', async () => {
-    const launcher = createTmuxLauncher({
-      runTmux: async () => {
-        throw new Error('offline');
-      }
+  test('keeps a window whose runtime is agy', async () => {
+    const { launcher } = hubLauncher({
+      windows: [
+        hubWindow(SESSION_LANE_PANE_MARKER, 'dotfiles-uop05', {
+          window_name: 'dotfiles-uop05',
+          pane: '%26',
+          running: true,
+          runtime: 'agy'
+        })
+      ]
     });
 
-    const result = await launcher.readPaneOption('%9', '@agent_session');
+    const result = await launcher.listPanesExtended(SESSION_LANE_PANE_MARKER);
 
-    expect(result).toEqual({ ok: false, error: 'Error: offline' });
+    expect(result).toMatchObject({
+      ok: true,
+      rows: [{ pane: '%26', agent_runtime: 'agy', key: 'dotfiles-uop05' }]
+    });
+  });
+});
+
+describe('hub window close', () => {
+  const TARGET = { marker: INQUIRY_PANE_MARKER, key: 'UI-1' };
+
+  test('asks the hub to exit the marked window and wait for it', async () => {
+    const { launcher, runSessionHub } = hubLauncher({
+      found: true,
+      closed: true,
+      exited: true
+    });
+
+    const result = await launcher.sendExit('%9', TARGET);
+
+    expect(result).toEqual({ ok: true });
+    expect(runSessionHub).toHaveBeenCalledExactlyOnceWith([
+      'close',
+      '--marker-option',
+      INQUIRY_PANE_MARKER,
+      '--marker-value',
+      'UI-1',
+      '--wait',
+      '10'
+    ]);
   });
 
-  test.each(['option', 'capture'])(
-    'reports a nonzero %s read as a failed observation',
+  test('closes the marked window at once without a wait', async () => {
+    const { launcher, runSessionHub } = hubLauncher({
+      found: true,
+      closed: true
+    });
+
+    const result = await launcher.killWindow('inquiry', 'resolve-UI-1', TARGET);
+
+    expect(result).toEqual({ ok: true });
+    expect(runSessionHub).toHaveBeenCalledExactlyOnceWith([
+      'close',
+      '--marker-option',
+      INQUIRY_PANE_MARKER,
+      '--marker-value',
+      'UI-1',
+      '--wait',
+      '0'
+    ]);
+  });
+
+  test.each(['exit', 'kill'])(
+    'refuses a %s without a marker target',
     async (operation) => {
-      const launcher = createTmuxLauncher({
-        runTmux: async () => ({ code: 1, stdout: '', stderr: 'missing pane' })
-      });
+      const { launcher, runSessionHub } = hubLauncher({ found: true });
 
       const result =
-        operation === 'option'
-          ? await launcher.readPaneOption('%9', '@agent_running')
-          : await launcher.capturePaneTail('%9');
+        operation === 'exit'
+          ? await launcher.sendExit('%9')
+          : await launcher.killWindow('inquiry', 'resolve-UI-1');
 
-      expect(result).toEqual({ ok: false, error: 'missing pane' });
+      expect(result).toEqual({ ok: false, error: 'window_target_missing' });
+      expect(runSessionHub).not.toHaveBeenCalled();
     }
   );
 
-  test('types exit literally before submitting Enter', async () => {
-    const runTmux = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
-    const launcher = createTmuxLauncher({ runTmux });
+  test('reports a window the hub no longer finds', async () => {
+    const { launcher } = hubLauncher({ found: false });
 
-    const result = await launcher.sendExit('%9');
+    const result = await launcher.killWindow('inquiry', 'resolve-UI-1', TARGET);
 
-    expect(result).toEqual({ ok: true });
-    expect(runTmux.mock.calls).toEqual([
-      [['send-keys', '-t', '%9', '-l', '/exit']],
-      [['send-keys', '-t', '%9', 'Enter']]
-    ]);
+    expect(result).toEqual({ ok: false, error: 'window_not_found' });
   });
 
-  test('does not submit Enter when literal exit input fails', async () => {
-    const runTmux = vi.fn(async () => ({
-      code: 1,
-      stdout: '',
-      stderr: 'missing pane'
-    }));
-    const launcher = createTmuxLauncher({ runTmux });
+  test('passes a hub refusal through as a failed close', async () => {
+    const { launcher } = hubLauncher(() =>
+      hubReply({ code: 'tmux_unavailable' }, 3)
+    );
 
-    const result = await launcher.sendExit('%9');
+    const result = await launcher.sendExit('%9', TARGET);
 
-    expect(result).toEqual({ ok: false, error: 'missing pane' });
-    expect(runTmux).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ ok: false, error: 'tmux_unavailable' });
   });
 
-  test('kills the selected session window', async () => {
-    const runTmux = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
-    const launcher = createTmuxLauncher({ runTmux });
+  test.each(['exit', 'kill'])('reports a thrown %s call', async (operation) => {
+    const launcher = createTmuxLauncher({
+      runSessionHub: async () => {
+        throw new Error('offline');
+      },
+      log: () => {}
+    });
 
-    const result = await launcher.killWindow('inquiry', 'resolve-UI-1');
+    const result =
+      operation === 'exit'
+        ? await launcher.sendExit('%9', TARGET)
+        : await launcher.killWindow('inquiry', 'resolve-UI-1', TARGET);
 
-    expect(result).toEqual({ ok: true });
-    expect(runTmux).toHaveBeenCalledExactlyOnceWith([
-      'kill-window',
-      '-t',
-      'inquiry:resolve-UI-1'
-    ]);
+    expect(result).toEqual({
+      ok: false,
+      error: 'launch_failed:session_hub_unavailable'
+    });
   });
+});
+
+describe('hub window screen', () => {
+  const TARGET = { marker: RESOLVE_PANE_MARKER, key: 'UI-1' };
 
   test.each([
     ['earlier\n ❯ \n   \n', '❯'],
@@ -379,46 +592,166 @@ describe('tmux interactive session inspection and exit', () => {
     ['❯\noutput\n❯ draft\ncustom status\n', '❯ draft'],
     ['Working...\ncustom status\n', null],
     ['\n \n', null]
-  ])('captures the last Claude prompt from %j', async (stdout, expected) => {
-    const runTmux = vi.fn(async () => ({
-      code: 0,
-      stdout: /** @type {string} */ (stdout),
-      stderr: ''
-    }));
-    const launcher = createTmuxLauncher({ runTmux });
+  ])('captures the last Claude prompt from %j', async (screen, expected) => {
+    const { launcher, runSessionHub } = hubLauncher({ found: true, screen });
 
-    const result = await launcher.capturePaneTail('%9');
+    const result = await launcher.capturePaneTail('%9', TARGET);
 
     expect(result).toEqual({ ok: true, line: expected });
-    expect(runTmux).toHaveBeenCalledExactlyOnceWith([
-      'capture-pane',
-      '-p',
-      '-t',
-      '%9'
+    expect(runSessionHub).toHaveBeenCalledExactlyOnceWith([
+      'window-screen',
+      '--marker-option',
+      RESOLVE_PANE_MARKER,
+      '--marker-value',
+      'UI-1'
     ]);
   });
 
-  test.each(['list', 'exit', 'kill', 'capture'])(
-    'reports a thrown %s operation',
+  test('returns the whole screen, not only the input line', async () => {
+    const screen = 'Do you trust this folder?\n1. Yes\n2. No\n❯\nstatus\n';
+    const { launcher } = hubLauncher({ found: true, screen });
+
+    const result = await launcher.capturePaneText('%9', TARGET);
+
+    expect(result).toEqual({ ok: true, stdout: screen });
+  });
+
+  test.each(['tail', 'text'])(
+    'reports a window the hub no longer finds for %s',
     async (operation) => {
-      const launcher = createTmuxLauncher({
-        runTmux: async () => {
-          throw new Error('offline');
-        }
-      });
+      const { launcher } = hubLauncher({ found: false });
 
       const result =
-        operation === 'list'
-          ? await launcher.listPanesExtended(RESOLVE_PANE_MARKER)
-          : operation === 'exit'
-            ? await launcher.sendExit('%9')
-            : operation === 'kill'
-              ? await launcher.killWindow('inquiry', 'resolve-UI-1')
-              : await launcher.capturePaneTail('%9');
+        operation === 'tail'
+          ? await launcher.capturePaneTail('%9', TARGET)
+          : await launcher.capturePaneText('%9', TARGET);
 
-      expect(result).toEqual({ ok: false, error: 'Error: offline' });
+      expect(result).toEqual({ ok: false, error: 'window_not_found' });
     }
   );
+
+  test.each(['tail', 'text'])(
+    'refuses a %s read without a marker target',
+    async (operation) => {
+      const { launcher, runSessionHub } = hubLauncher({ found: true });
+
+      const result =
+        operation === 'tail'
+          ? await launcher.capturePaneTail('%9')
+          : await launcher.capturePaneText('%9');
+
+      expect(result).toEqual({ ok: false, error: 'window_target_missing' });
+      expect(runSessionHub).not.toHaveBeenCalled();
+    }
+  );
+
+  test('passes a hub failure through as a failed read', async () => {
+    const { launcher } = hubLauncher(() =>
+      hubReply({ code: 'tmux_unavailable' }, 3)
+    );
+
+    const result = await launcher.capturePaneTail('%9', TARGET);
+
+    expect(result).toEqual({ ok: false, error: 'tmux_unavailable' });
+  });
+});
+
+describe('hub session location', () => {
+  test('locates a session through the hub with its backend', async () => {
+    const { launcher, runSessionHub } = hubLauncher({
+      found: true,
+      session_id: 'sess-1',
+      pane: 'wR:p2',
+      window: 'wR:2',
+      tmux_session: 'dev',
+      mux: 'herdr'
+    });
+
+    const result = await launcher.locateSession('sess-1');
+
+    expect(result).toEqual({
+      ok: true,
+      found: true,
+      tmux_session: 'dev',
+      pane: 'wR:p2',
+      mux: 'herdr'
+    });
+    expect(runSessionHub).toHaveBeenCalledExactlyOnceWith([
+      'locate',
+      '--session-id',
+      'sess-1'
+    ]);
+  });
+
+  test('reads a session the hub does not know as not found', async () => {
+    const { launcher } = hubLauncher({ found: false });
+
+    const result = await launcher.locateSession('sess-1');
+
+    expect(result).toEqual({ ok: true, found: false });
+  });
+
+  test('refuses a located session without a pane', async () => {
+    const { launcher } = hubLauncher({
+      found: true,
+      tmux_session: 'dev',
+      pane: ''
+    });
+
+    const result = await launcher.locateSession('sess-1');
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'launch_failed:session_hub_invalid_response'
+    });
+  });
+
+  test('focuses the window of a session by its id', async () => {
+    const { launcher, runSessionHub } = hubLauncher((args) =>
+      args[0] === 'locate'
+        ? hubReply({
+            found: true,
+            pane: '%3',
+            window: '@3',
+            tmux_session: 'dev',
+            mux: 'tmux'
+          })
+        : hubReply({ focused: true, pane: '%3' })
+    );
+
+    const result = await launcher.focusSession('sess-1');
+
+    expect(result).toEqual({
+      ok: true,
+      tmux_session: 'dev',
+      tmux_window: null
+    });
+    expect(runSessionHub.mock.calls.map(([args]) => args)).toEqual([
+      ['locate', '--session-id', 'sess-1'],
+      ['focus', '--session-id', 'sess-1']
+    ]);
+  });
+
+  test('refuses to focus a session the hub cannot locate', async () => {
+    const { launcher, runSessionHub } = hubLauncher({ found: false });
+
+    const result = await launcher.focusSession('sess-1');
+
+    expect(result).toEqual({ ok: false, error: 'unknown_location' });
+    expect(runSessionHub).toHaveBeenCalledTimes(1);
+  });
+
+  test('passes a failed focus through', async () => {
+    const { launcher } = hubLauncher((args) =>
+      args[0] === 'locate'
+        ? hubReply({ found: true, pane: '%3', tmux_session: 'dev' })
+        : hubReply({ code: 'tmux_unavailable' }, 3)
+    );
+
+    const result = await launcher.focusSession('sess-1');
+
+    expect(result).toEqual({ ok: false, error: 'tmux_unavailable' });
+  });
 });
 
 describe('bridge thread projection', () => {
@@ -588,42 +921,6 @@ function codexLaunch(cwd, runner = 'codex') {
     });
   return { config_path, runSessionHub, launch };
 }
-
-describe('tmux-launcher pane targeting', () => {
-  test('expands the new pane target as one argument before exec', () => {
-    const bin_dir = path.join(test_dir, 'bin');
-    const captured = path.join(test_dir, 'tmux-argv');
-    fs.mkdirSync(bin_dir);
-    fs.writeFileSync(
-      path.join(bin_dir, 'tmux'),
-      '#!/bin/sh\nprintf "%s\\n" "$@" > "$TMUX_CAPTURE"\n',
-      { mode: 0o755 }
-    );
-    const wrapper = markerWrapper({
-      marker: INQUIRY_PANE_MARKER,
-      key: 'UI-ohhr',
-      argv: ['/usr/bin/true']
-    });
-
-    execFileSync('sh', ['-c', wrapper], {
-      env: {
-        ...process.env,
-        PATH: `${bin_dir}${path.delimiter}${process.env.PATH}`,
-        TMUX_PANE: '%977',
-        TMUX_CAPTURE: captured
-      }
-    });
-
-    expect(fs.readFileSync(captured, 'utf8').trim().split('\n')).toEqual([
-      'set-option',
-      '-p',
-      '-t',
-      '%977',
-      INQUIRY_PANE_MARKER,
-      'UI-ohhr'
-    ]);
-  });
-});
 
 describe('tmux-launcher Codex permission flags', () => {
   test('omits the Claude permission-switch flag from Codex launches', async () => {

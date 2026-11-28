@@ -48,7 +48,7 @@ const AGY_AUTH_LIST_TIMEOUT_MS = 10_000;
 // `agy-auth switch` reads the new account's usage itself (its own bound is
 // 120 seconds) before it answers.
 const AGY_AUTH_CHANGE_TIMEOUT_MS = 150_000;
-const TMUX_TIMEOUT_MS = 10_000;
+const HUB_TIMEOUT_MS = 10_000;
 /** The active row when the signed-in account is in no saved slot. */
 const SIGNED_IN_KEY = 'active';
 const SIGNED_IN_LABEL = '현재 로그인';
@@ -429,33 +429,59 @@ export function __resetCacheForTest() {
 }
 
 /**
- * Whether a tmux pane recorded as an agy runtime is alive — an agy
- * conversation window holds the agy lock as long as it lives.
+ * Whether an agy conversation window is alive on any multiplexer: either a
+ * live pane the session hub's `windows --marker @agent_runtime` lists with the
+ * `agy` runtime (found before its conversation id is registered), or a live
+ * row of `list --all` (state not `ended`, with a pane) whose agent is agy. Such
+ * a window holds the agy lock as long as it lives. An unreadable or unparseable
+ * answer from one source counts as no window from that source; agy-auth's own
+ * lock still refuses.
  *
- * @param {{ runTmux?: (args: string[]) => Promise<{ code: number, stdout: string, stderr: string }> }} [options]
+ * @param {{ runSessionHub?: (args: string[]) => Promise<{ code: number, stdout: string, stderr: string }> }} [options]
  * @returns {Promise<boolean>}
  */
 export async function agyConversationOpen(options = {}) {
-  const runTmux =
-    options.runTmux ||
+  const runSessionHub =
+    options.runSessionHub ||
     ((/** @type {string[]} */ args) =>
-      runShell('tmux', args, { timeout_ms: TMUX_TIMEOUT_MS }));
-  try {
-    const result = await runTmux([
-      'list-panes',
-      '-a',
-      '-F',
-      '#{pane_dead} #{@agent_runtime}'
-    ]);
-    if (result.code !== 0) {
-      return false;
+      runShell(path.join(os.homedir(), 'bin', 'session-hub'), args, {
+        timeout_ms: HUB_TIMEOUT_MS
+      }));
+  /**
+   * @param {string[]} args
+   * @param {string} field
+   * @returns {Promise<any[]>}
+   */
+  async function hubRows(args, field) {
+    try {
+      const result = await runSessionHub(args);
+      if (result.code !== 0) {
+        return [];
+      }
+      const rows = JSON.parse(result.stdout)?.[field];
+      return Array.isArray(rows) ? rows : [];
+    } catch {
+      return [];
     }
-    return result.stdout
-      .split('\n')
-      .some((line) => line.trim().split(/\s+/).join(' ') === '0 agy');
-  } catch {
-    return false;
   }
+  const [windows, sessions] = await Promise.all([
+    hubRows(['windows', '--marker', '@agent_runtime'], 'windows'),
+    hubRows(['list', '--all'], 'sessions')
+  ]);
+  return (
+    windows.some(
+      (row) =>
+        (row?.markers?.['@agent_runtime'] === 'agy' || row?.value === 'agy') &&
+        row.dead !== true
+    ) ||
+    sessions.some(
+      (row) =>
+        row?.agent === 'agy' &&
+        row.state !== 'ended' &&
+        typeof row.pane === 'string' &&
+        row.pane.length > 0
+    )
+  );
 }
 
 /**

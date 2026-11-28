@@ -60,7 +60,7 @@ function writeRegistry(name, entry) {
 }
 
 /**
- * @param {{ resolveSessionAccounts?: import('../session-launch-accounts.js').ResolveSessionAccounts, record?: Record<string, any>, launch?: any, focus?: any, panes?: any, run?: any, unset?: any, sessionsDir?: string }} [options]
+ * @param {{ resolveSessionAccounts?: import('../session-launch-accounts.js').ResolveSessionAccounts, record?: Record<string, any>, launch?: any, focus?: any, panes?: any, locate?: any, run?: any, unset?: any, sessionsDir?: string }} [options]
  */
 function fixture(options = {}) {
   /** @type {any} */
@@ -133,6 +133,9 @@ function fixture(options = {}) {
     ),
     listPanesExtended: vi.fn(
       async () => options.panes || { ok: true, rows: [] }
+    ),
+    locateSession: vi.fn(
+      async () => options.locate || { ok: true, found: false }
     ),
     bridgeActive: vi.fn(() => true)
   };
@@ -243,57 +246,83 @@ describe('session resume qualification', () => {
 });
 
 describe('session resume owner liveness', () => {
-  test('drops a reused registry pane from the movable location', async () => {
+  /** A live owner registered the way the Claude session registry writes it. */
+  function liveOwner() {
     writeRegistry('owner.json', {
       pid: 123,
       sessionId: SESSION,
       procStart: PROC_START,
       tmux: 'dev:@1.%7'
     });
+    return async (/** @type {string[]} */ argv) => ({
+      code: 0,
+      stderr: '',
+      stdout: argv[0] === 'env' ? PROC_START : '1'
+    });
+  }
+
+  test('names the hub session of a located live owner by its session id', async () => {
     const env = fixture({
-      run: async (/** @type {string[]} */ argv) => ({
-        code: 0,
-        stderr: '',
-        stdout:
-          argv[0] === 'env'
-            ? PROC_START
-            : argv[0] === 'tmux'
-              ? 'other:@9.%7 999 0'
-              : '1'
-      })
+      run: liveOwner(),
+      locate: {
+        ok: true,
+        found: true,
+        tmux_session: 'dev',
+        pane: 'wR:p2',
+        mux: 'herdr'
+      }
+    });
+
+    const result = await env.resumer.ownerLocation('claude', SESSION);
+
+    expect(result).toEqual({ state: 'alive', owner_tmux: 'dev' });
+    expect(env.launcher.locateSession).toHaveBeenCalledExactlyOnceWith(SESSION);
+    expect(env.run.mock.calls.map(([argv]) => argv[0])).not.toContain('tmux');
+  });
+
+  test('keeps a live owner the hub does not know without a location', async () => {
+    const env = fixture({
+      run: liveOwner(),
+      locate: { ok: true, found: false }
     });
 
     const result = await env.resumer.ownerLocation('claude', SESSION);
 
     expect(result).toEqual({ state: 'alive', owner_tmux: null });
-    expect(env.launcher.launch).not.toHaveBeenCalled();
   });
 
-  test('rejects an unrelated process in the same registry pane', async () => {
-    writeRegistry('owner.json', {
-      pid: 123,
-      sessionId: SESSION,
-      procStart: PROC_START,
-      tmux: 'dev:@1.%7'
-    });
+  test('keeps a live owner without a location when the hub lookup fails', async () => {
     const env = fixture({
-      run: async (/** @type {string[]} */ argv) => ({
-        code: 0,
-        stderr: '',
-        stdout:
-          argv[0] === 'env'
-            ? PROC_START
-            : argv[0] === 'tmux'
-              ? 'dev:@1.%7 999 0'
-              : '1'
-      })
+      run: liveOwner(),
+      locate: { ok: false, error: 'tmux_unavailable' }
     });
 
     const result = await env.resumer.ownerLocation('claude', SESSION);
 
-    expect(result.owner_tmux).toBeNull();
+    expect(result).toEqual({ state: 'alive', owner_tmux: null });
   });
-  test('returns the command without launching when the owner is alive', async () => {
+
+  test('keeps a live owner without a location when the hub lookup throws', async () => {
+    const env = fixture({ run: liveOwner() });
+    env.launcher.locateSession.mockRejectedValueOnce(new Error('offline'));
+
+    const result = await env.resumer.ownerLocation('claude', SESSION);
+
+    expect(result).toEqual({ state: 'alive', owner_tmux: null });
+  });
+
+  test('does not ask the hub for an owner that is not alive', async () => {
+    const env = fixture({
+      locate: { ok: true, found: true, tmux_session: 'dev', pane: '%7' }
+    });
+
+    const result = await env.resumer.ownerLocation('claude', SESSION);
+
+    expect(result.state).not.toBe('alive');
+    expect(env.launcher.locateSession).not.toHaveBeenCalled();
+  });
+
+  test('returns the command and the hub location without launching when the owner is alive', async () => {
     writeRegistry('61128.json', {
       pid: 61128,
       sessionId: SESSION,
@@ -301,7 +330,14 @@ describe('session resume owner liveness', () => {
       tmux: 'main:1.0'
     });
     const env = fixture({
-      run: async () => ({ code: 0, stdout: `${PROC_START}\n`, stderr: '' })
+      run: async () => ({ code: 0, stdout: `${PROC_START}\n`, stderr: '' }),
+      locate: {
+        ok: true,
+        found: true,
+        tmux_session: 'dev',
+        pane: 'wR:p2',
+        mux: 'herdr'
+      }
     });
 
     const result = await env.resume();
@@ -310,10 +346,30 @@ describe('session resume owner liveness', () => {
       session: 'not_launched',
       reason: 'owner_alive',
       command: `claude --resume '${SESSION}'`,
-      owner_tmux: 'main:1.0'
+      owner_tmux: 'dev'
     });
     expect(env.launcher.launch).not.toHaveBeenCalled();
     expect(env.resume_writes).toEqual([]);
+  });
+
+  test('leaves the owner location empty when the hub does not know the live owner', async () => {
+    writeRegistry('61128.json', {
+      pid: 61128,
+      sessionId: SESSION,
+      procStart: PROC_START,
+      tmux: 'main:1.0'
+    });
+    const env = fixture({
+      run: async () => ({ code: 0, stdout: `${PROC_START}\n`, stderr: '' }),
+      locate: { ok: false, error: 'tmux_unavailable' }
+    });
+
+    const result = await env.resume();
+
+    expect(result).toMatchObject({
+      reason: 'owner_alive',
+      owner_tmux: null
+    });
   });
 
   test('probes the registry pid in UTC and the C locale', async () => {

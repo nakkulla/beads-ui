@@ -76,7 +76,7 @@ export function externalConversationEntry(record) {
  * @typedef {'alive'|'dead'|'unverified'} OwnerLivenessState
  * @typedef {{ state: OwnerLivenessState, owner_tmux: string|null }} OwnerLiveness
  * @typedef {(argv: string[], options: { timeout_ms: number }) => Promise<{ code: number, stdout: string, stderr: string }>} Run
- * @typedef {{ session: string, window: string, pane: string, dead: string, agent_running?: string, agent_attention?: string, cwd: string, agent_runtime: string, key: string }} ExtendedPaneRow
+ * @typedef {import('../tmux-launcher.js').PaneRow} ExtendedPaneRow
  * @typedef {Object} SessionResumeResult
  * @property {true} ok
  * @property {'session'} mode
@@ -96,7 +96,7 @@ export function externalConversationEntry(record) {
 /**
  * @typedef {Object} SessionResumeDeps
  * @property {import('../session-launch-accounts.js').ResolveSessionAccounts} [resolveSessionAccounts]
- * @property {Pick<ReturnType<typeof import('../tmux-launcher.js').createTmuxLauncher>, 'launch'|'focusRunning'|'listPanesExtended'|'bridgeActive'>} launcher
+ * @property {Pick<ReturnType<typeof import('../tmux-launcher.js').createTmuxLauncher>, 'launch'|'focusRunning'|'listPanesExtended'|'locateSession'|'bridgeActive'>} launcher
  * @property {{ get: (workspace: string, wait_id: string) => WaitRecord|null, update: (workspace: string, wait_id: string, mutate: (record: WaitRecord) => void) => unknown }} externalWait
  * @property {(workspace: string, record: Record<string, unknown>) => unknown} recordInteractiveSession
  * @property {(bead_id: string) => Promise<void>} unsetExternalWait - Unset the
@@ -288,7 +288,7 @@ export function createExternalWaitSessionResume(deps) {
    *
    * @param {string} workspace
    * @param {WaitRecord} record
-   * @param {{ source: 'session_ref'|'recovered', pane: { tmux_session: string, tmux_window: string, pane_id: string }|null }} evidence
+   * @param {{ source: 'session_ref'|'recovered', pane: { tmux_session: string, tmux_window: string, pane_id: string, mux?: string }|null }} evidence
    */
   async function settleLaunch(workspace, record, evidence) {
     const at = now();
@@ -315,6 +315,7 @@ export function createExternalWaitSessionResume(deps) {
           tmux_session: evidence.pane.tmux_session,
           tmux_window: evidence.pane.tmux_window,
           pane_id: evidence.pane.pane_id,
+          mux: evidence.pane.mux,
           cwd: record.worktree,
           launched_at: at,
           last_seen_alive_at: at,
@@ -495,7 +496,7 @@ export function createExternalWaitSessionResume(deps) {
       session_id,
       host: ''
     });
-    const liveness = await ownerLiveness(provider, session_id);
+    const liveness = await ownerLocation(provider, session_id);
     if (liveness.state === 'alive') {
       return notLaunched('owner_alive', {
         command,
@@ -547,13 +548,14 @@ export function createExternalWaitSessionResume(deps) {
       recordFailure(workspace, record, outcome.reason, session_id);
       return notLaunched(outcome.reason, { command });
     }
-    /** @type {{ tmux_session: string, tmux_window: string, pane_id: string }|null} */
+    /** @type {{ tmux_session: string, tmux_window: string, pane_id: string, mux?: string }|null} */
     let pane = null;
     if (outcome.session === 'launched') {
       pane = {
         tmux_session: outcome.tmux_session,
         tmux_window: outcome.tmux_window,
-        pane_id: outcome.pane_id
+        pane_id: outcome.pane_id,
+        mux: outcome.mux
       };
     } else {
       // The launcher found this bead's window already open; read its pane.
@@ -562,7 +564,8 @@ export function createExternalWaitSessionResume(deps) {
         pane = {
           tmux_session: found.pane.session,
           tmux_window: found.pane.window,
-          pane_id: found.pane.pane
+          pane_id: found.pane.pane,
+          mux: found.pane.mux
         };
       }
     }
@@ -634,14 +637,17 @@ export function createExternalWaitSessionResume(deps) {
       pane: {
         tmux_session: found.pane.session,
         tmux_window: found.pane.window,
-        pane_id: found.pane.pane
+        pane_id: found.pane.pane,
+        mux: found.pane.mux
       }
     });
   }
 
   /**
-   * Validate registry coordinates against a live pane and its process ancestry.
-   * A stale registry pane must never select a window reused by another session.
+   * Where a live original session runs, asked of the session hub by session
+   * id (UI-3xxa0 §3.2). The registry's own location string is never read: the
+   * hub names the window, or says it does not know, and an unknown answer is a
+   * live owner with no known location.
    *
    * @param {'claude'|'codex'} provider
    * @param {string} session_id
@@ -649,75 +655,23 @@ export function createExternalWaitSessionResume(deps) {
    */
   async function ownerLocation(provider, session_id) {
     const live = await ownerLiveness(provider, session_id);
-    if (live.state !== 'alive' || !live.owner_tmux) {
+    if (live.state !== 'alive') {
       return live;
     }
     const unknown_location = {
       state: /** @type {const} */ ('alive'),
       owner_tmux: null
     };
-    const match = /^([^:]+):([^.]+)\.(%\d+)$/.exec(live.owner_tmux);
-    if (!match) {
-      return unknown_location;
-    }
     try {
-      const pane = await run(
-        [
-          'tmux',
-          'display-message',
-          '-p',
-          '-t',
-          match[3],
-          '#{session_name}:#{window_id}.#{pane_id} #{pane_pid} #{pane_dead}'
-        ],
-        { timeout_ms: 5000 }
-      );
-      const parts = pane.stdout.trim().split(' ');
-      if (
-        pane.code !== 0 ||
-        parts[0] !== live.owner_tmux ||
-        parts[2] !== '0' ||
-        !/^\d+$/.test(parts[1])
-      ) {
+      const located = await deps.launcher.locateSession(session_id);
+      if (!located.ok || !located.found) {
         return unknown_location;
       }
-      const entries = fs
-        .readdirSync(sessions_dir)
-        .map(String)
-        .filter((name) => name.endsWith('.json'))
-        .map((name) =>
-          JSON.parse(
-            String(fs.readFileSync(path.join(sessions_dir, name), 'utf8'))
-          )
-        );
-      const entry = entries.find(
-        (value) =>
-          value.sessionId === session_id && value.tmux === live.owner_tmux
-      );
-      if (!entry) {
-        return unknown_location;
-      }
-      let pid = Number(entry.pid);
-      for (let depth = 0; depth < 32 && pid > 1; depth += 1) {
-        if (pid === Number(parts[1])) {
-          const confirmed = await ownerLiveness(provider, session_id);
-          return confirmed.state === 'alive' &&
-            confirmed.owner_tmux === live.owner_tmux
-            ? live
-            : unknown_location;
-        }
-        const parent = await run(['ps', '-p', String(pid), '-o', 'ppid='], {
-          timeout_ms: 5000
-        });
-        if (parent.code !== 0 || !/^\d+$/.test(parent.stdout.trim())) {
-          return unknown_location;
-        }
-        pid = Number(parent.stdout.trim());
-      }
+      return { state: 'alive', owner_tmux: located.tmux_session };
     } catch (error) {
       log('owner location lookup failed: %o', error);
+      return unknown_location;
     }
-    return unknown_location;
   }
 
   return { resume, ownerLiveness, ownerLocation, settleReservation };

@@ -198,20 +198,42 @@ export function sessionLaneAwaitsAnswer(turn_state, last_message) {
 }
 
 /**
- * Whether ONE successful marker listing shows the attempt's window alive: a
- * live pane keyed by the Bead, and — once the launch recorded it — the same
- * pane id. Only a successful listing may answer `false` (UI-lbm5 §4.4).
+ * The live window of the attempt in ONE successful marker listing: a live pane
+ * keyed by the Bead whose (mux, pane id) is the recorded one. A window moved
+ * between herdr workspaces gets a new pane id, so when the recorded pane is
+ * gone the live window with the same marker value is the same conversation
+ * (UI-3xxa0 §3.2) and is returned for the caller to relocate the record.
+ * Null means no live window of this Bead at all.
  *
- * @param {Array<{ pane: string, key: string, dead: string }>} rows
- * @param {{ bead_id: string, interactive?: { pane_id?: string|null }|null }} attempt
+ * @template {{ pane: string, key: string, dead: string, mux?: string }} Row
+ * @param {Row[]} rows
+ * @param {{ bead_id: string, interactive?: { pane_id?: string|null, mux?: string|null }|null }} attempt
+ * @returns {Row|null}
+ */
+export function sessionLaneWindowRow(rows, attempt) {
+  const pane_id = attempt.interactive?.pane_id ?? null;
+  const mux = attempt.interactive?.mux ?? 'tmux';
+  const live = rows.filter(
+    (row) => row.key === attempt.bead_id && row.dead === '0'
+  );
+  if (pane_id === null) {
+    return live[0] ?? null;
+  }
+  return (
+    live.find((row) => row.pane === pane_id && (row.mux ?? 'tmux') === mux) ??
+    live[0] ??
+    null
+  );
+}
+
+/**
+ * Whether ONE successful marker listing shows the attempt's window alive.
+ * Only a successful listing may answer `false` (UI-lbm5 §4.4).
+ *
+ * @param {Array<{ pane: string, key: string, dead: string, mux?: string }>} rows
+ * @param {{ bead_id: string, interactive?: { pane_id?: string|null, mux?: string|null }|null }} attempt
  * @returns {boolean}
  */
 export function sessionLanePaneAlive(rows, attempt) {
-  const pane_id = attempt.interactive?.pane_id ?? null;
-  return rows.some(
-    (row) =>
-      row.key === attempt.bead_id &&
-      row.dead === '0' &&
-      (pane_id === null || row.pane === pane_id)
-  );
+  return sessionLaneWindowRow(rows, attempt) !== null;
 }

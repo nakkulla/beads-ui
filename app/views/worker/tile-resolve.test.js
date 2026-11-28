@@ -129,7 +129,7 @@ describe('tileResolveFields', () => {
         resolve_action: true,
         resolve_enabled: true,
         resolve_title:
-          '열린 대화의 tmux 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다'
+          '열린 대화의 대화 세션 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다'
       });
     }
   );
@@ -383,7 +383,7 @@ describe('liveConversationResolution (UI-9w5l §3.5)', () => {
     ]);
 
     expect(line).toBe(
-      '[세션에서 이어가기]로 맥의 tmux 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다'
+      '[세션에서 이어가기]로 맥의 대화 세션 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다'
     );
   });
 
@@ -884,7 +884,7 @@ describe('repoOperationResolveFields (UI-jbl1 §3.3)', () => {
       resolve_action: true,
       resolve_enabled: true,
       resolve_title:
-        '열린 대화의 tmux 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다',
+        '열린 대화의 대화 세션 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다',
       conversation: live
     });
   });

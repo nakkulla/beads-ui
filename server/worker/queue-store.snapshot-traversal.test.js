@@ -245,8 +245,7 @@ test('reconciles scheduler observations from frozen queue records', async () => 
               agent_attention: null
             }
           ]
-        }),
-        readPaneOption: async () => ({ ok: true, value: null })
+        })
       },
       conditionWaitPolicy: () => null,
       now: () => 1000

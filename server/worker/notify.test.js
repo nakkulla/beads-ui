@@ -500,11 +500,11 @@ describe('worker/notify argv assembly', () => {
     });
 
     expect(messageOf(spawn.last())).toBe(
-      '🤖 🚀 시작 — UI-1 세션 레인\n▶ 세션 레인 시작 · tmux bdui-inquiry:UI-1\n리포: proj\n실행: claude opus'
+      '🤖 🚀 시작 — UI-1 세션 레인\n▶ 세션 레인 시작 · bdui-inquiry:UI-1\n리포: proj\n실행: claude opus'
     );
   });
 
-  test('names the startup screen and its tmux window on the startup-wait push', async () => {
+  test('names the startup screen and its conversation window on the startup-wait push', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
@@ -518,7 +518,7 @@ describe('worker/notify argv assembly', () => {
     });
 
     expect(messageOf(spawn.last())).toBe(
-      '🤖 ⏳ 시작 화면 대기 — UI-1 세션 레인\n시작 화면 대기 · 훅 확인\ntmux bdui-inquiry:UI-1\ntmux 창에서 선택해야 시작됩니다\n리포: proj'
+      '🤖 ⏳ 시작 화면 대기 — UI-1 세션 레인\n시작 화면 대기 · 훅 확인\n대화 세션 창 bdui-inquiry:UI-1\n대화 세션 창에서 선택해야 시작됩니다\n리포: proj'
     );
   });
 
@@ -537,7 +537,7 @@ describe('worker/notify argv assembly', () => {
     });
 
     expect(messageOf(spawn.last())).toBe(
-      '🤖 ⏩ 시작 화면 자동 진행 — UI-1 해결 대화\n시작 화면 자동 진행\n화면: Choose a theme\n고른 행: Dark mode\ntmux bdui-inquiry:resolve-UI-1\n리포: proj'
+      '🤖 ⏩ 시작 화면 자동 진행 — UI-1 해결 대화\n시작 화면 자동 진행\n화면: Choose a theme\n고른 행: Dark mode\n대화 세션 창 bdui-inquiry:resolve-UI-1\n리포: proj'
     );
   });
 
@@ -1253,7 +1253,7 @@ describe('worker/notify conversation stages (UI-nuwy §3.7)', () => {
         '🙋 확인 필요 — UI-7uid 방향 질의 트리거',
         '이유: 설계 충돌 · impl_review_conflict:design',
         '세션: park: impl_review_conflict:design — 대상: ADR 12',
-        '대화: Discord 스레드 · tmux bdui-inquiry:UI-7uid',
+        '대화: Discord 스레드 · bdui-inquiry:UI-7uid',
         '리포: beads-ui'
       ].join('\n')
     );
@@ -1418,7 +1418,7 @@ describe('worker/notify conversation stages (UI-nuwy §3.7)', () => {
 });
 
 describe('worker/notify awaiting_user transition (UI-7uid §3.5)', () => {
-  test('names the launched inquiry session, its tmux window and the bridge', async () => {
+  test('names the launched inquiry session, its conversation window and the bridge', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
 
@@ -1469,7 +1469,7 @@ describe('worker/notify awaiting_user transition (UI-7uid §3.5)', () => {
         '🤖 ⏸️ 파킹 — UI-7uid 방향 질의 트리거',
         '파킹: plan_approval_stale:revise (intent_conflict)',
         '문의 세션: stale · already_running · UI-7uid',
-        '브리지: 비활성 — 질문은 tmux에서 직접 답',
+        '브리지: 비활성 — 질문은 대화 세션 창에서 직접 답',
         '리포: beads-ui'
       ].join('\n')
     );
@@ -1668,7 +1668,7 @@ describe('worker/notify needs_human transition', () => {
         '클래스: 머지 게이트 보류',
         '사유: receipt_forged',
         '다음: [머지] 재클릭 또는 [세션에서 이어가기]',
-        '대화: Discord 스레드 · tmux bdui-inquiry:resolve-UI-7',
+        '대화: Discord 스레드 · bdui-inquiry:resolve-UI-7',
         '리포: beads-ui'
       ].join('\n')
     );
@@ -1691,7 +1691,7 @@ describe('worker/notify needs_human transition', () => {
 
     expect(spawn.calls).toHaveLength(1);
     expect(messageOf(spawn.last())).toContain(
-      '대화: 시작 확인 못함 · timeout · tmux bdui-inquiry:resolve-UI-7'
+      '대화: 시작 확인 못함 · timeout · bdui-inquiry:resolve-UI-7'
     );
     expect(messageOf(spawn.last())).not.toContain('Discord 스레드');
   });

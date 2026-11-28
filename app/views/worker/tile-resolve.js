@@ -226,8 +226,8 @@ function hasDiscordConversation(interactive_sessions) {
 const DISCORD_RESOLUTION = '↗ Discord에서 대화를 이어간다';
 const DISCORD_PENDING_RESOLUTION =
   'Discord 스레드 준비 중 — 세션의 첫 답 뒤 생긴다';
-const TMUX_RESOLUTION =
-  '[세션에서 이어가기]로 맥의 tmux 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다';
+const WINDOW_RESOLUTION =
+  '[세션에서 이어가기]로 맥의 대화 세션 창을 앞으로 불러 대화를 이어간다 · Discord 브리지가 꺼져 있어 휴대폰에서는 이어갈 수 없다';
 
 /**
  * The 해결 line a card with a live conversation shows ahead of any
@@ -246,12 +246,12 @@ export function liveConversationResolution(interactive_sessions) {
     return DISCORD_RESOLUTION;
   }
   // The bridge is up but has not made the thread yet (UI-vviq): the thread
-  // comes after the session's first answer, so the tmux sentence would lie.
+  // comes after the session's first answer, so the window sentence would lie.
   return liveConversations(interactive_sessions).some(
     (view) => view.discord_pending === true
   )
     ? DISCORD_PENDING_RESOLUTION
-    : TMUX_RESOLUTION;
+    : WINDOW_RESOLUTION;
 }
 
 /**
@@ -529,7 +529,7 @@ function pauseResumeFields(item, handoff, handoff_pending) {
 
 /** The tooltip while the click only focuses a live conversation's window. */
 const FOCUS_TITLE =
-  '열린 대화의 tmux 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다';
+  '열린 대화의 대화 세션 창을 앞으로 부릅니다 — 새 세션을 띄우지 않습니다';
 
 /**
  * Which failure, if any, makes this item a 실패 row: the PR 대기 row's own

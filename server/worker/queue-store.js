@@ -537,6 +537,7 @@
  * @property {string|null} pane_id
  * @property {string|null} tmux_session
  * @property {string|null} tmux_window
+ * @property {string} [mux] - The hub's multiplexer name; absent reads as `tmux`.
  * @property {number|null} [gone_at]
  * @property {'running'|'question'|'limit'|'idle'|null} [turn_state]
  * @property {number|null} [turn_state_since]
@@ -565,6 +566,8 @@
  * @property {string} tmux_session
  * @property {string} tmux_window
  * @property {string} pane_id
+ * @property {string} mux - The hub's multiplexer name for the window; a record
+ * written before the field existed reads as `tmux`.
  * @property {string|null} cwd
  * @property {number} launched_at
  * @property {number|null} last_seen_alive_at
@@ -4406,6 +4409,7 @@ function normalizeInteractiveSessions(raw) {
       pane_id: String(value.pane_id),
       tmux_session: String(value.tmux_session),
       tmux_window: String(value.tmux_window),
+      mux: stringOrNull('mux') ?? 'tmux',
       launched_at: value.launched_at,
       state: value.state,
       session_id: stringOrNull('session_id'),
@@ -4647,6 +4651,7 @@ function normalizeSessionLaneWindow(value) {
     pane_id: text('pane_id'),
     tmux_session: text('tmux_session'),
     tmux_window: text('tmux_window'),
+    mux: text('mux') ?? 'tmux',
     gone_at: time('gone_at'),
     turn_state,
     turn_state_since: time('turn_state_since'),

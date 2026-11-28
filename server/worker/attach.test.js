@@ -65,6 +65,7 @@ function createWorkerRuntime() {
     ok: true,
     rows: []
   });
+  vi.spyOn(runtime.interactiveLauncher, 'paneAlive').mockResolvedValue('dead');
   return runtime;
 }
 
@@ -2933,15 +2934,13 @@ describe('worker/attach construction + live loop (F1)', () => {
                     session: 'interactive',
                     window: 'resolve',
                     cwd: WS,
-                    agent_runtime: 'claude'
+                    agent_runtime: 'claude',
+                    session_id: null,
+                    mux: 'tmux'
                   }
                 ]
               : []
         }));
-        vi.spyOn(
-          runtime.interactiveLauncher,
-          'readPaneOption'
-        ).mockResolvedValue({ ok: true, value: '1' });
         const att = createWorkerAttachment(WS, {
           runtime,
           bd: { ...fakeBd(), readStatus },

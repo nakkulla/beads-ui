@@ -5817,7 +5817,7 @@ describe('views/monitor external wait confirm and session resume (UI-r6xq §4.4)
 
     expect(writeText).not.toHaveBeenCalled();
     expect(document.querySelector('.toast')?.textContent).toBe(
-      '원래 세션이 열려 있어 새로 열지 않았습니다 · tmux main:2'
+      '원래 세션이 열려 있어 새로 열지 않았습니다 · 대화 세션 창 main:2'
     );
   });
 });

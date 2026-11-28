@@ -94,7 +94,7 @@ const LOGIN_FAILURE_TEXT = {
   active_auth_update_failed: '활성 로그인을 새 자격으로 바꾸지 못함',
   import_unverified: '넣은 계정을 목록에서 확인하지 못함',
   account_list_unavailable: '계정 목록을 읽지 못함',
-  tmux_failed: 'tmux 창을 열지 못함',
+  tmux_failed: '로그인 창을 열지 못함',
   invalid_output: '로그인 도구의 출력을 읽지 못함',
   login_not_found: '로그인 세션이 이미 끝남',
   busy: 'agy 실행·대화 창이 있거나 계정 변경 중 — 끝난 뒤 다시 시도',

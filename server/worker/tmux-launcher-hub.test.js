@@ -35,21 +35,20 @@ function makeHub(script = {}, flags = []) {
     if (args[0] === 'alive') {
       return hubReply({ alive: script.alive ?? 'alive' });
     }
+    if (args[0] === 'focus') {
+      return script.focus_code
+        ? hubReply({ code: 'focus_failed' }, script.focus_code)
+        : hubReply({ focused: true, pane: args[2] });
+    }
     return hubReply({ status: 'launched', ...LOCATION, ...script.open });
   });
-  const runTmux = vi.fn(async () => ({
-    code: script.select_code ?? 0,
-    stdout: '',
-    stderr: ''
-  }));
   const launcher = createTmuxLauncher({
     runSessionHub,
-    runTmux,
     resolveRunner: () => '/bin/claude',
     launchFlags: () => flags,
     log: () => {}
   });
-  return { launcher, runSessionHub, runTmux };
+  return { launcher, runSessionHub };
 }
 
 /**
@@ -104,7 +103,7 @@ describe('conversation model/effort flags', () => {
 
 describe('session-hub interactive launch', () => {
   test('starts through the hub when no server or marked window exists', async () => {
-    const { launcher, runSessionHub, runTmux } = makeHub({
+    const { launcher, runSessionHub } = makeHub({
       open: { server_started: true, placement: 'session' }
     });
 
@@ -115,14 +114,17 @@ describe('session-hub interactive launch', () => {
       placement: 'inquiry',
       tmux_session: 'bdui-inquiry',
       tmux_window: 'resolve-UI-g4vm',
-      pane_id: '%9'
+      pane_id: '%9',
+      mux: 'tmux'
     });
     expect(runSessionHub.mock.calls.map(([args]) => args[0])).toEqual([
       'find',
       'open',
       'alive'
     ]);
-    expect(runTmux).not.toHaveBeenCalled();
+    expect(runSessionHub.mock.calls.map(([args]) => args[0])).not.toContain(
+      'focus'
+    );
     expect(runSessionHub.mock.calls[1][0]).toEqual([
       'open',
       '--cwd',
@@ -192,7 +194,7 @@ describe('session-hub interactive launch', () => {
   });
 
   test('opens a click window in the configured session and selects it', async () => {
-    const { launcher, runSessionHub, runTmux } = makeHub();
+    const { launcher, runSessionHub } = makeHub();
 
     const result = await launcher.launch({ ...INPUT, placement: 'user' });
 
@@ -221,25 +223,27 @@ describe('session-hub interactive launch', () => {
       '--no-chrome',
       ...INPUT.commandArgs
     ]);
-    expect(runTmux).toHaveBeenCalledExactlyOnceWith([
-      'select-window',
-      '-t',
+    expect(runSessionHub.mock.calls.at(-1)?.[0]).toEqual([
+      'focus',
+      '--pane',
       '%9'
     ]);
   });
 
   test('leaves an automatic window in the background', async () => {
-    const { launcher, runSessionHub, runTmux } = makeHub();
+    const { launcher, runSessionHub } = makeHub();
 
     const result = await launcher.launch({ ...INPUT, placement: 'inquiry' });
 
     expect(result).toMatchObject({ session: 'launched', placement: 'inquiry' });
     expect(runSessionHub.mock.calls[1][0]).toContain('--session');
-    expect(runTmux).not.toHaveBeenCalled();
+    expect(runSessionHub.mock.calls.map(([args]) => args[0])).not.toContain(
+      'focus'
+    );
   });
 
   test('finds a click window already open in a user session without moving it', async () => {
-    const { launcher, runSessionHub, runTmux } = makeHub({
+    const { launcher, runSessionHub } = makeHub({
       find: { found: true, ...LOCATION, tmux_session: 'dev' }
     });
 
@@ -251,20 +255,18 @@ describe('session-hub interactive launch', () => {
       tmux_session: 'dev',
       pane_id: '%9'
     });
-    expect(runSessionHub.mock.calls.map(([args]) => args[0])).toEqual(['find']);
-    expect(runTmux).toHaveBeenCalledExactlyOnceWith([
-      'select-window',
-      '-t',
-      '%9'
+    expect(runSessionHub.mock.calls.map(([args]) => args)).toEqual([
+      ['find', '--marker-option', INPUT.marker, '--marker-value', INPUT.key],
+      ['focus', '--pane', '%9']
     ]);
   });
 
   test.each([0, 1])(
     'keeps a found click window alive after focus exit %i',
-    async (select_code) => {
-      const { launcher, runTmux } = makeHub({
+    async (focus_code) => {
+      const { launcher, runSessionHub } = makeHub({
         find: { found: true, ...LOCATION },
-        select_code
+        focus_code
       });
 
       const result = await launcher.focusRunning({
@@ -276,9 +278,9 @@ describe('session-hub interactive launch', () => {
         ok: true,
         outcome: { session: 'already_running', pane_id: '%9' }
       });
-      expect(runTmux).toHaveBeenCalledExactlyOnceWith([
-        'select-window',
-        '-t',
+      expect(runSessionHub.mock.calls.at(-1)?.[0]).toEqual([
+        'focus',
+        '--pane',
         '%9'
       ]);
     }
@@ -292,9 +294,9 @@ describe('session-hub interactive launch', () => {
     ['bad_config', 'launch_failed:bad_config', 3],
     ['busy', 'launch_failed:busy', 2]
   ])(
-    'maps hub refusal %s without running a tmux fallback',
+    'maps hub refusal %s without any other call',
     async (code, reason, exit) => {
-      const { launcher, runSessionHub, runTmux } = makeHub();
+      const { launcher, runSessionHub } = makeHub();
       runSessionHub.mockResolvedValueOnce(hubReply({ found: false }));
       runSessionHub.mockResolvedValueOnce(
         hubReply({ code, reason: 'refusal', next: '' }, Number(exit))
@@ -303,7 +305,7 @@ describe('session-hub interactive launch', () => {
       const result = await launcher.launch(INPUT);
 
       expect(result).toEqual({ session: 'not_launched', reason });
-      expect(runTmux).not.toHaveBeenCalled();
+      expect(runSessionHub).toHaveBeenCalledTimes(2);
     }
   );
 
@@ -362,5 +364,66 @@ describe('session-hub interactive launch', () => {
       session: 'not_launched',
       reason: 'launch_failed:session_hub_unavailable'
     });
+  });
+});
+
+describe('session-hub launch on a non-tmux backend', () => {
+  const HERDR = { pane: 'wR:p2', window: 'wR:2', mux: 'herdr' };
+
+  test('keeps the pane handle and backend of an opened window', async () => {
+    const { launcher, runSessionHub } = makeHub({ open: HERDR });
+
+    const result = await launcher.launch(INPUT);
+
+    expect(result).toMatchObject({
+      session: 'launched',
+      pane_id: 'wR:p2',
+      mux: 'herdr'
+    });
+    expect(runSessionHub.mock.calls.at(-1)?.[0]).toEqual([
+      'alive',
+      '--pane',
+      'wR:p2',
+      '--marker-option',
+      INPUT.marker,
+      '--marker-value',
+      INPUT.key
+    ]);
+  });
+
+  test('adopts a found window under its own pane handle and backend', async () => {
+    const { launcher } = makeHub({
+      find: { found: true, ...LOCATION, ...HERDR }
+    });
+
+    const result = await launcher.launch(INPUT);
+
+    expect(result).toMatchObject({
+      session: 'already_running',
+      pane_id: 'wR:p2',
+      mux: 'herdr'
+    });
+  });
+
+  test('focuses a found click window by its pane handle', async () => {
+    const { launcher, runSessionHub } = makeHub({
+      find: { found: true, ...LOCATION, ...HERDR, tmux_session: 'dev' }
+    });
+
+    await launcher.launch({ ...INPUT, placement: 'user' });
+
+    expect(runSessionHub.mock.calls.at(-1)?.[0]).toEqual([
+      'focus',
+      '--pane',
+      'wR:p2'
+    ]);
+  });
+
+  test('reads a hub answer without a mux field as tmux', async () => {
+    const { launcher } = makeHub({ find: { found: true, ...LOCATION } });
+
+    const result = await launcher.launch(INPUT);
+
+    expect(result).toMatchObject({ session: 'already_running', mux: 'tmux' });
   });
 });

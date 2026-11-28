@@ -499,6 +499,7 @@ export function createSpecAuthoring(deps) {
         tmux_session: outcome.tmux_session,
         tmux_window: outcome.tmux_window,
         pane_id: outcome.pane_id,
+        mux: outcome.mux,
         cwd: root,
         launched_at: at,
         last_seen_alive_at: at,
