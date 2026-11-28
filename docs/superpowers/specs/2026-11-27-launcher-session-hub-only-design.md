@@ -11,6 +11,7 @@ scope:
   - server/worker/queue-store.js
   - server/worker/session-lane.js
   - server/ws/
+  - server/routes/agy-usage.js
   - server/config.js
   - app/views/worker/
   - app/views/usage-meter.js
@@ -52,6 +53,10 @@ beads-ui가 여는 대화 세션(방향 문의, 스펙 작성, 세션에서 해�
 - 런처는 화면에 보일 창 이름을 hub 응답과 따로 돌려준다 — `server/worker/tmux-launcher.js:786-787`, `:941-942`
 - Accepted ADR UI-19sj는 대화형 기동과 도달성 확인에 tmux를, Discord 알림 본문에 `tmux <세션:창>`을 적는다 — `docs/adr/UI-19sj-conversation-automatic-proceed.md:1372`, `:1377`, `:1501`, `:2003`
 - 위 줄 번호는 커밋 `6b9421e929e0fad852ef6e4a07f341be182cb40d` 기준이다.
+- agy 계정 자격을 바꾸는 동작은 agy 대화 창이 살아 있으면 시작하지 않는다(ADR UI-qlxsw). 그 확인은 PATH의 bare `tmux list-panes -a`로 `@agent_runtime`이 agy인 살아 있는 창을 찾고, 조회가 실패하면 창이 없다고 보고 agy-auth 자체 잠금에 맡긴다 — `server/routes/agy-usage.js:438-458`
+- 런처는 agy 창의 세션 ID를 이미 hub의 `list --all`(표식과 무관한 살아 있는 세션 목록, 행마다 `agent`·`pane`·`mux`)에서 찾는다 — `server/worker/tmux-launcher.js:1083-1101`
+- agy 사용량 띠의 로그인 도구 표시는 `agy·agy-auth·tmux`다 — `app/views/usage-meter.js:476`
+- 위 세 줄의 줄 번호는 커밋 `235e7b8b062038d6fc2bd0e8de961ba76fe7ae71` 기준이다.
 - 미확인: dotfiles 쪽 CLI의 새 명령 이름 — dotfiles 스펙은 동작과 응답의 뜻을 정하고 명령 이름은 그 구현이 정한다. 이 설계의 구현은 dotfiles 배포 뒤 설치된 CLI에서 이름을 읽어 맞춘다.
 
 ## 3. 설계
@@ -69,8 +74,10 @@ beads-ui가 여는 대화 세션(방향 문의, 스펙 작성, 세션에서 해�
 | 화면 읽기(끝줄 판정과 시작 질문 찾기) | 표식이 맞는 창의 보이는 화면 전체 읽기. 끝줄 판정과 질문 찾기는 지금처럼 런처가 한다 |
 | 창으로 초점 옮기기 | 창 또는 세션 ID로 초점 옮기기 |
 | 원래 세션의 창 위치 찾기 | 세션 ID가 도는 창의 위치 |
+| agy 대화 창이 살아 있는지(모든 창에서 런타임이 agy인 창 찾기) | hub의 살아 있는 세션 목록(`list --all`)에서 `agent`가 agy인 살아 있는 창. 조회 실패는 지금처럼 창 없음으로 보고 agy-auth 자체 잠금이 막는다 |
 
 - 한 번의 맞춰 보기에서 표식마다 따로 부르던 목록 읽기는 한 번의 호출로 묶는다(hub 목록이 표식 여럿을 받는다. dotfiles 스펙 §3.4). 호출이 실패하면 지금처럼 그 회차의 생존·넘겨받기 판정을 건너뛴다. 표식 달린 창이 없다는 성공 응답과 조회 실패는 다른 응답이다.
+- agy 자격 변경의 창 확인(`server/routes/agy-usage.js`)은 런처를 쓰지 않는 서버 경로지만 같은 이유로 bare tmux 대신 hub에 묻는다. herdr에 열린 agy 대화 창도 자격 변경을 막아야 ADR UI-qlxsw의 조정 규칙이 지켜진다.
 - 시작 때의 "tmux에 닿는가" 확인과 스펙 작성의 창 목록 확인은 hub에 묻는다. 실패 코드는 지금 이름(`tmux_unavailable`)을 그대로 받는다(dotfiles 스펙의 결정).
 
 ### 3.2 창 위치
@@ -93,7 +100,7 @@ beads-ui가 여는 대화 세션(방향 문의, 스펙 작성, 세션에서 해�
 
 - 결정: 계정 로그인 창(`server/routes/account-login.js`)은 바꾸지 않는다 — 사람이 보는 창이 아니라 로그인 명령을 붙들어 두는 자체 tmux 세션이고, tmux 실행 파일은 은퇴 뒤에도 도구로 남는다.
 - Worker 무인 실행(창 없이 도는 attempt)은 이 설계와 무관하다.
-- agy 실행 런타임 계획(`UI-ufgo`, `docs/superpowers/plans/2026-11-26-agy-runtime.md`)이 같은 런처와 스케줄러 파일을 고친다. 그 계획은 hub CLI의 `open` 인자와 시작 화면 판독에 agy를 더하는 것이라 이 설계와 뜻이 부딪히지 않는다. 이 설계는 dotfiles 배포를 기다리므로 보통 뒤에 착지하고, 먼저 착지한 쪽 위에 얹는다.
+- agy 실행 런타임 작업(`UI-6o70`, `UI-h0hwo`, `UI-myb6a`, `UI-qlxsw`, `UI-ufgo`, 계획 `docs/superpowers/plans/2026-11-26-agy-runtime.md`)은 커밋 `235e7b8b` 전에 먼저 착지했다. 런처가 hub CLI에 넘기는 `open` 인자, 시작 화면 판독, 창 목록 파서의 런타임 칸에 agy를 더했고, agy 자격 변경의 창 확인에 bare tmux 호출 하나를 새로 두었다. 이 설계는 그 위에 얹고, 그 호출은 3.1의 대응대로 hub로 옮긴다. agy 로그인 창(UI-qlxsw의 서버 전용 tmux 창)은 계정 로그인 창이므로 위 결정대로 바꾸지 않는다.
 
 ### 3.5 배포와 확인
 
@@ -109,7 +116,7 @@ beads-ui가 여는 대화 세션(방향 문의, 스펙 작성, 세션에서 해�
 4. beads-ui를 재시작하면 herdr에 열려 있던 표식 창을 다시 넘겨받는다.
 5. `[세션에서 이어가기]`와 `원래 창으로 이동`이 herdr 창으로 초점을 옮긴다.
 6. hub가 닿지 않으면 스펙 작성은 열지 않고 지금과 같은 안내를 보인다.
-7. 화면과 Discord 알림에 "tmux"라는 말이 계정 로그인 도구 표시(`cswap·tmux`) 밖에는 없다. 구현 이름은 화면에 보이지 않는다.
+7. 화면과 Discord 알림에 "tmux"라는 말이 계정 로그인 도구 표시(`cswap·tmux`, `agy·agy-auth·tmux`) 밖에는 없다. 구현 이름은 화면에 보이지 않는다.
 8. 세션 ID가 아직 없는 창의 시작 질문(Codex의 fork·신뢰·훅 질문)이 입력 줄 밖에 있어도 지금처럼 찾아진다.
 9. herdr 창의 ID가 바뀐 뒤(작업공간 이동)에도 같은 표식 값의 창이 살아 있으면 종료로 처리하지 않고 기록의 위치가 고쳐진다.
 
@@ -119,6 +126,7 @@ beads-ui가 여는 대화 세션(방향 문의, 스펙 작성, 세션에서 해�
 - `server/worker/queue-store` 테스트 — 구현 이름 필드가 정규화를 지나 남고, 없는 옛 기록은 tmux로 읽힌다
 - `server/worker/scheduler.test.js`의 대화 세션 맞춰 보기·넘겨받기·세션 레인 종료 사례
 - `server/worker/resolve-session.test.js`, `server/worker/direction-inquiry.test.js`, `server/worker/external-wait/session-resume.test.js`, `server/worker/session-inquiry/service.test.js` — 창 손잡이가 `%숫자`가 아닌 값일 때
+- `server/routes/agy-usage.test.js` — agy 대화 창 확인이 bare tmux 없이 hub 목록만으로 판정되고(두 구현의 행 포함), 조회 실패는 창 없음이다
 - 새 정적 검사 테스트 — 비테스트 코드의 `tmux` 실행 위치
 - 화면 문구 테스트(`app/views/worker/` 기존 묶음)
 - 저장소 기본 검증(이 저장소의 `repo-ops/script/verify`)
