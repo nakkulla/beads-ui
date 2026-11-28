@@ -111,7 +111,7 @@ export function adoptSessionDefaultValues(values) {
       adopted[key] = value;
     }
   }
-  return adopted;
+  return joinAgyWorkflowModels(adopted);
 }
 
 /**
@@ -290,6 +290,65 @@ export const IMPL_DISPATCHES = ['delegated', 'main'];
 /** Which runtime the delegated implementation leg runs on. */
 export const IMPL_RUNTIMES = ['auto', 'claude', 'codex', 'agy'];
 
+/**
+ * The agy families a workflow model slot stores, and the efforts an agy id
+ * carries. Mirrors server/worker/agy-model-list.js `AGY_FAMILIES`/`AGY_EFFORTS`
+ * (the two runtimes share no module; the test file asserts the equality).
+ */
+export const AGY_WORKFLOW_FAMILIES = ['neon', 'carbon', 'argon', 'hydrogen'];
+export const AGY_WORKFLOW_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
+
+const AGY_WORKFLOW_ID_RE = /^gemini-4-([a-z]+)-([a-z]+)$/;
+
+/**
+ * The (family, effort) pair an agy id of the four workflow families splits
+ * into, or null for any other value.
+ *
+ * @param {unknown} model
+ * @returns {{ family: string, effort: string }|null}
+ */
+export function agyWorkflowPair(model) {
+  const match =
+    typeof model === 'string' ? AGY_WORKFLOW_ID_RE.exec(model) : null;
+  if (
+    !match ||
+    !AGY_WORKFLOW_FAMILIES.includes(match[1]) ||
+    !AGY_WORKFLOW_EFFORTS.includes(match[2])
+  ) {
+    return null;
+  }
+  return { family: match[1], effort: match[2] };
+}
+
+/**
+ * Show a stored workflow (family, effort) pair as the agy id it came from
+ * (agy-runtime §3.3): the server splits a chosen id into the contract's pair,
+ * and every screen edits the id. The effort stays beside it, equal to the
+ * id's own, so a save sends a pair the server's split accepts.
+ *
+ * @template {Record<string, any>} T
+ * @param {T} values - Canonical names; `impl_*` and `quick_fix_impl_*`.
+ * @returns {T}
+ */
+export function joinAgyWorkflowModels(values) {
+  if (!isRecord(values)) {
+    return values;
+  }
+  /** @type {Record<string, any>} */
+  const out = { ...values };
+  for (const prefix of ['', 'quick_fix_']) {
+    const family = out[`${prefix}impl_model`];
+    const effort = out[`${prefix}impl_effort`];
+    if (
+      AGY_WORKFLOW_FAMILIES.includes(family) &&
+      AGY_WORKFLOW_EFFORTS.includes(effort)
+    ) {
+      out[`${prefix}impl_model`] = `gemini-4-${family}-${effort}`;
+    }
+  }
+  return /** @type {T} */ (out);
+}
+
 /** Service tier for the implementation leg; `fast` is Codex-only. */
 export const IMPL_SPEEDS = ['default', 'fast'];
 
@@ -371,7 +430,13 @@ export function implModelOptions(catalog, runtime) {
     runtime && runtime !== AUTO_LITERAL
       ? pairs.filter(([runner]) => runner === runtime)
       : pairs;
-  return [AUTO_LITERAL, ...selected.flatMap(([, models]) => models)];
+  // A workflow slot takes only the four agy families (agy-runtime §3.3).
+  return [
+    AUTO_LITERAL,
+    ...selected.flatMap(([runner, models]) =>
+      runner === 'agy' ? models.filter((m) => agyWorkflowPair(m)) : models
+    )
+  ];
 }
 
 /**
@@ -382,7 +447,7 @@ export function implModelOptions(catalog, runtime) {
  * @param {any} catalog
  * @param {string|null|undefined} runtime
  * @param {string|null|undefined} model
- * @param {(entry: Record<string, any>, model_entry: any) => unknown} vocabularyOf
+ * @param {(entry: Record<string, any>, model_entry: any, model_name: string, runner: string) => unknown} vocabularyOf
  * @returns {string[]}
  */
 function effortUnion(catalog, runtime, model, vocabularyOf) {
@@ -402,7 +467,7 @@ function effortUnion(catalog, runtime, model, vocabularyOf) {
       if (model && model !== AUTO_LITERAL && model_name !== model) {
         continue;
       }
-      const list = vocabularyOf(entry, model_entry);
+      const list = vocabularyOf(entry, model_entry, model_name, runner);
       if (!Array.isArray(list)) {
         continue;
       }
@@ -429,10 +494,20 @@ function effortUnion(catalog, runtime, model, vocabularyOf) {
  * @returns {string[]}
  */
 export function implEffortOptions(catalog, runtime, model) {
-  return effortUnion(catalog, runtime, model, (entry, model_entry) =>
-    isRecord(model_entry) && Array.isArray(model_entry.efforts)
-      ? model_entry.efforts
-      : entry.efforts
+  return effortUnion(
+    catalog,
+    runtime,
+    model,
+    (entry, model_entry, name, runner) => {
+      // An agy id carries its effort; a non-workflow agy id offers none.
+      if (runner === 'agy') {
+        const pair = agyWorkflowPair(name);
+        return pair ? [pair.effort] : [];
+      }
+      return isRecord(model_entry) && Array.isArray(model_entry.efforts)
+        ? model_entry.efforts
+        : entry.efforts;
+    }
   );
 }
 
@@ -513,10 +588,12 @@ export function narrowImplTarget(target, catalog) {
     ) {
       narrowed.impl_effort = undefined;
     }
-    return narrowed;
+    return withAgyIdEffort(narrowed);
   }
   const effective_runtime =
-    narrowed.impl_runtime === 'claude' || narrowed.impl_runtime === 'codex'
+    narrowed.impl_runtime === 'claude' ||
+    narrowed.impl_runtime === 'codex' ||
+    narrowed.impl_runtime === 'agy'
       ? narrowed.impl_runtime
       : null;
   if (!effective_runtime) {
@@ -538,7 +615,19 @@ export function narrowImplTarget(target, catalog) {
   ) {
     narrowed.impl_effort = undefined;
   }
-  return narrowed;
+  return withAgyIdEffort(narrowed);
+}
+
+/**
+ * An agy id names its effort, so the effort slot follows the id; the server's
+ * split refuses a different explicit effort (`agy_effort_conflict`).
+ *
+ * @param {{ impl_runtime: string|undefined, impl_model: string|undefined, impl_effort: string|undefined }} target
+ * @returns {{ impl_runtime: string|undefined, impl_model: string|undefined, impl_effort: string|undefined }}
+ */
+function withAgyIdEffort(target) {
+  const pair = agyWorkflowPair(target.impl_model);
+  return pair ? { ...target, impl_effort: pair.effort } : target;
 }
 
 /**
@@ -785,7 +874,7 @@ export function writablePresetSettings(settings) {
  */
 export function buildPresetDiff(current, preset, applies_to = 'general') {
   const before_values = isRecord(current) ? current : {};
-  const after_values = isRecord(preset) ? preset : {};
+  const after_values = isRecord(preset) ? joinAgyWorkflowModels(preset) : {};
   const diff_keys = presetDiffKeysFor(applies_to);
   /** @type {PresetDiffRow[]} */
   const rows = [];

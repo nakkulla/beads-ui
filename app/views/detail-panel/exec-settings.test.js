@@ -1013,3 +1013,68 @@ describe('views/detail-panel/exec-settings workflow_mode', () => {
     expect(onChange).toHaveBeenCalledWith('orchestration_model', 'sonnet');
   });
 });
+
+describe('views/detail-panel/exec-settings agy workflow model (UI-ufgo)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /** @returns {any} */
+  function agyCatalog() {
+    const catalog = catalogFixture();
+    catalog.runners.agy = {
+      command: 'agy',
+      efforts: [],
+      models: {
+        'gemini-4-neon-high': { id: 'gemini-4-neon-high' },
+        'gemini-4-neon-xhigh': { id: 'gemini-4-neon-xhigh' },
+        'claude-opus-5-5-high': { id: 'claude-opus-5-5-high' }
+      }
+    };
+    return catalog;
+  }
+
+  test('shows a pinned family and effort as its agy id among the family ids', () => {
+    const mount = mountTemplate(
+      { impl_runtime: 'agy', impl_model: 'neon', impl_effort: 'high' },
+      {},
+      agyCatalog()
+    );
+
+    const model = selectFor(mount, 'impl_model');
+    expect(model.value).toBe('gemini-4-neon-high');
+    expect(optionGroups(model)).toEqual([
+      { label: 'agy', values: ['gemini-4-neon-high', 'gemini-4-neon-xhigh'] }
+    ]);
+  });
+
+  test('pins a chosen agy id with its own effort', () => {
+    expect(
+      normalizeImplTarget(
+        {
+          impl_runtime: 'agy',
+          impl_model: 'gemini-4-neon-xhigh',
+          impl_effort: 'high'
+        },
+        agyCatalog()
+      )
+    ).toEqual({
+      impl_runtime: 'agy',
+      impl_model: 'gemini-4-neon-xhigh',
+      impl_effort: 'xhigh'
+    });
+  });
+
+  test('keeps a pinned family when only the runtime row is re-sent', () => {
+    expect(
+      normalizeImplTarget(
+        { impl_runtime: 'agy', impl_model: 'neon', impl_effort: 'high' },
+        agyCatalog()
+      )
+    ).toEqual({
+      impl_runtime: 'agy',
+      impl_model: 'gemini-4-neon-high',
+      impl_effort: 'high'
+    });
+  });
+});

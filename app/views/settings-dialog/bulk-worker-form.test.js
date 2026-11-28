@@ -234,6 +234,20 @@ describe('createBulkWorkerForm preset fill (UI-628r §2.2)', () => {
     expect(form.equalsPreset(settings)).toBe(true);
   });
 
+  test('fills a stored agy family and effort as the agy id (UI-ufgo)', () => {
+    const { form } = mount();
+    const settings = {
+      impl_runtime: 'agy',
+      impl_model: 'neon',
+      impl_effort: 'high'
+    };
+
+    form.applyPreset(settings);
+
+    expect(form.values().impl_model).toBe('gemini-4-neon-high');
+    expect(form.equalsPreset(settings)).toBe(true);
+  });
+
   test('stops matching the preset once one row moves', () => {
     const { host, form } = mount();
     const settings = { impl_runtime: 'codex', impl_model: 'sol' };

@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import {
+  AGY_EFFORTS as SERVER_AGY_EFFORTS,
+  AGY_FAMILIES as SERVER_AGY_FAMILIES
+} from '../../../server/worker/agy-model-list.js';
+import {
   APPLIES_TO_VALUES as SERVER_APPLIES_TO_VALUES,
   BEAD_PIN_KEYS as SERVER_BEAD_PIN_KEYS,
   GENERAL_PRESET_KEYS as SERVER_GENERAL_PRESET_KEYS,
@@ -8,6 +12,8 @@ import {
   QUICK_FIX_PRESET_KEYS as SERVER_QUICK_FIX_PRESET_KEYS
 } from '../../../server/worker/exec-enums.js';
 import {
+  AGY_WORKFLOW_EFFORTS,
+  AGY_WORKFLOW_FAMILIES,
   APPLIES_TO_VALUES,
   BEAD_APPLY_KEYS,
   BEAD_PIN_KEYS,
@@ -1108,5 +1114,95 @@ describe('common Worker draft', () => {
 
     expect(message).toContain(label);
     expect(message).not.toContain('미설정');
+  });
+});
+
+describe('agy workflow models (UI-ufgo, agy-runtime §3.3)', () => {
+  const AGY_CATALOG = {
+    runners: {
+      claude: { efforts: ['low', 'high'], models: { opus: { id: 'opus' } } },
+      agy: {
+        efforts: [],
+        models: {
+          'gemini-4-neon-high': { id: 'gemini-4-neon-high' },
+          'gemini-4-carbon-medium': { id: 'gemini-4-carbon-medium' },
+          'claude-opus-5-5-high': { id: 'claude-opus-5-5-high' }
+        }
+      }
+    }
+  };
+
+  test('mirrors the server family and effort vocabulary', () => {
+    expect(AGY_WORKFLOW_FAMILIES).toEqual([...SERVER_AGY_FAMILIES]);
+    expect(AGY_WORKFLOW_EFFORTS).toEqual([...SERVER_AGY_EFFORTS]);
+  });
+
+  test('offers only the four families ids as agy implementation models', () => {
+    const options = implModelOptions(AGY_CATALOG, 'agy');
+
+    expect(options).toEqual([
+      'auto',
+      'gemini-4-neon-high',
+      'gemini-4-carbon-medium'
+    ]);
+  });
+
+  test('offers an agy id its own effort only', () => {
+    const efforts = implEffortOptions(
+      AGY_CATALOG,
+      'agy',
+      'gemini-4-carbon-medium'
+    );
+
+    expect(efforts).toEqual(['auto', 'medium']);
+  });
+
+  test('takes the effort of a chosen agy id and drops a model agy cannot run', () => {
+    const chosen = narrowImplTarget(
+      {
+        impl_runtime: 'agy',
+        impl_model: 'gemini-4-neon-high',
+        impl_effort: 'low'
+      },
+      AGY_CATALOG
+    );
+    const switched = narrowImplTarget(
+      { impl_runtime: 'agy', impl_model: 'opus', impl_effort: 'high' },
+      AGY_CATALOG
+    );
+
+    expect(chosen).toEqual({
+      impl_runtime: 'agy',
+      impl_model: 'gemini-4-neon-high',
+      impl_effort: 'high'
+    });
+    expect(switched.impl_model).toBeUndefined();
+  });
+
+  test('shows a stored family and effort as the agy id they came from', () => {
+    const adopted = adoptSessionDefaultValues({
+      impl_runtime: 'agy',
+      impl_model: 'neon',
+      impl_effort: 'high',
+      quick_fix_impl_model: 'carbon',
+      quick_fix_impl_effort: 'medium'
+    });
+
+    expect(adopted).toEqual({
+      impl_runtime: 'agy',
+      impl_model: 'gemini-4-neon-high',
+      impl_effort: 'high',
+      quick_fix_impl_model: 'gemini-4-carbon-medium',
+      quick_fix_impl_effort: 'medium'
+    });
+  });
+
+  test('previews no change for a preset holding the stored pair of the shown id', () => {
+    const diff = buildPresetDiff(
+      { impl_model: 'gemini-4-neon-high', impl_effort: 'high' },
+      { impl_model: 'neon', impl_effort: 'high' }
+    );
+
+    expect(diff.rows).toEqual([]);
   });
 });

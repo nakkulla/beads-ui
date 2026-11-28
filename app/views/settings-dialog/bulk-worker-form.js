@@ -50,6 +50,7 @@ import {
   buildExecutionOptionView,
   implEffortOptions,
   implModelOptions,
+  joinAgyWorkflowModels,
   narrowImplTarget,
   normalizeAppliesTo,
   orchestrationEffortOptions,
@@ -698,7 +699,7 @@ export function createBulkWorkerForm({
    * @param {Record<string, any>|null|undefined} settings
    */
   function applyPreset(settings) {
-    const source = isRecord(settings) ? settings : {};
+    const source = isRecord(settings) ? joinAgyWorkflowModels(settings) : {};
     cleared_speeds.clear();
     for (const key of row_keys) {
       writeValue(key, storedValue(source[canonicalKeyOf(key)]) ?? undefined);
@@ -717,7 +718,7 @@ export function createBulkWorkerForm({
    * @returns {boolean}
    */
   function equalsPreset(settings) {
-    const source = isRecord(settings) ? settings : {};
+    const source = isRecord(settings) ? joinAgyWorkflowModels(settings) : {};
     // A row still on a hold has promised to leave each repo's own value alone
     // (§3.2). The whole-preset apply path writes EVERY key the preset names and
     // deletes the ones it omits, so it would break that promise: an empty hold
