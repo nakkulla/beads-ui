@@ -47,6 +47,7 @@ beads-ui는 Claude·Codex 두 런타임만 안다. 사용자가 2026-11-26에 `a
 - dotfiles 쪽은 별도 계획(`dotfiles-uop05`, 묶음 D1~D5)이다. 저장소 사이의 선행은 묶음 이슈끼리의 `blocks`로 건다: Phase 1은 `dotfiles-c5jko`(D1 값 수용), Phase 2는 `dotfiles-tede7`(D2 런타임 자산·가드), Phase 3은 `dotfiles-uop05`(D5 `agy-auth`), Phase 4는 `dotfiles-8171c`(D4 세션 허브)와 `dotfiles-h85sk`(D3 위임 전송과 계약 행)를 기다린다. 거꾸로 `dotfiles-tede7`은 Phase 1의 이슈를 기다린다. 각 Phase는 선행 묶음이 배포된 뒤에 구현에 들어간다.
 - 구현 세션은 실제 `agy`를 실행해도 된다(스펙 §1의 사용자 결정). 자동 테스트는 고정 입력과 가짜 실행 파일만 쓴다.
 - `agy`는 항상 launcher `~/.local/bin/agy`로 띄운다.
+- `agy-auth` 방식 확인(2026-11-28, `dotfiles-uop05`의 추가): agy 1.5.14는 로그인 토큰을 macOS 열쇠고리에 두므로 `agy-auth list --json`의 `capabilities`는 셋 다 거짓이고 `save`·`switch`·`remove`는 `not_supported`다. Phase 3(`UI-qlxsw`, PR #422)은 이 값으로 계정 추가·전환·삭제 화면과 자동 전환을 끄고 로그인 창을 `agy-auth exec-locked -- …`로 띄워 이미 착지했다. Phase 2의 자격 지문은 그대로 둔다: 토큰 파일이 없어 지문은 사실상 `credential-user-scope` 하나를 따르고 그 파일은 대화형 시작마다 다시 쓰이므로, Phase 4의 agy 대화 열기는 지문을 움직여 모델 목록을 한 번 더 읽게 한다. 토큰 갱신과 같은 허용된 비용이고, 계정 변경 때의 무효화는 Phase 3의 직접 호출이 맡는다.
 - Bead 본문·댓글 쓰기는 위임받은 잎이 하지 않고 그 Phase의 총괄이 한다.
 - 넘기기 전 검증은 `AGENTS.md`의 네 명령이다: `npm run tsc`, `npm run lint`, `npx prettier --write <바꾼 파일>`, `npx vitest run --reporter=dot`. 각 Phase의 집중 검증은 아래 검증 줄의 테스트 파일이다(`npx vitest run <파일…> --reporter=dot`).
 - ADR 파일은 `adr` 스킬로 쓰고 인덱스는 생성기로 다시 만든다.
