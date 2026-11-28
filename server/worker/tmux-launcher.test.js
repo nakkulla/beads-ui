@@ -1853,7 +1853,28 @@ describe('tmux-launcher agy conversations (UI-ufgo Phase 4)', () => {
     const found = await launcher.agySessionId('%9');
 
     expect(found).toEqual({ ok: true, session_id: 'agy-1' });
-    expect(calls).toEqual([['list']]);
+    expect(calls).toEqual([['list', '--all']]);
+  });
+
+  test('finds a freshly opened agy window the hub knows only from its manifest', async () => {
+    // A window opened with `-- agy` and no `--conversation` leaves no hub
+    // record; the hub lists its live manifest only under `list --all`.
+    const calls = [];
+    const launcher = createTmuxLauncher({
+      runSessionHub: async (args) => {
+        calls.push(args);
+        const sessions = args.includes('--all')
+          ? [{ session_id: 'agy-fresh', agent: 'agy', pane: '%9' }]
+          : [];
+        return hubReply({ total: sessions.length, sessions });
+      },
+      resolveRunner: (runner) => (runner === 'agy' ? AGY : null),
+      log: () => {}
+    });
+
+    const found = await launcher.agySessionId('%9');
+
+    expect(found).toEqual({ ok: true, session_id: 'agy-fresh' });
   });
 
   test('reads no agy conversation id while the hub lists none for the pane', async () => {

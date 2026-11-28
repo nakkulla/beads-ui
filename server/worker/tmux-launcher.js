@@ -1013,14 +1013,16 @@ export function createTmuxLauncher(deps = {}) {
   /**
    * The agy conversation id of one pane. agy never sets `@agent_session`, so
    * the id is read later from the hub's `list`, which names each agy session
-   * with its pane (agy-runtime §3.6). `session_id` is null until the hub lists
-   * an agy session on that pane.
+   * with its pane (agy-runtime §3.6). `--all` is required: a window opened
+   * with no `--conversation` has no hub record, and the hub lists its live
+   * manifest only with `--all`. `session_id` is null until the hub lists an
+   * agy session on that pane.
    *
    * @param {string} pane
    * @returns {Promise<{ ok: true, session_id: string|null }|{ ok: false, error: string }>}
    */
   async function agySessionId(pane) {
-    const listed = await hubChecked(['list']);
+    const listed = await hubChecked(['list', '--all']);
     if (!listed.ok) {
       return listed;
     }
