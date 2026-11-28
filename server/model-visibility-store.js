@@ -18,6 +18,8 @@
  * @property {string[]} disabled_models
  * @property {string[]} [seen_models] - Codex pinned names already observed;
  * absent in a file written before UI-gpac.
+ * @property {string[]} [seen_agy_models] - agy model ids already observed;
+ * absent until the first agy list arrives (UI-ufgo).
  */
 /**
  * @typedef {'conflict'|'invalid_disabled_models'|'unknown_model'|'runner_all_disabled'} ModelVisibilityErrorCode
@@ -31,6 +33,7 @@
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { AGY_DEFAULT_VISIBLE_MODELS } from './worker/agy-model-list.js';
 import { modelVisibilityFilePath } from './worker/state-paths.js';
 
 /**
@@ -88,6 +91,12 @@ function parseState(raw) {
     raw.seen_models.every((name) => typeof name === 'string')
   ) {
     state.seen_models = [.../** @type {string[]} */ (raw.seen_models)];
+  }
+  if (
+    Array.isArray(raw.seen_agy_models) &&
+    raw.seen_agy_models.every((name) => typeof name === 'string')
+  ) {
+    state.seen_agy_models = [.../** @type {string[]} */ (raw.seen_agy_models)];
   }
   return state;
 }
@@ -247,6 +256,9 @@ export function createModelVisibilityStore(options = {}) {
       if (current.seen_models) {
         next.seen_models = current.seen_models.slice();
       }
+      if (current.seen_agy_models) {
+        next.seen_agy_models = current.seen_agy_models.slice();
+      }
       persist(next);
       from_file = true;
       cache = next;
@@ -285,6 +297,59 @@ export function createModelVisibilityStore(options = {}) {
         disabled_models: [...new Set([...current.disabled_models, ...fresh])],
         seen_models: [...new Set([...seen, ...pinned_names])]
       };
+      if (current.seen_agy_models) {
+        next.seen_agy_models = current.seen_agy_models.slice();
+      }
+      try {
+        persist(next);
+        from_file = true;
+      } catch (err) {
+        warn(
+          `model-visibility: ${filePath()} 쓰기 실패(${String(err)}): 메모리에만 반영합니다.`
+        );
+      }
+      cache = next;
+      return true;
+    },
+
+    /**
+     * Hide the agy model ids that appear for the first time outside the
+     * default-visible five (agy-runtime §3.3).
+     *
+     * `names` are the ids of the current account's agy list. An id not yet in
+     * `seen_agy_models` and not one of `AGY_DEFAULT_VISIBLE_MODELS` is added to
+     * the disabled list, and every listed id becomes seen, so an id the user
+     * turned on is never hidden again. When hiding the new ids would leave no
+     * listed id visible, none is hidden. A persist failure keeps the change in
+     * memory.
+     *
+     * @param {ReadonlyArray<string>} names
+     * @returns {boolean} Whether the state changed.
+     */
+    observeAgyModels(names) {
+      const current = ensureLoaded();
+      const seen = current.seen_agy_models ?? [];
+      const fresh = names.filter((name) => !seen.includes(name));
+      if (fresh.length === 0) {
+        return false;
+      }
+      /** @type {string[]} */
+      let hidden = fresh.filter(
+        (name) => !AGY_DEFAULT_VISIBLE_MODELS.includes(name)
+      );
+      const disabled = new Set([...current.disabled_models, ...hidden]);
+      if (names.every((name) => disabled.has(name))) {
+        hidden = [];
+      }
+      /** @type {ModelVisibilityState} */
+      const next = {
+        revision: current.revision + 1,
+        disabled_models: [...new Set([...current.disabled_models, ...hidden])],
+        seen_agy_models: [...new Set([...seen, ...names])]
+      };
+      if (current.seen_models) {
+        next.seen_models = current.seen_models.slice();
+      }
       try {
         persist(next);
         from_file = true;

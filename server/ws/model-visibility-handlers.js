@@ -121,6 +121,26 @@ export function observeCodexModelList(input) {
 }
 
 /**
+ * The agy list hook (agy-runtime §3.3): hide the agy ids outside the
+ * default-visible five that the list shows for the first time, then push the
+ * snapshot — the catalog's agy choices changed either way. `names` is null
+ * while no list stands for the current credentials.
+ *
+ * @param {{ names: ReadonlyArray<string>|null }} input
+ */
+export function observeAgyModelList(input) {
+  const catalog = runtimeCatalog();
+  if (input.names && input.names.length > 0) {
+    try {
+      store().observeAgyModels(input.names);
+    } catch (err) {
+      log('model-visibility agy observe failed: %o', err);
+    }
+  }
+  fanout(wireSnapshot(store().snapshot(catalog), catalog));
+}
+
+/**
  * Detach a connection from the subscriber registry (close hook).
  *
  * @param {WebSocket} ws
