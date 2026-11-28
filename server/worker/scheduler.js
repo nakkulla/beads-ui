@@ -341,6 +341,8 @@ export function resolveExecProfile(bead, kv) {
 export const INTERACTIVE_EXIT_DEFER_MAX_MS = 1_800_000;
 const INTERACTIVE_UNREADABLE_GRACE_MS = 30_000;
 const INTERACTIVE_UNREADABLE_MESSAGE =
+  '마지막 답변을 읽지 못함 — 대화 세션 창에서 확인한 뒤 답하거나 [워커로 이어가기]';
+const LEGACY_INTERACTIVE_UNREADABLE_MESSAGE =
   '마지막 답변을 읽지 못함 — tmux 창에서 확인한 뒤 답하거나 [워커로 이어가기]';
 /**
  * 대기 진입 유예의 기본값 (2026-09-03 monitor-exec-material-queue-grace §3.3):
@@ -1578,6 +1580,31 @@ const INTERACTIVE_PANE_MARKERS = {
  */
 function recordWindowTarget(record) {
   return { marker: INTERACTIVE_PANE_MARKERS[record.kind], key: record.bead_id };
+}
+
+/**
+ * Confirm with the pane's own backend that a window missing from a `windows`
+ * listing is really gone. The hub reads an unreadable secondary backend as no
+ * rows, so a missing row alone cannot end anything. A record without a pane id
+ * has nothing to ask about and keeps the listing's verdict (`dead`).
+ *
+ * @param {{ paneAlive?: (pane_id: string, target: { marker: string, key: string }) => Promise<'alive'|'dead'|'unknown'> }} launcher
+ * @param {unknown} pane_id
+ * @param {{ marker: string, key: string }} target
+ * @returns {Promise<'alive'|'dead'|'unknown'>}
+ */
+async function confirmPaneGone(launcher, pane_id, target) {
+  if (typeof pane_id !== 'string' || pane_id.length === 0) {
+    return 'dead';
+  }
+  if (typeof launcher.paneAlive !== 'function') {
+    return 'unknown';
+  }
+  try {
+    return await launcher.paneAlive(pane_id, target);
+  } catch {
+    return 'unknown';
+  }
 }
 
 /**
@@ -11895,7 +11922,35 @@ export function createScheduler(deps) {
    * @param {Map<string, string|null>} targets - From
    * {@link sessionLaneObservationTargets}, taken before the listing.
    */
-  function observeSessionLaneAttempts(workspace, rows, targets) {
+  async function observeSessionLaneAttempts(workspace, rows, targets) {
+    const launcher = deps.interactiveLauncher;
+    /**
+     * The pane's own backend confirms each missing window before `gone_at` is
+     * written: a missing row can be a backend the listing could not read.
+     *
+     * @type {Map<string, 'alive'|'dead'|'unknown'>}
+     */
+    const confirmed = new Map();
+    for (const [attempt_id, attempt] of Object.entries(
+      deps.store.snapshot(workspace).attempts || {}
+    )) {
+      const a = /** @type {any} */ (attempt);
+      if (
+        !launcher ||
+        !targets.has(attempt_id) ||
+        !sessionLaneJudgeable(attempt_id, a) ||
+        sessionLaneWindowRow(rows, a) !== null
+      ) {
+        continue;
+      }
+      confirmed.set(
+        attempt_id,
+        await confirmPaneGone(launcher, a.interactive?.pane_id, {
+          marker: SESSION_LANE_PANE_MARKER,
+          key: a.bead_id
+        })
+      );
+    }
     const at = now();
     let changed = false;
     for (const [attempt_id, attempt] of Object.entries(
@@ -11931,6 +11986,16 @@ export function createScheduler(deps) {
           });
           changed = changed || relocated?.ok === true;
         }
+        continue;
+      }
+      if (confirmed.get(attempt_id) !== 'dead') {
+        log(
+          'session lane attempt %s not marked gone: %s',
+          attempt_id,
+          confirmed.get(attempt_id) === 'alive'
+            ? 'listing missed a live window'
+            : 'liveness unconfirmed'
+        );
         continue;
       }
       const result = deps.store.updateAttempt(workspace, {
@@ -14508,7 +14573,7 @@ export function createScheduler(deps) {
       session_lane: session_lane_panes.rows,
       spec_authoring: spec_authoring_panes.rows
     };
-    observeSessionLaneAttempts(
+    await observeSessionLaneAttempts(
       workspace,
       panes.session_lane,
       session_lane_targets
@@ -15776,6 +15841,26 @@ export function createScheduler(deps) {
         });
       }
       if (!pane_row) {
+        // A missing row can be a backend the listing could not read; only the
+        // pane's own backend saying `dead` ends the record this pass.
+        const confirmed = await confirmPaneGone(
+          launcher,
+          record.pane_id,
+          recordWindowTarget(record)
+        );
+        if (confirmed !== 'dead') {
+          log(
+            'interactive window %s not ended: %s',
+            key,
+            confirmed === 'alive'
+              ? 'listing missed a live window'
+              : 'liveness unconfirmed'
+          );
+          continue;
+        }
+        if (!isCurrent(key, record)) {
+          continue;
+        }
         // A session-lane window's end is its ATTEMPT's business (UI-lbm5
         // §4.5): the liveness observation above settles the attempt, and the
         // record only goes. No conversation handoff applies to it.
@@ -15841,7 +15926,8 @@ export function createScheduler(deps) {
           record.last_message !== null &&
           typeof record.last_message.at === 'number' &&
           record.last_message.at > record.launched_at &&
-          record.last_message.text !== INTERACTIVE_UNREADABLE_MESSAGE;
+          record.last_message.text !== INTERACTIVE_UNREADABLE_MESSAGE &&
+          record.last_message.text !== LEGACY_INTERACTIVE_UNREADABLE_MESSAGE;
         if (isCurrent(key, record)) {
           await observeStartup(key, record, marked || answered);
         }
@@ -16011,7 +16097,10 @@ export function createScheduler(deps) {
         const result = deps.store.recordInteractiveSession(workspace, {
           bead_id: pane.key,
           kind,
-          provider: pane.agent_runtime === 'codex' ? 'codex' : 'claude',
+          provider:
+            pane.agent_runtime === 'codex' || pane.agent_runtime === 'agy'
+              ? pane.agent_runtime
+              : 'claude',
           pane_id: pane.pane,
           tmux_session: pane.session,
           tmux_window: pane.window,
@@ -26678,7 +26767,23 @@ export function createScheduler(deps) {
         const listed = await launcher.listPanesExtended(
           SESSION_LANE_PANE_MARKER
         );
-        return listed.ok ? sessionLanePaneAlive(listed.rows, attempt) : null;
+        if (!listed.ok) {
+          return null;
+        }
+        const seen = sessionLanePaneAlive(listed.rows, attempt);
+        if (seen) {
+          return true;
+        }
+        const confirmed = await confirmPaneGone(
+          launcher,
+          pane_id,
+          window_target
+        );
+        return confirmed === 'dead'
+          ? false
+          : confirmed === 'alive'
+            ? true
+            : null;
       } catch {
         return null;
       }

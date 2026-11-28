@@ -66,7 +66,7 @@ export const UNATTENDED_PREAMBLE = [
 export const SESSION_LANE_PREAMBLE = [
   '세션 레인: 이 세션은 Worker 대기열이 차례가 되어 연 대화형 세션이다. 사용자가 이 Bead를 대기열에 올린 것이 구현 승인이므로 구현 시작 질문을 다시 묻지 않는다.',
   '',
-  '- 사람은 이 창(tmux 또는 Discord 브리지)에 들어와 답할 수 있다. 절차 질문(구현 시작·리뷰어 선택) 없이 fast_track으로 진행하고, 이슈에 원래 남은 사람 판단 지점에서만 대화로 묻고 턴을 끝내라.',
+  '- 사람은 이 대화 세션 창(또는 Discord 브리지)에 들어와 답할 수 있다. 절차 질문(구현 시작·리뷰어 선택) 없이 fast_track으로 진행하고, 이슈에 원래 남은 사람 판단 지점에서만 대화로 묻고 턴을 끝내라.',
   '- 사용자만 쓰는 Bead metadata 키 — `impl_dispatch`, `impl_entry`, `plan_approval`, `workflow_mode_source=user` — 는 이 세션이 쓰지 않는다. Worker가 시도 시작 시 스냅샷한 값이 바뀌면 머지 게이트가 영수증 위조로 fail-closed한다.',
   '- 작업을 마치면 아래 종점 절의 결과 줄을 마지막 메시지의 첫 줄로 쓰고 턴을 끝내라. Worker가 그 줄을 읽어 결과를 판정하고 창을 닫는다.'
 ].join('\n');

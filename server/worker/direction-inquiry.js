@@ -787,6 +787,7 @@ export function createDirectionInquiry(deps) {
             tmux_session: launched.tmux_session,
             tmux_window: launched.tmux_window,
             pane_id: launched.pane_id,
+            mux: launched.mux,
             cwd,
             launched_at,
             last_seen_alive_at: launched_at,

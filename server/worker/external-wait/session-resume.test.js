@@ -322,7 +322,7 @@ describe('session resume owner liveness', () => {
     expect(env.launcher.locateSession).not.toHaveBeenCalled();
   });
 
-  test('returns the command without launching when the owner is alive', async () => {
+  test('returns the command and the hub location without launching when the owner is alive', async () => {
     writeRegistry('61128.json', {
       pid: 61128,
       sessionId: SESSION,
@@ -330,7 +330,14 @@ describe('session resume owner liveness', () => {
       tmux: 'main:1.0'
     });
     const env = fixture({
-      run: async () => ({ code: 0, stdout: `${PROC_START}\n`, stderr: '' })
+      run: async () => ({ code: 0, stdout: `${PROC_START}\n`, stderr: '' }),
+      locate: {
+        ok: true,
+        found: true,
+        tmux_session: 'dev',
+        pane: 'wR:p2',
+        mux: 'herdr'
+      }
     });
 
     const result = await env.resume();
@@ -339,10 +346,30 @@ describe('session resume owner liveness', () => {
       session: 'not_launched',
       reason: 'owner_alive',
       command: `claude --resume '${SESSION}'`,
-      owner_tmux: 'main:1.0'
+      owner_tmux: 'dev'
     });
     expect(env.launcher.launch).not.toHaveBeenCalled();
     expect(env.resume_writes).toEqual([]);
+  });
+
+  test('leaves the owner location empty when the hub does not know the live owner', async () => {
+    writeRegistry('61128.json', {
+      pid: 61128,
+      sessionId: SESSION,
+      procStart: PROC_START,
+      tmux: 'main:1.0'
+    });
+    const env = fixture({
+      run: async () => ({ code: 0, stdout: `${PROC_START}\n`, stderr: '' }),
+      locate: { ok: false, error: 'tmux_unavailable' }
+    });
+
+    const result = await env.resume();
+
+    expect(result).toMatchObject({
+      reason: 'owner_alive',
+      owner_tmux: null
+    });
   });
 
   test('probes the registry pid in UTC and the C locale', async () => {

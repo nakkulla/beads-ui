@@ -65,6 +65,7 @@ function createWorkerRuntime() {
     ok: true,
     rows: []
   });
+  vi.spyOn(runtime.interactiveLauncher, 'paneAlive').mockResolvedValue('dead');
   return runtime;
 }
 

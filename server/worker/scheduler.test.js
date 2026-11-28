@@ -204,6 +204,7 @@ describe('interactive session reconciliation', () => {
       mux: 'tmux'
     };
     const launcher = {
+      paneAlive: vi.fn(async () => 'dead'),
       listPanesExtended: vi.fn(async (marker) => ({
         ok: true,
         rows: marker === RESOLVE_PANE_MARKER ? [pane] : []
@@ -247,6 +248,26 @@ describe('interactive session reconciliation', () => {
       }
     };
   }
+
+  test.each(['alive', 'unknown'])(
+    'keeps a record whose missing row the pane backend answers %s',
+    async (answer) => {
+      const h = interactiveFixture();
+      h.launcher.listPanesExtended.mockResolvedValue({ ok: true, rows: [] });
+      h.launcher.paneAlive.mockResolvedValue(/** @type {any} */ (answer));
+
+      await h.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(h.current()).toMatchObject({ state: 'live', pane_id: '%1' });
+      expect(h.launcher.paneAlive).toHaveBeenCalledWith('%1', {
+        marker: RESOLVE_PANE_MARKER,
+        key: 'B1'
+      });
+      expect(h.timeline.append).not.toHaveBeenCalledWith(
+        expect.objectContaining({ summary: '대화 세션 종료 · pane_gone' })
+      );
+    }
+  );
 
   test.each([
     ['live', 'pane_gone'],
@@ -767,6 +788,36 @@ describe('interactive session reconciliation', () => {
       });
     }
   );
+
+  test('keeps the agy runtime of a recovered herdr window', async () => {
+    const h = interactiveFixture();
+    h.store.removeInteractiveSession(WS, 'B1:resolve');
+    h.launcher.listPanesExtended.mockImplementation(async (name) => ({
+      ok: true,
+      rows:
+        name === INQUIRY_PANE_MARKER
+          ? [
+              {
+                ...h.pane,
+                pane: 'wR:p2',
+                mux: 'herdr',
+                agent_runtime: 'agy'
+              }
+            ]
+          : []
+    }));
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(
+      h.store.snapshot(WS).interactive_sessions['B1:inquiry']
+    ).toMatchObject({
+      provider: 'agy',
+      mux: 'herdr',
+      pane_id: 'wR:p2',
+      source: 'recovered'
+    });
+  });
 
   test('ignores recovery panes from another workspace', async () => {
     const h = interactiveFixture();
@@ -3802,6 +3853,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
     };
     const panes = { rows: [pane] };
     const launcher = {
+      paneAlive: vi.fn(async () => 'dead'),
       listPanesExtended: vi.fn(async (/** @type {string} */ marker) => ({
         ok: true,
         rows: marker === pane_marker ? panes.rows : []
@@ -4127,7 +4179,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
 
   describe('unreadable conversation answers', () => {
     const WARNING =
-      '마지막 답변을 읽지 못함 — tmux 창에서 확인한 뒤 답하거나 [워커로 이어가기]';
+      '마지막 답변을 읽지 못함 — 대화 세션 창에서 확인한 뒤 답하거나 [워커로 이어가기]';
 
     test.each([
       ['claude', 'inquiry'],
@@ -5446,6 +5498,7 @@ describe('failure conversation (UI-18a5 §3.4)', () => {
     };
     const panes = { rows: [pane] };
     const launcher = {
+      paneAlive: vi.fn(async () => 'dead'),
       listPanesExtended: vi.fn(async (/** @type {string} */ marker) => ({
         ok: true,
         rows: marker === RESOLVE_PANE_MARKER ? panes.rows : []
@@ -8595,6 +8648,7 @@ describe('repo-operation failure conversation (UI-jbl1 §3.3)', () => {
     };
     const panes = { rows: [pane] };
     const launcher = {
+      paneAlive: vi.fn(async () => 'dead'),
       listPanesExtended: vi.fn(async (/** @type {string} */ marker) => ({
         ok: true,
         rows: marker === RESOLVE_PANE_MARKER ? panes.rows : []
@@ -9277,6 +9331,7 @@ describe('session-inquiry conversation record (UI-gske §3.2)', () => {
       ]
     };
     const launcher = {
+      paneAlive: vi.fn(async () => 'dead'),
       listPanesExtended: vi.fn(async (/** @type {string} */ marker) => ({
         ok: true,
         rows: marker === EXTERNAL_RESUME_PANE_MARKER ? panes.rows : []
@@ -25833,6 +25888,7 @@ describe('scheduler worktree residue hygiene', () => {
       const wait_store = { unreadable: false };
       const launchForBead = vi.fn(async () => LAUNCHED);
       const launcher = {
+        paneAlive: vi.fn(async () => 'dead'),
         listPanesExtended: vi.fn(async () => ({ ok: true, rows: [] })),
         capturePaneTail: vi.fn(async () => ({ ok: true, line: '' })),
         sendExit: vi.fn(async () => ({ ok: true })),
@@ -43106,6 +43162,7 @@ describe('session lane (UI-lbm5)', () => {
           pane_id: '%7'
         };
       }),
+      paneAlive: vi.fn(async () => 'dead'),
       listPanesExtended: vi.fn(async (/** @type {string} */ marker) =>
         marker === SESSION_LANE_PANE_MARKER
           ? panes.ok
@@ -43797,6 +43854,39 @@ describe('session lane (UI-lbm5)', () => {
 
       expect(env.runner.spawnOrder).toEqual(['S2']);
     });
+
+    test('asks the pane backend with the recorded pane id before marking the window gone', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.panes.rows = [];
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.launcher.paneAlive).toHaveBeenCalledWith('%7', {
+        marker: SESSION_LANE_PANE_MARKER,
+        key: 'S1'
+      });
+    });
+
+    test.each(['alive', 'unknown'])(
+      'keeps the slot of a missing window the pane backend answers %s',
+      async (answer) => {
+        const env = laneEnv();
+        seedQueue(env.store, ['S1', 'S2']);
+        await env.scheduler.tick(WS);
+        env.launcher.paneAlive.mockResolvedValue(/** @type {any} */ (answer));
+        env.panes.rows = [];
+
+        await env.scheduler.reconcile(WS);
+        await env.scheduler.reconcile(WS);
+
+        expect(env.laneAttempt('S1').status).toBe('running');
+        expect(env.laneAttempt('S1').interactive.gone_at ?? null).toBeNull();
+        expect(env.laneRecord('S1')).toMatchObject({ state: 'live' });
+        expect(env.runner.spawnOrder).toEqual([]);
+      }
+    );
 
     test('does not retire a live session-lane cleanup diagnosis', async () => {
       const env = laneEnv({ config: {} });
@@ -45131,6 +45221,25 @@ describe('session lane (UI-lbm5)', () => {
       await env.scheduler.tick(WS);
       const attempt_id = env.laneAttempt('S1').attempt_id;
       env.panes.ok = false;
+
+      const result = await env.scheduler.finalizeDiscardAttempt(WS, attempt_id);
+
+      expect(result).toEqual({
+        ok: false,
+        reason: 'session_lane_unobservable'
+      });
+      expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe(
+        'running'
+      );
+    });
+
+    test('refuses the discard while the pane backend cannot confirm the window gone', async () => {
+      const env = laneEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = env.laneAttempt('S1').attempt_id;
+      env.panes.rows = [];
+      env.launcher.paneAlive.mockResolvedValue('unknown');
 
       const result = await env.scheduler.finalizeDiscardAttempt(WS, attempt_id);
 
@@ -47020,6 +47129,7 @@ describe('worker window startup auto-advance (UI-e5cq)', () => {
     /** @type {{ value: any }} */
     const message = { value: null };
     const launcher = {
+      paneAlive: vi.fn(async () => 'dead'),
       listPanesExtended: vi.fn(async (/** @type {string} */ marker) => ({
         ok: true,
         rows: marker === MARKERS[kind] ? [pane] : []
@@ -47525,20 +47635,23 @@ describe('worker window startup auto-advance (UI-e5cq)', () => {
     expect(env.record().startup_passed_at).toBeUndefined();
   });
 
-  test('does not pass a claude window on the server-made unreadable notice', async () => {
-    const env = windowEnv();
-    env.store.updateInteractiveSession(WS, 'W1:resolve', {
-      last_message: {
-        text: '마지막 답변을 읽지 못함 — tmux 창에서 확인한 뒤 답하거나 [워커로 이어가기]',
-        at: 2000
-      },
-      last_message_read_at: 5000
-    });
+  test.each([
+    '마지막 답변을 읽지 못함 — 대화 세션 창에서 확인한 뒤 답하거나 [워커로 이어가기]',
+    '마지막 답변을 읽지 못함 — tmux 창에서 확인한 뒤 답하거나 [워커로 이어가기]'
+  ])(
+    'does not pass a claude window on the server-made unreadable notice %#',
+    async (text) => {
+      const env = windowEnv();
+      env.store.updateInteractiveSession(WS, 'W1:resolve', {
+        last_message: { text, at: 2000 },
+        last_message_read_at: 5000
+      });
 
-    await env.passAt(3000);
+      await env.passAt(3000);
 
-    expect(env.record().startup_passed_at).toBeUndefined();
-  });
+      expect(env.record().startup_passed_at).toBeUndefined();
+    }
+  );
 
   test('clears a screen wait when the hub reports a codex window started', async () => {
     const env = windowEnv({ provider: 'codex' });

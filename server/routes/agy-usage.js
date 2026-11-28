@@ -429,10 +429,13 @@ export function __resetCacheForTest() {
 }
 
 /**
- * Whether an agy conversation window is alive on any multiplexer: a live row
- * of the session hub's `list --all` (state not `ended`, with a pane) whose
- * agent is agy. Such a window holds the agy lock as long as it lives; an
- * unreadable hub answers false and agy-auth's own lock still refuses.
+ * Whether an agy conversation window is alive on any multiplexer: either a
+ * live pane the session hub's `windows --marker @agent_runtime` lists with the
+ * `agy` runtime (found before its conversation id is registered), or a live
+ * row of `list --all` (state not `ended`, with a pane) whose agent is agy. Such
+ * a window holds the agy lock as long as it lives. An unreadable or unparseable
+ * answer from one source counts as no window from that source; agy-auth's own
+ * lock still refuses.
  *
  * @param {{ runSessionHub?: (args: string[]) => Promise<{ code: number, stdout: string, stderr: string }> }} [options]
  * @returns {Promise<boolean>}
@@ -444,25 +447,41 @@ export async function agyConversationOpen(options = {}) {
       runShell(path.join(os.homedir(), 'bin', 'session-hub'), args, {
         timeout_ms: HUB_TIMEOUT_MS
       }));
-  try {
-    const result = await runSessionHub(['list', '--all']);
-    if (result.code !== 0) {
-      return false;
+  /**
+   * @param {string[]} args
+   * @param {string} field
+   * @returns {Promise<any[]>}
+   */
+  async function hubRows(args, field) {
+    try {
+      const result = await runSessionHub(args);
+      if (result.code !== 0) {
+        return [];
+      }
+      const rows = JSON.parse(result.stdout)?.[field];
+      return Array.isArray(rows) ? rows : [];
+    } catch {
+      return [];
     }
-    const sessions = JSON.parse(result.stdout)?.sessions;
-    return (
-      Array.isArray(sessions) &&
-      sessions.some(
-        (row) =>
-          row?.agent === 'agy' &&
-          row.state !== 'ended' &&
-          typeof row.pane === 'string' &&
-          row.pane.length > 0
-      )
-    );
-  } catch {
-    return false;
   }
+  const [windows, sessions] = await Promise.all([
+    hubRows(['windows', '--marker', '@agent_runtime'], 'windows'),
+    hubRows(['list', '--all'], 'sessions')
+  ]);
+  return (
+    windows.some(
+      (row) =>
+        (row?.markers?.['@agent_runtime'] === 'agy' || row?.value === 'agy') &&
+        row.dead !== true
+    ) ||
+    sessions.some(
+      (row) =>
+        row?.agent === 'agy' &&
+        row.state !== 'ended' &&
+        typeof row.pane === 'string' &&
+        row.pane.length > 0
+    )
+  );
 }
 
 /**

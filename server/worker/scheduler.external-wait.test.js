@@ -1332,6 +1332,7 @@ function sessionFixture(options = {}) {
           pane_id: '%7'
         }
     ),
+    paneAlive: vi.fn(async () => 'dead'),
     listPanesExtended: vi.fn(
       async () => options.panes || { ok: true, rows: [] }
     ),
@@ -2010,6 +2011,7 @@ describe('외부 작업 완료 conversation (UI-18a5 §3.4)', () => {
     const panes = { rows: [pane] };
     const launcher = {
       launch: vi.fn(),
+      paneAlive: vi.fn(async () => 'dead'),
       listPanesExtended: vi.fn(async (/** @type {string} */ marker) => ({
         ok: true,
         rows: marker === EXTERNAL_RESUME_PANE_MARKER ? panes.rows : []

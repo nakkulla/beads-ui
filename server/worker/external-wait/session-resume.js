@@ -496,7 +496,7 @@ export function createExternalWaitSessionResume(deps) {
       session_id,
       host: ''
     });
-    const liveness = await ownerLiveness(provider, session_id);
+    const liveness = await ownerLocation(provider, session_id);
     if (liveness.state === 'alive') {
       return notLaunched('owner_alive', {
         command,

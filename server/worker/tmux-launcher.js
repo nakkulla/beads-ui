@@ -569,7 +569,7 @@ export function createTmuxLauncher(deps = {}) {
         window:
           typeof row.window_name === 'string' && row.window_name.length > 0
             ? row.window_name
-            : String(row.window ?? ''),
+            : key,
         pane: row.pane,
         dead: row.dead === true ? '1' : '0',
         agent_running: row.running === true ? '1' : '',
@@ -611,6 +611,43 @@ export function createTmuxLauncher(deps = {}) {
         mux: row.mux
       }))
     };
+  }
+
+  /**
+   * Whether one marked pane is still alive, asked of the backend that owns the
+   * pane. A missing row in a `windows` listing is no proof of death: the hub
+   * reads an unreadable secondary backend as no rows, so a caller confirms
+   * here before it ends anything. Any hub error, missing input or other answer
+   * is `unknown`.
+   *
+   * @param {string|null|undefined} pane_id
+   * @param {{ marker: string, key: string }|null|undefined} target
+   * @returns {Promise<'alive'|'dead'|'unknown'>}
+   */
+  async function paneAlive(pane_id, target) {
+    if (
+      typeof pane_id !== 'string' ||
+      pane_id.length === 0 ||
+      !target ||
+      typeof target.marker !== 'string' ||
+      typeof target.key !== 'string'
+    ) {
+      return 'unknown';
+    }
+    const read = await hubChecked([
+      'alive',
+      '--pane',
+      pane_id,
+      '--marker-option',
+      target.marker,
+      '--marker-value',
+      target.key
+    ]);
+    if (!read.ok) {
+      return 'unknown';
+    }
+    const alive = read.value.alive;
+    return alive === 'alive' || alive === 'dead' ? alive : 'unknown';
   }
 
   /**
@@ -1358,6 +1395,7 @@ export function createTmuxLauncher(deps = {}) {
   return {
     listPanes,
     listPanesExtended,
+    paneAlive,
     probe,
     sendExit,
     killWindow,

@@ -521,6 +521,35 @@ describe('direction-inquiry same-session launch', () => {
     });
   });
 
+  test('records the multiplexer the hub opened the window on', async () => {
+    const tmux = launchingHub();
+    const recordInteractiveSession = vi.fn();
+    const { inquiry } = makeInquiry({
+      tmux: {
+        ...tmux,
+        runSessionHub: async (/** @type {string[]} */ args) => {
+          const reply = await tmux.runSessionHub(args);
+          if (args[0] !== 'open') {
+            return reply;
+          }
+          const value = JSON.parse(reply.stdout);
+          return {
+            ...reply,
+            stdout: JSON.stringify({ ...value, mux: 'herdr' })
+          };
+        }
+      },
+      store: { recordInteractiveSession }
+    });
+
+    await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(recordInteractiveSession).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ pane_id: '%9', mux: 'herdr' })
+    );
+  });
+
   test('resumes the Claude attempt session without a new session id', async () => {
     const tmux = launchingHub();
     const { inquiry } = makeInquiry({

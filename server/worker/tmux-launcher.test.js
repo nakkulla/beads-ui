@@ -63,6 +63,69 @@ function hubLauncher(reply) {
   return { launcher: createTmuxLauncher({ runSessionHub }), runSessionHub };
 }
 
+describe('hub pane liveness', () => {
+  test('asks the pane backend with the marker and maps the answer', async () => {
+    const { launcher, runSessionHub } = hubLauncher({ alive: 'dead' });
+
+    const alive = await launcher.paneAlive('%26', {
+      marker: RESOLVE_PANE_MARKER,
+      key: 'UI-1'
+    });
+
+    expect(alive).toBe('dead');
+    expect(runSessionHub).toHaveBeenCalledExactlyOnceWith([
+      'alive',
+      '--pane',
+      '%26',
+      '--marker-option',
+      RESOLVE_PANE_MARKER,
+      '--marker-value',
+      'UI-1'
+    ]);
+  });
+
+  test.each(['alive', 'unknown'])(
+    'passes the %s answer through',
+    async (answer) => {
+      const { launcher } = hubLauncher({ alive: answer });
+
+      const alive = await launcher.paneAlive('%1', {
+        marker: RESOLVE_PANE_MARKER,
+        key: 'UI-1'
+      });
+
+      expect(alive).toBe(answer);
+    }
+  );
+
+  test('reads a hub error or a stray answer as unknown', async () => {
+    const failing = hubLauncher(() =>
+      hubReply({ code: 'tmux_unavailable' }, 3)
+    );
+    const stray = hubLauncher({ alive: 'maybe' });
+    const target = { marker: RESOLVE_PANE_MARKER, key: 'UI-1' };
+
+    const results = await Promise.all([
+      failing.launcher.paneAlive('%1', target),
+      stray.launcher.paneAlive('%1', target)
+    ]);
+
+    expect(results).toEqual(['unknown', 'unknown']);
+  });
+
+  test('reads a missing pane id or target as unknown without asking the hub', async () => {
+    const { launcher, runSessionHub } = hubLauncher({ alive: 'dead' });
+
+    const results = await Promise.all([
+      launcher.paneAlive(null, { marker: RESOLVE_PANE_MARKER, key: 'UI-1' }),
+      launcher.paneAlive('%1', null)
+    ]);
+
+    expect(results).toEqual(['unknown', 'unknown']);
+    expect(runSessionHub).not.toHaveBeenCalled();
+  });
+});
+
 describe('hub window listing', () => {
   test.each(['UI-gcf6', 'foreign:rig:UI-gcf6'])(
     'preserves marker value %j and pane liveness',
@@ -156,6 +219,24 @@ describe('hub window listing', () => {
       { ok: false, error: 'tmux_unavailable' },
       { ok: false, error: 'tmux_unavailable' }
     ]);
+  });
+
+  test('names a window the hub left unnamed by its marker value', async () => {
+    const { launcher } = hubLauncher({
+      windows: [
+        hubWindow(RESOLVE_PANE_MARKER, 'UI-nm1', {
+          window: '@7',
+          window_name: null
+        })
+      ]
+    });
+
+    const result = await launcher.listPanesExtended(RESOLVE_PANE_MARKER);
+
+    expect(result).toMatchObject({
+      ok: true,
+      rows: [{ key: 'UI-nm1', window: 'UI-nm1' }]
+    });
   });
 
   test('reads a reachable hub with no marked window as an empty list', async () => {

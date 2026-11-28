@@ -568,6 +568,66 @@ describe('agy conversation window detection', () => {
     expect(open).toBe(true);
   });
 
+  /**
+   * @param {{ windows?: Record<string, unknown>[], sessions?: Record<string, unknown>[] }} answers
+   */
+  const hubBySubcommand = ({ windows = [], sessions = [] }) =>
+    vi.fn(async (/** @type {string[]} */ args) => ({
+      code: 0,
+      stdout: JSON.stringify(
+        args[0] === 'windows' ? { ok: true, windows } : { ok: true, sessions }
+      ),
+      stderr: ''
+    }));
+
+  test('finds a live agy window before its conversation id is registered', async () => {
+    const runSessionHub = hubBySubcommand({
+      windows: [
+        {
+          marker: '@agent_runtime',
+          value: 'agy',
+          markers: { '@agent_runtime': 'agy' },
+          pane: '%26',
+          dead: false,
+          mux: 'tmux'
+        }
+      ],
+      sessions: [{ agent: 'claude', state: 'idle', pane: '%26', mux: 'tmux' }]
+    });
+
+    const open = await agyConversationOpen({ runSessionHub });
+
+    expect(open).toBe(true);
+    expect(runSessionHub).toHaveBeenCalledWith([
+      'windows',
+      '--marker',
+      '@agent_runtime'
+    ]);
+  });
+
+  test('ignores a dead agy window and a window of another runtime', async () => {
+    const runSessionHub = hubBySubcommand({
+      windows: [
+        {
+          markers: { '@agent_runtime': 'agy' },
+          pane: '%26',
+          dead: true,
+          mux: 'tmux'
+        },
+        {
+          markers: { '@agent_runtime': 'codex' },
+          pane: '%27',
+          dead: false,
+          mux: 'tmux'
+        }
+      ]
+    });
+
+    const open = await agyConversationOpen({ runSessionHub });
+
+    expect(open).toBe(false);
+  });
+
   test('ignores an ended agy row and one without a pane', async () => {
     const runSessionHub = hub([
       { agent: 'agy', state: 'ended', pane: '%2', mux: 'tmux' },
