@@ -11,6 +11,8 @@ describe('continuationRefusalClass (2026-10-01 stall-reconcile D1)', () => {
     ['git_error', 'transient'],
     ['attempt_prerecord_failed', 'transient'],
     ['agy_model_list_unavailable', 'transient'],
+    ['agy_credential_change', 'transient'],
+    ['spawn_failed:agy_credential_change', 'transient'],
     ['provider_gate', 'wait'],
     ['prerequisite_unmet', 'wait'],
     ['not_ready:in_progress', 'wait'],

@@ -81,7 +81,12 @@ import {
   WORKSPACE_ACCOUNTS_KV_KEY,
   normalizeWorkspaceAccounts
 } from '../workspace-accounts.js';
-import { AGY_HOLD_ACCOUNT, agyModelList } from './agy-model-list.js';
+import {
+  AGY_HOLD_ACCOUNT,
+  agyCredentialChangeActive,
+  agyModelList,
+  agyUsageWindows
+} from './agy-model-list.js';
 import { buildAttemptFacts } from './attempt-facts.js';
 import { writeAttemptPrompts } from './attempt-prompts.js';
 import { observeBaseDrift } from './base-drift.js';
@@ -1158,6 +1163,9 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {{ ready: () => boolean, names: () => string[], checkCredentials: () => boolean, quota: () => Promise<import('./agy-model-list.js').AgyQuota> }} [agyModels]
  * The agy model list and pre-run quota read (agy-runtime §3.2-§3.3); the
  * process-wide reader when absent.
+ * @property {{ list: () => Promise<import('../routes/agy-usage.js').AgyAuthList>, switchTo: (name: string) => Promise<{ ok: boolean, error?: string }> }} [agyAccounts]
+ * The agy-auth slots and the switch an exhausted Gemini quota tries before it
+ * holds (agy-runtime §3.5). No auto-switch when absent.
  */
 
 // Per-lane occupancy is the store's ONE walk (`queue-store.js` `laneHolds`):
@@ -1608,6 +1616,9 @@ const NO_WORKER_EXIT_REFUSAL = '이 행에는 Worker 출구 없음';
 
 /** Refusal reason for an agy launch while no model list stands. */
 const AGY_MODEL_LIST_UNAVAILABLE = 'agy_model_list_unavailable';
+
+/** Refusal reason for an agy launch while an agy credential change runs. */
+const AGY_CREDENTIAL_CHANGE = 'agy_credential_change';
 
 /**
  * Refusal reason for an agy launch whose model is not on the current list —
@@ -2188,7 +2199,7 @@ export function createScheduler(deps) {
    * durable pause that only waited for the process would let a late parent
    * callback release the child's claim.
    *
-   * @type {Map<string, { bead_id: string, repo: string, handle: RunnerHandle, prior: string|null, settled: Promise<any> }>}
+   * @type {Map<string, { bead_id: string, repo: string, runner: string, handle: RunnerHandle, prior: string|null, settled: Promise<any> }>}
    */
   const running = new Map();
   /** Beads currently claimed (dispatching or running) — prevents double launch. @type {Set<string>} */
@@ -5018,6 +5029,9 @@ export function createScheduler(deps) {
    * @returns {string|null}
    */
   function agyListRefusal(model) {
+    if (agyCredentialChangeActive()) {
+      return AGY_CREDENTIAL_CHANGE;
+    }
     const models = deps.agyModels || agyModelList();
     models.checkCredentials();
     if (!models.ready()) {
@@ -5069,6 +5083,11 @@ export function createScheduler(deps) {
     if (quota.state !== 'exhausted') {
       return { held: false };
     }
+    // A switched account is judged by the list re-check after this gate: the
+    // switch invalidates the list, so this launch waits for the new one.
+    if (await agyAutoSwitch()) {
+      return { held: false };
+    }
     const message = `agy Gemini quota exhausted (${quota.buckets.join(', ')})`;
     try {
       deps.store.providerHolds.enter({
@@ -5098,6 +5117,54 @@ export function createScheduler(deps) {
       account: AGY_HOLD_ACCOUNT,
       unresolved: false
     };
+  }
+
+  /**
+   * Switch the agy account to another saved slot when the active one is
+   * exhausted (agy-runtime §3.5). Only between runs — never while an agy run
+   * is live — and only when `agy-auth` reports `switch`. A candidate has room
+   * in every window the slot's stored observation names (ADR UI-d9c1).
+   *
+   * @returns {Promise<boolean>} Whether the account switched.
+   */
+  async function agyAutoSwitch() {
+    const accounts = deps.agyAccounts;
+    if (!accounts) {
+      return false;
+    }
+    for (const entry of running.values()) {
+      if (entry.runner === 'agy') {
+        return false;
+      }
+    }
+    try {
+      const list = await accounts.list();
+      if (!list.ok || list.capabilities.switch !== true) {
+        return false;
+      }
+      const candidate = list.slots.find(
+        (slot) =>
+          !slot.active &&
+          slot.name !== list.active &&
+          windowsHaveRoom(
+            /** @type {any} */ ({ windows: agyUsageWindows(slot.usage ?? []) }),
+            null
+          )
+      );
+      if (!candidate) {
+        return false;
+      }
+      const result = await accounts.switchTo(candidate.name);
+      if (!result.ok) {
+        log('agy auto-switch to %s failed: %s', candidate.name, result.error);
+        return false;
+      }
+      log('agy auto-switch to %s', candidate.name);
+      return true;
+    } catch (err) {
+      log('agy auto-switch failed: %o', err);
+      return false;
+    }
   }
 
   /**
@@ -18482,6 +18549,17 @@ export function createScheduler(deps) {
       }
     }
 
+    // The dispatch gates read the agy credential-change flag many awaits ago,
+    // and a change sees a run only once the record below names its runner.
+    // Read the flag again with no await before the spawn, so either the change
+    // sees this run or this run sees the change.
+    if (runner_name === 'agy' && agyCredentialChangeActive()) {
+      const refusal = `spawn_failed:${AGY_CREDENTIAL_CHANGE}`;
+      log('launch refused for %s: %s', attempt_id, refusal);
+      await finalizeLaunchRefusal(input, refusal, false);
+      return { ok: false, reason: refusal };
+    }
+
     /** @type {RunnerHandle} */
     let handle;
     const release_launch =
@@ -18880,6 +18958,7 @@ export function createScheduler(deps) {
     running.set(attempt_id, {
       bead_id,
       repo,
+      runner: runner_name,
       handle,
       prior: prior_wf,
       settled

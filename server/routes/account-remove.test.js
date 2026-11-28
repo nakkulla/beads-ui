@@ -10,6 +10,8 @@ import {
   isSwitchInFlight,
   releaseSwitchLock
 } from './account-switch.js';
+import { createAgyRemoveHandler } from './agy-account.js';
+import { runAgyCredentialChange } from './agy-usage.js';
 
 /**
  * @import { CommandResult } from './account-login.js'
@@ -494,5 +496,125 @@ describe('account references', () => {
     );
 
     expect(found.unchecked_repos).toBe(1);
+  });
+});
+
+describe('agy account removal', () => {
+  /**
+   * @param {{ busy?: boolean, capabilities?: { save: boolean, switch: boolean, remove: boolean } }} [options]
+   */
+  function agyRemoveHarness(options = {}) {
+    const listAccounts = vi.fn(async () => ({
+      ok: /** @type {const} */ (true),
+      capabilities: options.capabilities || {
+        save: true,
+        switch: true,
+        remove: true
+      },
+      active: 'main',
+      slots: [
+        {
+          name: 'main',
+          account: 'main@gmail.test',
+          active: true,
+          saved_at: null,
+          usage: null,
+          usage_at: null
+        },
+        {
+          name: 'spare',
+          account: 'spare@gmail.test',
+          active: false,
+          saved_at: null,
+          usage: null,
+          usage_at: null
+        }
+      ]
+    }));
+    const runRemove = vi.fn(async () => ({ ok: true, removed: 'spare' }));
+    const invalidateModels = vi.fn();
+    const invalidateUsage = vi.fn();
+    const change = (/** @type {() => Promise<any>} */ action) =>
+      runAgyCredentialChange(action, {
+        begin: () => true,
+        end: () => {},
+        busy: async () => options.busy === true,
+        settle: async () => {},
+        invalidateModels,
+        invalidateUsage
+      });
+    const handler = createAgyRemoveHandler({ listAccounts, runRemove, change });
+    /**
+     * @param {unknown} body
+     */
+    async function post(body) {
+      const res = fakeResponse();
+      await handler(/** @type {any} */ ({ body }), res, () => {});
+      return { status: res.statusCode, body: res.body };
+    }
+    return { post, runRemove, invalidateModels, invalidateUsage };
+  }
+
+  test('asks for a confirm before removing', async () => {
+    const h = agyRemoveHarness();
+
+    const response = await h.post({ number: 2, key: 'spare' });
+
+    expect(response.body).toEqual({
+      ok: false,
+      error: 'confirm_required',
+      refs: [],
+      unchecked_repos: 0
+    });
+    expect(h.runRemove).not.toHaveBeenCalled();
+  });
+
+  test('removes the confirmed slot and invalidates usage', async () => {
+    const h = agyRemoveHarness();
+
+    const response = await h.post({ number: 2, key: 'spare', confirm: true });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ ok: true });
+    expect(h.runRemove).toHaveBeenCalledWith('spare');
+    expect(h.invalidateModels).toHaveBeenCalledOnce();
+    expect(h.invalidateUsage).toHaveBeenCalledOnce();
+  });
+
+  test('answers busy without removing while an agy run is going', async () => {
+    const h = agyRemoveHarness({ busy: true });
+
+    const response = await h.post({ number: 2, key: 'spare', confirm: true });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({ ok: false, error: 'busy' });
+    expect(h.runRemove).not.toHaveBeenCalled();
+  });
+
+  test('refuses a removal agy-auth does not support', async () => {
+    const h = agyRemoveHarness({
+      capabilities: { save: false, switch: false, remove: false }
+    });
+
+    const response = await h.post({ number: 2, key: 'spare', confirm: true });
+
+    expect(response.body).toEqual({ ok: false, error: 'not_supported' });
+  });
+
+  test('refuses to remove the active slot', async () => {
+    const h = agyRemoveHarness();
+
+    const response = await h.post({ number: 1, key: 'main', confirm: true });
+
+    expect(response.body).toEqual({ ok: false, error: 'account_active' });
+    expect(h.runRemove).not.toHaveBeenCalled();
+  });
+
+  test('answers account_changed when the number names another slot now', async () => {
+    const h = agyRemoveHarness();
+
+    const response = await h.post({ number: 2, key: 'old', confirm: true });
+
+    expect(response.body).toEqual({ ok: false, error: 'account_changed' });
   });
 });

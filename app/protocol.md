@@ -2058,6 +2058,64 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
   missing catalog, kv or transcript evidence fails quiet with unknown values.
   Projection errors retain the existing error envelope and refresh flow.
 
+## agy usage and accounts (agy-runtime §3.4/§3.5)
+
+HTTP routes beside `/api/claude-usage` and `/api/codex-usage`; tailnet binding,
+no token. `GET /api/agy-usage` answers with `Cache-Control: no-store`.
+
+| Route                          | Request                     | Answer                                                                                    |
+| ------------------------------ | --------------------------- | ----------------------------------------------------------------------------------------- |
+| `GET /api/agy-usage`           | —                           | `{ available, provider:'agy', windows, fetchedAt, ageSeconds, capabilities, accounts[] }` |
+| `POST /api/agy-account/switch` | `{ number }`                | `agy-auth switch --json` result, or `{ ok:false, error }`                                 |
+| `POST /api/agy-account/remove` | `{ number, key, confirm? }` | `agy-auth remove --json` result, or `{ ok:false, error }`                                 |
+
+- `windows` are `5h` and `7d` per bucket: the Gemini bucket unprefixed, the
+  Claude·GPT bucket as `Claude·GPT 5h`/`Claude·GPT 7d`. `pct` is the used share
+  (100 − remaining). The active account's windows come from the agy `/usage`
+  read; every other slot's are the last values `agy-auth list` kept, with
+  `fetchedAt` the time it kept them. The answer is cached 180 seconds.
+- `accounts[].number` is the slot's position in `agy-auth list --json` (1-based)
+  and `key`/`alias` the slot name. With no active slot the live login is a row
+  `{ key:'active', email:'현재 로그인' }`.
+- A failed usage read answers `{ available:false }`, with `capabilities` and
+  `accounts[]` when the slot list still read, so the card keeps [재로그인].
+- `capabilities: { save, switch, remove }` is `agy-auth list`'s; all false when
+  the list fails. The usage card hides add, switch and remove for a false
+  capability and the scheduler does not auto-switch while `switch` is false.
+  Claude and Codex answers carry no `capabilities`; the card offers every action
+  for them.
+- Switch errors: `invalid_number` (400), `account_list_unavailable`,
+  `not_supported`, `account_not_found`. Remove adds `invalid_key` (400),
+  `account_changed`, `account_active`, and `confirm_required`
+  (`refs: [], unchecked_repos: 0`). `busy` is 409.
+- `busy`: another agy credential change runs, an agy Worker run is live, or an
+  agy conversation window (a live tmux pane with `@agent_runtime agy`) is open.
+  While a change runs the scheduler launches no agy run (reason
+  `agy_credential_change`); a change that begins after the dispatch gates is
+  caught just before the spawn (`spawn_failed:agy_credential_change`, attempt
+  `retry_wait`). After a successful change the agy model list and the usage
+  cache are dropped.
+
+The account login routes (`POST /api/account-login`, status, code, cancel) take
+`provider: 'agy'`:
+
+- The window runs `agy-auth exec-locked --` (the agy launcher under the agy
+  lock). The workspace trust screen is answered with Enter; the sign-in link
+  shows as `url` with `needs_code: true`, and the pasted code goes through the
+  code route. The code is never logged.
+- Success is the signed-in header line `<email> (<plan>)` within 60 seconds of
+  the code. Then, in order: the window's agy ends, an add runs
+  `agy-auth save <name> --account <email>`, the credential change ends, the
+  caches drop, and usage is read again. `<name>` is the account's existing slot,
+  else the email's local part, numbered `-2`, `-3`… when another account holds
+  it; an unreadable slot list saves nothing (`save_failed`). The result is
+  `{ outcome:'added'|'updated', key:<email>, email, number }`.
+- Start refusals: `busy` (409, nothing opened), `not_supported` (409, an add
+  while `capabilities.save` is false). Session errors add `busy` (the window's
+  `exec-locked` could not take the lock), `already_signed_in` (the header showed
+  before any code), `login_incomplete` (no header in time; nothing saved), and
+  `save_failed`.
+
 ## Removed (historical)
 
 `list-issues`, `epic-status`, `list-ready`, `subscribe-updates` /

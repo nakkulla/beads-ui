@@ -37,14 +37,20 @@ function usageResponse(windows, age_seconds = 30) {
 function stubFetch(payload) {
   const json = vi.fn().mockResolvedValue(payload);
   const codex_json = vi.fn().mockResolvedValue({ available: false });
+  const agy_json = vi.fn().mockResolvedValue({ available: false });
   const fetchMock = vi.fn((url) =>
     Promise.resolve({
       ok: true,
-      json: url === '/api/codex-usage' ? codex_json : json
+      json:
+        url === '/api/codex-usage'
+          ? codex_json
+          : url === '/api/agy-usage'
+            ? agy_json
+            : json
     })
   );
   vi.stubGlobal('fetch', fetchMock);
-  return { fetchMock, json, codex_json };
+  return { fetchMock, json, codex_json, agy_json };
 }
 
 afterEach(() => {
@@ -124,7 +130,7 @@ describe('usage meter rendering', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const meter = createUsageMeter(mount);
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
 
     expect(mount.hidden).toBe(true);
     expect(mount.querySelector('.usage-meter')).toBeNull();
@@ -192,13 +198,15 @@ describe('usage meter rendering', () => {
         ok: true,
         json: () =>
           Promise.resolve(
-            usageResponse([
-              {
-                key: url === '/api/codex-usage' ? '7d' : '5h',
-                pct: 26,
-                resetsAt: reset_at
-              }
-            ])
+            url === '/api/agy-usage'
+              ? { available: false }
+              : usageResponse([
+                  {
+                    key: url === '/api/codex-usage' ? '7d' : '5h',
+                    pct: 26,
+                    resetsAt: reset_at
+                  }
+                ])
           )
       })
     );
@@ -292,10 +300,12 @@ describe('usage meter rendering', () => {
         ok: true,
         json: () =>
           Promise.resolve(
-            usageResponse(
-              [{ key: '5h', pct: 26, resetsAt: reset_at }],
-              url === '/api/codex-usage' ? 601 : 30
-            )
+            url === '/api/agy-usage'
+              ? { available: false }
+              : usageResponse(
+                  [{ key: '5h', pct: 26, resetsAt: reset_at }],
+                  url === '/api/codex-usage' ? 601 : 30
+                )
           )
       })
     );
@@ -419,7 +429,11 @@ function stubProviders(claude_payload, codex_payload = { available: false }) {
       ok: true,
       json: () =>
         Promise.resolve(
-          url === '/api/codex-usage' ? codex_payload : claude_payload
+          url === '/api/codex-usage'
+            ? codex_payload
+            : url === '/api/agy-usage'
+              ? { available: false }
+              : claude_payload
         )
     })
   );
@@ -1564,7 +1578,7 @@ describe('usage meter polling while idle (UI-yu2o)', () => {
 
     await vi.advanceTimersByTimeAsync(60_000);
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     meter.destroy();
   });
 
@@ -1585,7 +1599,7 @@ describe('usage meter polling while idle (UI-yu2o)', () => {
     document.dispatchEvent(new Event('visibilitychange'));
     await vi.advanceTimersByTimeAsync(1);
 
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
     meter.destroy();
   });
 
@@ -1622,7 +1636,7 @@ describe('usage meter polling while idle (UI-yu2o)', () => {
     document.dispatchEvent(new Event('visibilitychange'));
     await vi.advanceTimersByTimeAsync(1);
 
-    expect([hidden_calls, fetchMock.mock.calls.length]).toEqual([0, 2]);
+    expect([hidden_calls, fetchMock.mock.calls.length]).toEqual([0, 3]);
     meter.destroy();
   });
 
@@ -1972,7 +1986,7 @@ describe('usage meter default account (UI-32oq §4.4)', () => {
       ).get()
     );
 
-    expect(fetchMock.mock.calls.length).toBe(before + 2);
+    expect(fetchMock.mock.calls.length).toBe(before + 3);
     meter.destroy();
   });
 
@@ -3788,5 +3802,135 @@ describe('usage meter account login and removal (UI-xm29 §4.5)', () => {
     const sentence = removeConfirmText(refs, 0);
 
     expect(sentence).toBe('저장소 2곳 한도 정책 — 그래도 삭제할까요?');
+  });
+});
+
+describe('usage meter agy row (UI-qlxsw)', () => {
+  const AGY = {
+    key: 'agy',
+    label: 'agy',
+    endpoint: '/api/agy-usage',
+    switch_endpoint: '/api/agy-account/switch',
+    remove_endpoint: '/api/agy-account/remove',
+    login_tools: 'agy·agy-auth·tmux'
+  };
+
+  /**
+   * An agy usage payload with an active slot and a stored spare slot.
+   *
+   * @param {{ save: boolean, switch: boolean, remove: boolean }} capabilities
+   */
+  function agyPayload(capabilities) {
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    const windows = [
+      { key: '5h', pct: 25, resetsAt: reset_at },
+      { key: '7d', pct: 60, resetsAt: reset_at }
+    ];
+    return {
+      available: true,
+      provider: 'agy',
+      windows,
+      fetchedAt: new Date().toISOString(),
+      ageSeconds: 30,
+      capabilities,
+      accounts: [
+        accountRow({
+          number: 1,
+          email: 'main@gmail.test',
+          active: true,
+          windows
+        }),
+        accountRow({ number: 2, email: 'spare@gmail.test', windows })
+      ]
+    };
+  }
+
+  /**
+   * Serve the agy payload on its endpoint and nothing on the others.
+   *
+   * @param {unknown} agy_payload
+   */
+  function stubAgy(agy_payload) {
+    const fetchMock = vi.fn((/** @type {string} */ url) =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve(
+            url === '/api/agy-usage' ? agy_payload : { available: false }
+          )
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  test('reads the agy row from its usage endpoint', async () => {
+    const mount = mountMeter();
+    const fetchMock = stubAgy(
+      agyPayload({ save: true, switch: true, remove: true })
+    );
+
+    const meter = createUsageMeter(mount);
+    await vi.waitFor(() => expect(toggleButton(mount, 'agy')).not.toBeNull());
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toContain(
+      '/api/agy-usage'
+    );
+    meter.destroy();
+  });
+
+  test('offers add, switch and manage when agy-auth supports them', async () => {
+    const mount = mountMeter();
+    stubAgy(agyPayload({ save: true, switch: true, remove: true }));
+    const meter = createUsageMeter(mount);
+
+    await openCard(mount, 'agy');
+
+    expect([
+      document.querySelector('.usage-meter__add') !== null,
+      document.querySelectorAll('.usage-meter__switch').length,
+      document.querySelector('.usage-meter__manage') !== null
+    ]).toEqual([true, 1, true]);
+    meter.destroy();
+  });
+
+  test('hides add, switch and manage when agy-auth supports none of them', async () => {
+    const mount = mountMeter();
+    stubAgy(agyPayload({ save: false, switch: false, remove: false }));
+    const meter = createUsageMeter(mount);
+
+    await openCard(mount, 'agy');
+
+    expect([
+      document.querySelector('.usage-meter__add'),
+      document.querySelector('.usage-meter__switch'),
+      document.querySelector('.usage-meter__manage')
+    ]).toEqual([null, null, null]);
+    meter.destroy();
+  });
+
+  test('keeps 재로그인 on the active agy row', async () => {
+    const mount = mountMeter();
+    stubAgy(agyPayload({ save: false, switch: false, remove: false }));
+    const meter = createUsageMeter(mount);
+
+    await openCard(mount, 'agy');
+
+    const buttons = document.querySelectorAll('.usage-meter__relogin');
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].closest('.usage-meter__account')?.textContent).toContain(
+      'main@gmail.test'
+    );
+    meter.destroy();
+  });
+
+  test('says why an agy credential change was refused', () => {
+    const body = { error: 'busy' };
+
+    const sentence = loginFailureText(AGY, body);
+
+    expect(sentence).toBe(
+      '로그인 실패 — agy 실행·대화 창이 있거나 계정 변경 중 — 끝난 뒤 다시 시도'
+    );
   });
 });

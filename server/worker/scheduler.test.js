@@ -19,7 +19,9 @@ import {
 } from '../timing-settings.js';
 import {
   AGY_HOLD_ACCOUNT,
-  __setAgyModelListForTest
+  __setAgyModelListForTest,
+  beginAgyCredentialChange,
+  endAgyCredentialChange
 } from './agy-model-list.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import { selectCodexSwitchCandidate } from './codex-switch-candidate.js';
@@ -2238,6 +2240,8 @@ function setup(opts) {
     providerHealth: opts.providerHealth,
     // Absent by default: no agy model is in the catalog, so no agy gate runs.
     agyModels: /** @type {any} */ (opts).agyModels,
+    // Absent by default: no agy account list, so no agy auto-switch runs.
+    agyAccounts: /** @type {any} */ (opts).agyAccounts,
     // Absent by default: an unwired kv channel leaves the repo account layer
     // ABSENT, which is what every test that never stores a default expects.
     kvGet: opts.kvGet,
@@ -17608,6 +17612,165 @@ describe('scheduler agy pre-run gate (UI-h0hwo Phase 2)', () => {
     expect(env.runner.spawnOrder).toEqual([]);
     expect(env.store.snapshot(WS).admission.A1).toMatchObject({
       reason: 'agy_model_list_unavailable'
+    });
+  });
+
+  describe('agy credential change and auto-switch (UI-qlxsw)', () => {
+    const EXHAUSTED = {
+      state: 'exhausted',
+      resets_at: RESET,
+      buckets: ['gemini-5h']
+    };
+
+    /**
+     * An injected agy-auth account list with one spare slot that has room.
+     *
+     * @param {{ switch?: boolean, spare_pct?: number, onSwitch?: () => void }} [options]
+     */
+    function agyAccounts(options = {}) {
+      const fraction = 1 - (options.spare_pct ?? 10) / 100;
+      return {
+        list: vi.fn(async () => ({
+          ok: true,
+          capabilities: {
+            save: true,
+            switch: options.switch ?? true,
+            remove: true
+          },
+          active: 'main',
+          slots: [
+            { name: 'main', account: 'main@gmail.test', active: true },
+            {
+              name: 'spare',
+              account: 'spare@gmail.test',
+              active: false,
+              usage: [
+                {
+                  group: 'Gemini Models',
+                  id: 'gemini-5h',
+                  window: '5h',
+                  remaining_fraction: fraction,
+                  reset_time: '2026-11-28T06:00:00Z'
+                }
+              ]
+            }
+          ]
+        })),
+        switchTo: vi.fn(async () => {
+          options.onSwitch?.();
+          return { ok: true };
+        })
+      };
+    }
+
+    /**
+     * @param {ReturnType<typeof agyModels>} models
+     * @param {ReturnType<typeof agyAccounts>} accounts
+     * @param {number} [slots]
+     */
+    function switchSetup(models, accounts, slots = 1) {
+      __setAgyModelListForTest(/** @type {any} */ (models));
+      __resetRuntimeCatalogForTest();
+      return setup(
+        /** @type {any} */ ({
+          config: { A1: { model: AGY_MODEL }, A2: { model: AGY_MODEL } },
+          slots,
+          agyModels: models,
+          agyAccounts: accounts
+        })
+      );
+    }
+
+    afterEach(() => {
+      endAgyCredentialChange();
+    });
+
+    test('starts no agy run while a credential change runs', async () => {
+      const models = agyModels();
+      const env = agySetup(models);
+      seedQueue(env.store, ['A1']);
+      beginAgyCredentialChange();
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnOrder).toEqual([]);
+      expect(models.quota).not.toHaveBeenCalled();
+      expect(env.store.snapshot(WS).admission.A1).toMatchObject({
+        reason: 'agy_credential_change'
+      });
+    });
+
+    test('refuses the agy spawn when a credential change begins after the gate', async () => {
+      const models = agyModels();
+      const env = agySetup(models);
+      const add = env.worktree.add.getMockImplementation();
+      env.worktree.add.mockImplementationOnce(
+        async (/** @type {any} */ input) => {
+          beginAgyCredentialChange();
+          return /** @type {any} */ (add)(input);
+        }
+      );
+      seedQueue(env.store, ['A1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnOrder).toEqual([]);
+      expect(Object.values(env.store.snapshot(WS).attempts)).toMatchObject([
+        { status: 'retry_wait', cause: 'spawn_failed:agy_credential_change' }
+      ]);
+    });
+
+    test('switches to a slot with room instead of holding when the quota is exhausted', async () => {
+      const models = agyModels({ quota: async () => EXHAUSTED });
+      const accounts = agyAccounts({ onSwitch: () => models.lose() });
+      const env = switchSetup(models, accounts);
+      seedQueue(env.store, ['A1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(accounts.switchTo).toHaveBeenCalledWith('spare');
+      expect(env.store.providerHolds.holds().agy).toBeUndefined();
+      expect(env.runner.spawnOrder).toEqual([]);
+    });
+
+    test('switches only between runs, never while an agy run is going', async () => {
+      const models = agyModels();
+      const accounts = agyAccounts({ onSwitch: () => models.lose() });
+      const env = switchSetup(models, accounts, 2);
+      seedQueue(env.store, ['A1']);
+      await env.scheduler.tick(WS);
+      models.quota.mockImplementation(async () => EXHAUSTED);
+      seedQueue(env.store, ['A2']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnOrder).toEqual(['A1']);
+      expect(accounts.switchTo).not.toHaveBeenCalled();
+      expect(env.store.providerHolds.holds().agy.targets).toHaveLength(1);
+    });
+
+    test('holds instead of switching when agy-auth cannot switch', async () => {
+      const models = agyModels({ quota: async () => EXHAUSTED });
+      const accounts = agyAccounts({ switch: false });
+      const env = switchSetup(models, accounts);
+      seedQueue(env.store, ['A1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(accounts.switchTo).not.toHaveBeenCalled();
+      expect(env.store.providerHolds.holds().agy.targets).toHaveLength(1);
+    });
+
+    test('holds instead of switching when no other slot has room in every window', async () => {
+      const models = agyModels({ quota: async () => EXHAUSTED });
+      const accounts = agyAccounts({ spare_pct: 100 });
+      const env = switchSetup(models, accounts);
+      seedQueue(env.store, ['A1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(accounts.switchTo).not.toHaveBeenCalled();
+      expect(env.store.providerHolds.holds().agy.targets).toHaveLength(1);
     });
   });
 

@@ -5,7 +5,9 @@
  * runs `codex login --device-auth` in a throwaway `CODEX_HOME` and imports the
  * result with `codex-auth import`; Claude runs `cswap login` in a window of the
  * server-only tmux session `bdui-login-<server pid>`, and cswap owns
- * isolation, identity and storage there. At most one session per provider is
+ * isolation, identity and storage there. agy runs its launcher under
+ * `agy-auth exec-locked` in such a window, signs in the live agy login, and
+ * an add keeps it as an `agy-auth save` slot (agy-runtime §3.5). At most one session per provider is
  * in progress. Sessions live in memory only; the server entry's one startup
  * sweep (`cleanupStaleLogins`) removes what a server process that is no
  * longer alive left behind.
@@ -29,6 +31,11 @@ import { debug } from '../logging.js';
 import { stateRootDir } from '../worker/state-paths.js';
 import { acquireSwitchLock, releaseSwitchLock } from './account-switch.js';
 import {
+  DEFAULT_AGY_CHANGE_DEPS,
+  listAgyAccounts,
+  rereadAgyUsage
+} from './agy-usage.js';
+import {
   invalidateCache as invalidateClaudeUsageCache,
   listAccountsFresh as listClaudeAccountsFresh,
   resolveCswapPath
@@ -39,7 +46,8 @@ import {
 } from './codex-usage.js';
 
 /**
- * @typedef {'claude'|'codex'} LoginProvider
+ * @typedef {'claude'|'codex'|'agy'} LoginProvider
+ * @typedef {'claude'|'codex'} CswapProvider
  * @typedef {'relogin'|'add'} LoginMode
  * @typedef {'starting'|'awaiting_user'|'verifying'|'done'|'failed'|'cancelled'|'expired'} LoginState
  * @typedef {{ outcome: 'updated'|'added', key: string, email: string, number: number|null }} LoginResult
@@ -103,6 +111,32 @@ import {
  * @property {string} output
  * @property {string|null} window_id
  * @property {string|null} pane_id
+ * @property {boolean} agy_held - This agy login holds the credential-change
+ * flag; the end that releases it clears this first, so it is released once.
+ * @property {number} trust_enters - Enter presses sent to the agy workspace
+ * trust screen.
+ */
+
+/**
+ * @typedef {{ name: string, account: string|null }} AgySlotRef
+ */
+
+/**
+ * The agy side of a login (agy-runtime §3.5): the process-wide credential
+ * change flag, the live-activity read, and the cache drops after a login.
+ *
+ * @typedef {Object} AgyLoginDeps
+ * @property {() => boolean} begin - Take the credential-change flag; false
+ * while another change holds it.
+ * @property {() => void} end
+ * @property {() => Promise<boolean>} busy - An agy run or agy conversation
+ * window is live.
+ * @property {() => Promise<void>} settle - Let agy reads in flight finish.
+ * @property {() => Promise<{ save: boolean, switch: boolean, remove: boolean }>} capabilities
+ * @property {() => Promise<AgySlotRef[]|null>} slots - The saved `agy-auth`
+ * slots, or null when the list cannot be read.
+ * @property {() => void} invalidate - Drop the agy model list and usage cache.
+ * @property {() => Promise<void>} reread - Read agy usage again.
  */
 
 /**
@@ -117,10 +151,11 @@ import {
  * the group is left; a stop is judged by the group, not its leader.
  * @property {(pid: number) => boolean} [processAlive]
  * @property {LoginFiles} [files]
- * @property {Record<LoginProvider, () => Promise<AccountListRead>>} [listAccounts]
- * @property {Record<LoginProvider, () => void>} [invalidateUsageCache]
- * @property {(provider: LoginProvider) => boolean} [acquireLock]
- * @property {(provider: LoginProvider) => void} [releaseLock]
+ * @property {Record<CswapProvider, () => Promise<AccountListRead>>} [listAccounts]
+ * @property {Record<CswapProvider, () => void>} [invalidateUsageCache]
+ * @property {(provider: CswapProvider) => boolean} [acquireLock]
+ * @property {(provider: CswapProvider) => void} [releaseLock]
+ * @property {AgyLoginDeps} [agy]
  * @property {() => string} [randomId]
  * @property {number} [owner_pid] - The pid of the server process that owns
  * this manager's logins (default `process.pid`).
@@ -156,6 +191,22 @@ const MIRRORED_CLAUDE_ENV = [
   'CLAUDE_CONFIG_DIR',
   'CLAUDE_SECURESTORAGE_CONFIG_DIR'
 ];
+
+// agy (agy-runtime §3.5): the launcher shows its sign-in link within this
+// long, and the signed-in header line follows the pasted code within this
+// long; without the header the login is not taken and nothing is saved.
+export const AGY_URL_DEADLINE_MS = 30_000;
+export const AGY_HEADER_DEADLINE_MS = 60_000;
+const AGY_TRUST_ENTER_LIMIT = 3;
+// `agy-auth exec-locked` exits 75 when it cannot take the agy lock.
+const AGY_BUSY_STATUS = 75;
+const AGY_SLOT_NAME_MAX = 64;
+// `agy-auth save` reads the slot's usage itself (up to 120 seconds).
+const AGY_SAVE_TIMEOUT_MS = 150_000;
+const AGY_HEADER_RE =
+  /(?:^|\s)([^\s@()]+@[^\s@()]+\.[^\s@()]+)\s+\(([^()\n]+)\)\s*$/;
+const AGY_TRUST_RE = /Do you trust the contents of this project\?/;
+const AGY_BUSY_RE = /agy-auth: busy:/;
 
 const default_log = debug('account-login');
 
@@ -392,6 +443,70 @@ function isLoginCode(code) {
     code.length <= 4096 &&
     /^[\x21-\x3a\x3c-\x7e]+$/.test(code)
   );
+}
+
+/**
+ * The signed-in header line agy draws once a sign-in is complete:
+ * `<email> (<plan>)` at the end of a line. The last such line wins.
+ *
+ * @param {string} captured
+ * @returns {{ email: string, plan: string }|null}
+ */
+export function agyHeaderOf(captured) {
+  /** @type {{ email: string, plan: string }|null} */
+  let found = null;
+  for (const line of stripAnsi(captured).split('\n')) {
+    const match = line.match(AGY_HEADER_RE);
+    if (match) {
+      found = { email: match[1], plan: match[2].trim() };
+    }
+  }
+  return found;
+}
+
+/**
+ * The `agy-auth save` slot name for a signed-in email: its local part with
+ * every character outside `[A-Za-z0-9._-]` replaced, starting with a letter
+ * or digit (the `agy-auth` NAME rule), at most 64 characters.
+ *
+ * @param {string} email
+ * @returns {string}
+ */
+export function agySlotNameOf(email) {
+  const local = email.split('@')[0] || '';
+  const name = local
+    .replace(/[^A-Za-z0-9._-]/g, '-')
+    .replace(/^[^A-Za-z0-9]+/, '')
+    .slice(0, AGY_SLOT_NAME_MAX);
+  return name.length > 0 ? name : 'agy';
+}
+
+/**
+ * The slot an add saves into. `agy-auth save` overwrites a slot of the same
+ * name, so the account's own slot is reused and a name another account holds
+ * gets a `-<n>` suffix instead of being written over.
+ *
+ * @param {string} email
+ * @param {AgySlotRef[]} slots
+ * @returns {string}
+ */
+export function agySlotNameFor(email, slots) {
+  const wanted = email.toLowerCase();
+  const own = slots.find(
+    (slot) =>
+      typeof slot.account === 'string' && slot.account.toLowerCase() === wanted
+  );
+  if (own) {
+    return own.name;
+  }
+  const taken = new Set(slots.map((slot) => slot.name));
+  const base = agySlotNameOf(email);
+  let name = base;
+  for (let n = 2; taken.has(name); n += 1) {
+    const suffix = `-${n}`;
+    name = `${base.slice(0, AGY_SLOT_NAME_MAX - suffix.length)}${suffix}`;
+  }
+  return name;
 }
 
 /**
@@ -732,6 +847,27 @@ function sleep(ms) {
 }
 
 /**
+ * The argv an agy login pane runs: the agy launcher through
+ * `agy-auth exec-locked`, with the server's PATH and a UTF-8 LANG (the
+ * launchd server has none).
+ *
+ * @param {string} agy_auth_path
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {string[]}
+ */
+export function agyLoginArgv(agy_auth_path, env) {
+  const path_env = nonEmptyString(env.PATH);
+  return [
+    '/usr/bin/env',
+    'LANG=en_US.UTF-8',
+    ...(path_env ? [`PATH=${path_env}`] : []),
+    agy_auth_path,
+    'exec-locked',
+    '--'
+  ];
+}
+
+/**
  * The argv a Claude login pane runs. It goes through `/usr/bin/env` so the
  * pane sees the server's own cswap environment rather than whatever the tmux
  * server's global environment holds: the server's PATH, a UTF-8 LANG (the
@@ -807,15 +943,41 @@ export function createAccountLoginManager(options = {}) {
   const groupAlive = options.groupAlive || defaultGroupAlive;
   const processAlive = options.processAlive || defaultProcessAlive;
   const files = options.files || createLoginFiles();
-  /** @type {Record<LoginProvider, () => Promise<AccountListRead>>} */
+  /** @type {Record<CswapProvider, () => Promise<AccountListRead>>} */
   const listAccounts = options.listAccounts || {
     claude: () => listClaudeAccountsFresh(),
     codex: () => listCodexAccountsFresh()
   };
-  /** @type {Record<LoginProvider, () => void>} */
+  /** @type {Record<CswapProvider, () => void>} */
   const invalidateUsageCache = options.invalidateUsageCache || {
     claude: () => invalidateClaudeUsageCache(),
     codex: () => invalidateCodexUsageCache()
+  };
+  /** @type {AgyLoginDeps} */
+  const agy = options.agy || {
+    begin: DEFAULT_AGY_CHANGE_DEPS.begin,
+    end: DEFAULT_AGY_CHANGE_DEPS.end,
+    busy: DEFAULT_AGY_CHANGE_DEPS.busy,
+    settle: DEFAULT_AGY_CHANGE_DEPS.settle,
+    capabilities: async () => {
+      const list = await listAgyAccounts();
+      return list.ok
+        ? list.capabilities
+        : { save: false, switch: false, remove: false };
+    },
+    slots: async () => {
+      const list = await listAgyAccounts();
+      return list.ok
+        ? list.slots.map((slot) => ({ name: slot.name, account: slot.account }))
+        : null;
+    },
+    invalidate: () => {
+      DEFAULT_AGY_CHANGE_DEPS.invalidateModels();
+      DEFAULT_AGY_CHANGE_DEPS.invalidateUsage();
+    },
+    reread: async () => {
+      await rereadAgyUsage();
+    }
   };
   const acquireLock = options.acquireLock || acquireSwitchLock;
   const releaseLock = options.releaseLock || releaseSwitchLock;
@@ -871,6 +1033,18 @@ export function createAccountLoginManager(options = {}) {
   }
 
   /**
+   * Release the agy credential-change flag this login holds, once.
+   *
+   * @param {LoginSession} session
+   */
+  function releaseAgy(session) {
+    if (session.agy_held) {
+      session.agy_held = false;
+      agy.end();
+    }
+  }
+
+  /**
    * The ONE terminal transition, write-once: a later close, poll or stop
    * cannot overwrite an end that already landed. It releases the provider
    * slot and drops the session from memory five minutes later.
@@ -901,6 +1075,7 @@ export function createAccountLoginManager(options = {}) {
     if (in_progress.get(session.provider) === session) {
       in_progress.delete(session.provider);
     }
+    releaseAgy(session);
     log(
       'login %s %s ended %s%s',
       session.id,
@@ -930,7 +1105,7 @@ export function createAccountLoginManager(options = {}) {
    * Take the per-provider switch lock, retrying briefly: the lock covers
    * only the list-writing steps, never the wait for the user.
    *
-   * @param {LoginProvider} provider
+   * @param {CswapProvider} provider
    * @returns {Promise<boolean>}
    */
   async function takeSwitchLock(provider) {
@@ -1434,7 +1609,18 @@ export function createAccountLoginManager(options = {}) {
    * @param {string} cswap_path
    * @returns {Promise<boolean>}
    */
-  async function startCswapInWindow(session, cswap_path) {
+  function startCswapInWindow(session, cswap_path) {
+    return startInWindow(session, claudeLoginArgv(cswap_path, session, env));
+  }
+
+  /**
+   * Size the login window, keep its pane after exit, and run `argv` in it.
+   *
+   * @param {LoginSession} session
+   * @param {string[]} argv
+   * @returns {Promise<boolean>}
+   */
+  async function startInWindow(session, argv) {
     const window_id = /** @type {string} */ (session.window_id);
     const pane_id = /** @type {string} */ (session.pane_id);
     await runTmux([
@@ -1462,7 +1648,7 @@ export function createAccountLoginManager(options = {}) {
       '-k',
       '-t',
       pane_id,
-      ...claudeLoginArgv(cswap_path, session, env)
+      ...argv
     ]);
     return started.code === 0;
   }
@@ -1701,6 +1887,302 @@ export function createAccountLoginManager(options = {}) {
     };
   }
 
+  // ---- agy login (agy-runtime §3.5) ----------------------------------------
+
+  /**
+   * Run the agy launcher under `agy-auth exec-locked` in a login window. The
+   * credential-change flag is already held; `exec-locked` adds the agy lock
+   * and exits 75 when it cannot take it.
+   *
+   * @param {LoginSession} session
+   */
+  async function runAgyLogin(session) {
+    const agy_auth = resolveBin('agy-auth');
+    if (!agy_auth) {
+      finish(session, { state: 'failed', error: 'not_found' });
+      return;
+    }
+    const opened = await openLoginWindow(
+      `login-agy-${session.id.replace(/[^A-Za-z0-9]/g, '').slice(0, 8)}`
+    );
+    if (!opened.ok) {
+      finish(session, { state: 'failed', error: opened.error });
+      return;
+    }
+    session.window_id = opened.window_id;
+    session.pane_id = opened.pane_id;
+    if (!stillRunning(session)) {
+      await closeWindow(session);
+      return;
+    }
+    if (!(await startInWindow(session, agyLoginArgv(agy_auth, env)))) {
+      await stop(session, { state: 'failed', error: 'tmux_failed' });
+      return;
+    }
+    if (!stillRunning(session)) {
+      return;
+    }
+    session.deadline_timer = later(session, AGY_URL_DEADLINE_MS, () => {
+      if (session.state === 'starting' && !session.finishing) {
+        void stop(session, { state: 'failed', error: 'login_url_missing' });
+      }
+    });
+    later(session, POLL_MS, () => void pollAgy(session));
+  }
+
+  /**
+   * @param {LoginSession} session
+   * @returns {Promise<string|null>}
+   */
+  async function captureLoginPane(session) {
+    const captured = await runTmux([
+      'capture-pane',
+      '-p',
+      '-J',
+      '-S',
+      '-',
+      '-t',
+      /** @type {string} */ (session.pane_id)
+    ]);
+    return captured.code === 0 ? captured.stdout : null;
+  }
+
+  /**
+   * One poll of the agy login pane. A live pane answers the workspace trust
+   * screen, shows the sign-in link, and — once the code went in — waits for
+   * the signed-in header line; a dead pane is `busy` when `exec-locked`
+   * could not take the lock, else an incomplete login.
+   *
+   * @param {LoginSession} session
+   */
+  async function pollAgy(session) {
+    if (!stillRunning(session) || session.finishing) {
+      return;
+    }
+    const pane = await paneState(/** @type {string} */ (session.pane_id));
+    if (!stillRunning(session) || session.finishing) {
+      return;
+    }
+    if (pane === 'gone') {
+      session.window_id = null;
+      finish(session, { state: 'failed', error: 'login_incomplete' });
+      return;
+    }
+    if (pane === 'dead') {
+      await collectDeadAgyPane(session);
+      return;
+    }
+    if (pane === 'alive') {
+      const screen = await captureLoginPane(session);
+      if (!stillRunning(session) || session.finishing) {
+        return;
+      }
+      if (screen !== null && (await readAgyScreen(session, screen))) {
+        return;
+      }
+    }
+    if (stillRunning(session) && !session.finishing) {
+      later(session, POLL_MS, () => void pollAgy(session));
+    }
+  }
+
+  /**
+   * Act on one capture of a live agy pane.
+   *
+   * @param {LoginSession} session
+   * @param {string} screen
+   * @returns {Promise<boolean>} Whether the login reached its end.
+   */
+  async function readAgyScreen(session, screen) {
+    const header = agyHeaderOf(screen);
+    if (header && session.code_sent) {
+      await settleAgyLogin(session, header.email);
+      return true;
+    }
+    if (header && session.state === 'starting') {
+      // Signed in before any code: nothing was logged in by this session.
+      await stop(session, { state: 'failed', error: 'already_signed_in' });
+      return true;
+    }
+    if (session.state !== 'starting') {
+      return false;
+    }
+    const url = loginUrlOf(screen);
+    if (url) {
+      session.state = 'awaiting_user';
+      session.url = url;
+      clearDeadline(session);
+      log('login %s agy awaiting_user', session.id);
+      return false;
+    }
+    if (
+      AGY_TRUST_RE.test(stripAnsi(screen)) &&
+      session.trust_enters < AGY_TRUST_ENTER_LIMIT
+    ) {
+      session.trust_enters += 1;
+      await runTmux([
+        'send-keys',
+        '-t',
+        /** @type {string} */ (session.pane_id),
+        'Enter'
+      ]);
+    }
+    return false;
+  }
+
+  /**
+   * The agy pane died: `busy` when `exec-locked` could not take the agy lock,
+   * a finished sign-in when the header already showed after the code, else an
+   * incomplete login.
+   *
+   * @param {LoginSession} session
+   */
+  async function collectDeadAgyPane(session) {
+    const screen = (await captureLoginPane(session)) ?? '';
+    const header = session.code_sent ? agyHeaderOf(screen) : null;
+    if (header) {
+      await settleAgyLogin(session, header.email);
+      return;
+    }
+    const exit = await runTmux([
+      'display-message',
+      '-p',
+      '-t',
+      /** @type {string} */ (session.pane_id),
+      '#{pane_dead_status}'
+    ]);
+    const busy =
+      AGY_BUSY_RE.test(stripAnsi(screen)) ||
+      (exit.code === 0 && Number(exit.stdout.trim()) === AGY_BUSY_STATUS);
+    await stop(session, {
+      state: 'failed',
+      error: busy ? 'busy' : 'login_incomplete'
+    });
+  }
+
+  /**
+   * The header showed after the code. In this order: end the window's agy
+   * (it holds the agy lock), save the slot for an add, release the
+   * credential-change flag, drop the agy caches, and read usage again.
+   *
+   * @param {LoginSession} session
+   * @param {string} email
+   */
+  async function settleAgyLogin(session, email) {
+    session.finishing = true;
+    clearTimers(session);
+    if (!(await closeWindow(session))) {
+      finish(session, { state: 'failed', error: 'cleanup_incomplete' });
+      return;
+    }
+    /** @type {string|null} */
+    let error = null;
+    if (session.mode === 'add') {
+      error = await saveAgySlot(email);
+    }
+    releaseAgy(session);
+    agy.invalidate();
+    try {
+      await agy.reread();
+    } catch {
+      // The next usage read retries; the login itself is complete.
+    }
+    if (error) {
+      finish(session, { state: 'failed', error, logged_in_email: email });
+      return;
+    }
+    finish(session, {
+      state: 'done',
+      result: {
+        outcome: session.mode === 'add' ? 'added' : 'updated',
+        key: email,
+        email,
+        number: session.number
+      },
+      logged_in_email: email
+    });
+  }
+
+  /**
+   * `agy-auth save` the signed-in credentials under {@link agySlotNameFor}.
+   * An unreadable slot list saves nothing, since the name could overwrite
+   * another account. The window's agy just ended, so a `busy` answer (its
+   * lock not yet released) is retried briefly.
+   *
+   * @param {string} email
+   * @returns {Promise<string|null>} The error, or null once saved.
+   */
+  async function saveAgySlot(email) {
+    const agy_auth = resolveBin('agy-auth');
+    if (!agy_auth) {
+      return 'not_found';
+    }
+    /** @type {AgySlotRef[]|null} */
+    let slots = null;
+    try {
+      slots = await agy.slots();
+    } catch {
+      slots = null;
+    }
+    if (slots === null) {
+      return 'save_failed';
+    }
+    const name = agySlotNameFor(email, slots);
+    const args = ['save', name, '--account', email, '--json'];
+    for (let attempt = 0; ; attempt += 1) {
+      const saved = await run(agy_auth, args, {
+        timeout_ms: AGY_SAVE_TIMEOUT_MS
+      });
+      if (saved.code === 0 && lastJsonObjectOf(saved.stdout)?.ok === true) {
+        return null;
+      }
+      if (saved.code !== AGY_BUSY_STATUS || attempt >= LOCK_RETRY_LIMIT) {
+        return 'save_failed';
+      }
+      await sleep(LOCK_RETRY_MS);
+    }
+  }
+
+  /**
+   * Take the agy credential-change flag for a new login: refused while
+   * another change holds it or an agy run or conversation window is live,
+   * and the agy reads in flight settle before the window opens.
+   *
+   * @param {LoginMode} mode
+   * @returns {Promise<string|null>} The refusal, or null once the flag is held.
+   */
+  async function enterAgyChange(mode) {
+    if (mode === 'add') {
+      /** @type {{ save: boolean }} */
+      let capabilities;
+      try {
+        capabilities = await agy.capabilities();
+      } catch {
+        capabilities = { save: false };
+      }
+      if (capabilities.save !== true) {
+        return 'not_supported';
+      }
+    }
+    if (!agy.begin()) {
+      return 'busy';
+    }
+    let busy = true;
+    try {
+      busy = await agy.busy();
+      if (!busy) {
+        await agy.settle();
+      }
+    } catch {
+      busy = true;
+    }
+    if (busy) {
+      agy.end();
+      return 'busy';
+    }
+    return null;
+  }
+
   // ---- Lifecycle -----------------------------------------------------------
 
   /**
@@ -1787,7 +2269,9 @@ export function createAccountLoginManager(options = {}) {
       home: null,
       output: '',
       window_id: null,
-      pane_id: null
+      pane_id: null,
+      agy_held: false,
+      trust_enters: 0
     };
     return session;
   }
@@ -1801,18 +2285,25 @@ export function createAccountLoginManager(options = {}) {
     if (in_progress.get(session.provider) === session) {
       in_progress.delete(session.provider);
     }
+    releaseAgy(session);
   }
 
   /**
-   * Start a login. `relogin` re-reads the account list and pins the target
-   * row's key before anything runs.
+   * Start a login. A cswap/Codex `relogin` re-reads the account list and
+   * pins the target row's key before anything runs; an agy login first takes
+   * the agy credential-change flag (`busy` otherwise) and an agy add needs
+   * the `save` capability.
    *
    * @param {unknown} input - `{ provider, mode, number? }`.
    * @returns {Promise<{ ok: true, login_id: string } | { ok: false, error: string, login_id?: string }>}
    */
   async function start(input) {
     const body = isRecord(input) ? input : {};
-    if (body.provider !== 'claude' && body.provider !== 'codex') {
+    if (
+      body.provider !== 'claude' &&
+      body.provider !== 'codex' &&
+      body.provider !== 'agy'
+    ) {
       return { ok: false, error: 'invalid_provider' };
     }
     /** @type {LoginProvider} */
@@ -1837,12 +2328,21 @@ export function createAccountLoginManager(options = {}) {
     if (running) {
       return { ok: false, error: 'login_in_flight', login_id: running.id };
     }
+    if (provider === 'agy') {
+      // The credential-change flag is the agy reservation: a second start
+      // answers busy, and nothing opens before it is held.
+      const refused = await enterAgyChange(mode);
+      if (refused) {
+        return { ok: false, error: refused };
+      }
+    }
     // Reserved before the first await, so two starts cannot both pass.
     const session = newSession({ provider, mode, number });
+    session.agy_held = provider === 'agy';
     sessions.set(session.id, session);
     in_progress.set(provider, session);
 
-    if (mode === 'relogin') {
+    if (mode === 'relogin' && provider !== 'agy') {
       /** @type {AccountListRead} */
       let listed;
       try {
@@ -1866,7 +2366,12 @@ export function createAccountLoginManager(options = {}) {
     }
     later(session, LOGIN_TIMEOUT_MS, () => expire(session));
     log('login %s %s started (%s)', session.id, provider, mode);
-    const flow = provider === 'codex' ? runCodexLogin : runClaudeLogin;
+    const flow =
+      provider === 'codex'
+        ? runCodexLogin
+        : provider === 'agy'
+          ? runAgyLogin
+          : runClaudeLogin;
     void flow(session).catch(() => {
       void stop(session, { state: 'failed', error: 'login_failed' });
     });
@@ -1894,7 +2399,7 @@ export function createAccountLoginManager(options = {}) {
       url: session.url,
       user_code: session.user_code,
       needs_code:
-        session.provider === 'claude' &&
+        session.provider !== 'codex' &&
         session.state === 'awaiting_user' &&
         !session.code_sent,
       result: session.result,
@@ -1905,7 +2410,7 @@ export function createAccountLoginManager(options = {}) {
   }
 
   /**
-   * Type the pasted Claude code into the login pane, once, and only while
+   * Type the pasted Claude or agy code into the login pane, once, and only while
    * the login waits for it. The once flag is set before tmux is called.
    *
    * @param {string} login_id
@@ -1917,7 +2422,7 @@ export function createAccountLoginManager(options = {}) {
     if (!session) {
       return { ok: false, error: 'login_not_found' };
     }
-    if (session.provider !== 'claude') {
+    if (session.provider === 'codex') {
       return { ok: false, error: 'code_not_supported' };
     }
     if (session.code_sent) {
@@ -1946,7 +2451,15 @@ export function createAccountLoginManager(options = {}) {
     }
     if (session.state === 'awaiting_user' && stillRunning(session)) {
       session.state = 'verifying';
-      log('login %s claude verifying', session.id);
+      log('login %s %s verifying', session.id, session.provider);
+      if (session.provider === 'agy') {
+        // No signed-in header within this long: the login is not taken.
+        session.deadline_timer = later(session, AGY_HEADER_DEADLINE_MS, () => {
+          if (stillRunning(session) && !session.finishing) {
+            void stop(session, { state: 'failed', error: 'login_incomplete' });
+          }
+        });
+      }
     }
     return { ok: true, state: session.state };
   }
@@ -2150,6 +2663,8 @@ const ERROR_STATUS = {
   login_not_found: 404,
   account_not_found: 404,
   login_in_flight: 409,
+  busy: 409,
+  not_supported: 409,
   code_already_sent: 409,
   not_awaiting_code: 409,
   login_finishing: 409,

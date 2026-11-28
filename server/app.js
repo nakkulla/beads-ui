@@ -21,6 +21,11 @@ import {
   claudeAccountSwitchHandler,
   codexAccountSwitchHandler
 } from './routes/account-switch.js';
+import {
+  agyAccountRemoveHandler,
+  agyAccountSwitchHandler
+} from './routes/agy-account.js';
+import { agyUsageHandler } from './routes/agy-usage.js';
 import { autoPoolHandler } from './routes/auto-pool.js';
 import { claudeUsageHandler } from './routes/claude-usage.js';
 import { codexSwitchCandidateHandler } from './routes/codex-switch-candidate.js';
@@ -182,6 +187,10 @@ export function createApp(config) {
   // Fail-quiet Codex usage snapshot from the versioned codex-auth contract.
   app.get('/api/codex-usage', codexUsageHandler);
 
+  // Fail-quiet agy usage snapshot: the active account's `/usage` read and the
+  // saved agy-auth slots (agy-runtime §3.4).
+  app.get('/api/agy-usage', agyUsageHandler);
+
   // Read the Worker waiting lanes, and place a bead into one, from a session
   // that has no browser (UI-1gpj §3).
   app.get('/api/worker/queue', workerQueueGetHandler);
@@ -203,11 +212,13 @@ export function createApp(config) {
   // Switch the active account of one provider from the usage card.
   app.post('/api/claude-account/switch', claudeAccountSwitchHandler);
   app.post('/api/codex-account/switch', codexAccountSwitchHandler);
+  app.post('/api/agy-account/switch', agyAccountSwitchHandler);
 
   // Remove an account, and log one in again or add one, from the usage card
   // without moving the active login (UI-xm29 §4.1-§4.4).
   app.post('/api/claude-account/remove', claudeAccountRemoveHandler);
   app.post('/api/codex-account/remove', codexAccountRemoveHandler);
+  app.post('/api/agy-account/remove', agyAccountRemoveHandler);
   app.post('/api/account-login', accountLoginStartHandler);
   app.get('/api/account-login/:id', accountLoginStatusHandler);
   app.post('/api/account-login/:id/code', accountLoginCodeHandler);
