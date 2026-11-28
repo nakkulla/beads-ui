@@ -12276,7 +12276,8 @@ export function createScheduler(deps) {
 
   /**
    * Close a conversation window after a result line or the click (§3.4-§3.6):
-   * Claude gets `/exit`, a Codex window is killed. The record turns `exiting`;
+   * Claude gets `/exit`, a Codex or agy window is killed (neither takes
+   * Claude's `/exit`). The record turns `exiting`;
    * only a later pass that sees the pane gone continues the handoff.
    *
    * @param {string} workspace
@@ -12290,7 +12291,7 @@ export function createScheduler(deps) {
       return false;
     }
     const result =
-      record.provider === 'codex'
+      record.provider === 'codex' || record.provider === 'agy'
         ? await launcher.killWindow(record.tmux_session, record.tmux_window)
         : await launcher.sendExit(record.pane_id);
     if (!result.ok) {
@@ -26615,7 +26616,7 @@ export function createScheduler(deps) {
 
   /**
    * Close a running session-lane window and confirm it gone (UI-lbm5 §4.5):
-   * claude is sent `/exit`, codex is killed; panes are re-listed until the
+   * claude is sent `/exit`, codex and agy are killed; panes are re-listed until the
    * window is gone, and a window still open after the grace is killed. Only a
    * SUCCESSFUL listing without the pane counts as gone — that answer is
    * recorded on the attempt (`interactive.gone_at`) and the window's record
@@ -26660,7 +26661,11 @@ export function createScheduler(deps) {
     };
     let alive = await observe();
     if (alive === true) {
-      if (attempt.runner === 'codex' || typeof pane_id !== 'string') {
+      if (
+        attempt.runner === 'codex' ||
+        attempt.runner === 'agy' ||
+        typeof pane_id !== 'string'
+      ) {
         await kill();
       } else {
         try {

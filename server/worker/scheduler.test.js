@@ -3984,6 +3984,19 @@ describe('same-session conversation return (UI-nuwy)', () => {
     expect(env.runner.spawnOrder).toEqual(['S1']);
   });
 
+  test('kills an agy conversation window on handoff instead of typing /exit', async () => {
+    const env = conversationEnv({ provider: 'agy' });
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    say(env, '인계 · 범위 확장 승인');
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.launcher.sendExit).not.toHaveBeenCalled();
+    expect(env.launcher.killWindow).toHaveBeenCalledWith('bdui-inquiry', 'S1');
+    expect(record(env)).toMatchObject({ state: 'exiting' });
+  });
+
   test('resumes the same session after the window is confirmed gone', async () => {
     const env = conversationEnv();
     const prior = await stopForConversation(env);
@@ -43593,6 +43606,22 @@ describe('session lane (UI-lbm5)', () => {
       expect(env.store.snapshot(WS).admission.S1).toMatchObject({
         reason: 'agy_model_list_unavailable'
       });
+    });
+
+    test('kills an agy session-lane window on withdrawal instead of typing /exit', async () => {
+      const env = agyLaneEnv(laneAgyModels());
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = env.laneAttempt('S1').attempt_id;
+
+      const result = await env.scheduler.withdraw(WS, attempt_id);
+
+      expect(result).toEqual({ ok: true });
+      expect(env.launcher.sendExit).not.toHaveBeenCalled();
+      expect(env.launcher.killWindow).toHaveBeenCalledWith(
+        'bdui-inquiry',
+        'S1'
+      );
     });
 
     test('retries the agy session lane when a credential change began after the gate', async () => {
