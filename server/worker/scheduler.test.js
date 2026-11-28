@@ -43608,6 +43608,64 @@ describe('session lane (UI-lbm5)', () => {
       });
     });
 
+    /**
+     * An agy lane window launched and marked by its hook, with injected hub
+     * list and startup-screen answers.
+     *
+     * @param {any} listed - The hub list answer.
+     * @param {any} screen - The hub startup-screen answer.
+     */
+    async function agyStartupEnv(listed, screen) {
+      const env = agyLaneEnv(laneAgyModels());
+      const startupScreen = vi.fn(async () => screen);
+      Object.assign(env.launcher, {
+        agySessionId: vi.fn(async () => listed),
+        startupScreen
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      return { ...env, startupScreen };
+    }
+
+    test('reads the agy startup screen though the hub already lists a conversation id', async () => {
+      const env = await agyStartupEnv(
+        { ok: true, session_id: 'conv-1' },
+        { ok: true, alive: 'alive', started: false, screen: null }
+      );
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.startupScreen).toHaveBeenCalledWith(
+        expect.objectContaining({ runner: 'agy', pane: '%7' })
+      );
+      expect(env.laneRecord('S1').startup_passed_at ?? null).toBeNull();
+      expect(env.laneRecord('S1').session_id).toBe('conv-1');
+    });
+
+    test('reads the agy startup screen when the hub list fails', async () => {
+      const env = await agyStartupEnv(
+        { ok: false, error: 'session_hub_unavailable' },
+        { ok: true, alive: 'alive', started: false, screen: null }
+      );
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.startupScreen).toHaveBeenCalledOnce();
+    });
+
+    test('passes the agy start when the hub reads the input box', async () => {
+      const env = await agyStartupEnv(
+        { ok: true, session_id: null },
+        { ok: true, alive: 'alive', started: true, screen: null }
+      );
+      env.panes.rows[0].agent_running = '';
+      env.clock.at = 1500;
+
+      await env.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(env.laneRecord('S1').startup_passed_at).toBe(1500);
+    });
+
     test('kills an agy session-lane window on withdrawal instead of typing /exit', async () => {
       const env = agyLaneEnv(laneAgyModels());
       seedQueue(env.store, ['S1']);

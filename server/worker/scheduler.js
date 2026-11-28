@@ -14536,7 +14536,7 @@ export function createScheduler(deps) {
      * @param {import('./queue-store.js').InteractiveSession} record
      * @param {boolean} started - The pass-side start sign: a filled codex
      * `@agent_session`, a claude turn marker, or a claude transcript message
-     * after launch.
+     * after launch. An agy window has none (`false`); the hub read decides.
      */
     async function observeStartup(key, record, started) {
       if (!awaitingStart(key, record)) {
@@ -14691,9 +14691,9 @@ export function createScheduler(deps) {
         return;
       }
       // A codex window at its input box is not waiting, but only its
-      // `@agent_session` is its start.
+      // `@agent_session` is its start. An agy window's start is this read.
       if (read.started) {
-        if (record.provider === 'claude') {
+        if (record.provider === 'claude' || record.provider === 'agy') {
           pass();
         } else if (record.startup_wait != null) {
           update(key, record, { startup_wait: null });
@@ -15786,11 +15786,15 @@ export function createScheduler(deps) {
           await observeStartup(key, record, marked || answered);
         }
       }
-      // An agy window names no `@agent_session`: its conversation id is read
-      // from the hub list, which is also its start sign beside a turn marker
-      // (agy-runtime §3.6).
+      // An agy window's start is the hub's own screen read alone: its hook
+      // marks the pane and the hub records a conversation id while folder
+      // trust or sign-in still shows. The conversation id is read from the
+      // hub list apart from that judgment (agy-runtime §3.6).
       if (record.provider === 'agy') {
-        if (record.session_id === null || startup_target) {
+        if (startup_target && isCurrent(key, record)) {
+          await observeStartup(key, record, false);
+        }
+        if (record.session_id === null && isCurrent(key, record)) {
           const listed =
             typeof launcher.agySessionId === 'function'
               ? await launcher.agySessionId(record.pane_id)
@@ -15805,29 +15809,13 @@ export function createScheduler(deps) {
               key,
               listed
             );
-            if (record.session_id === null) {
-              continue;
-            }
-          } else {
-            if (listed.session_id && record.session_id === null) {
-              update(key, record, {
-                session_id: listed.session_id,
-                session_id_source: 'hub_list'
-              });
-            }
-            if (startup_target && isCurrent(key, record)) {
-              const marked =
-                (typeof pane_row.agent_running === 'string' &&
-                  pane_row.agent_running.length > 0 &&
-                  pane_row.agent_running !== '0') ||
-                (typeof pane_row.agent_attention === 'string' &&
-                  pane_row.agent_attention.length > 0);
-              await observeStartup(
-                key,
-                record,
-                Boolean(listed.session_id) || marked
-              );
-            }
+            continue;
+          }
+          if (listed.session_id) {
+            update(key, record, {
+              session_id: listed.session_id,
+              session_id_source: 'hub_list'
+            });
           }
         }
       }
