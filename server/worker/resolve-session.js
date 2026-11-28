@@ -1308,6 +1308,8 @@ export function failedDiscardOperation(queue, bead_id) {
  * the fresh runtime here, the model/effort flags in the launcher.
  * @property {(runner: string) => string[]} [launchFlags] - Passed to the
  * launcher; defaults to the stored settings.
+ * @property {import('./tmux-launcher.js').TmuxLauncherDeps['agyModels']} [agyModels] -
+ * Passed to the launcher; defaults to the process-wide agy model list.
  */
 
 /**
@@ -1379,6 +1381,7 @@ export function createResolveSession(deps) {
     ...(deps.now ? { now: deps.now } : {}),
     ...(deps.heartbeatPath ? { heartbeatPath: deps.heartbeatPath } : {}),
     ...(deps.launchFlags ? { launchFlags: deps.launchFlags } : {}),
+    ...(deps.agyModels ? { agyModels: deps.agyModels } : {}),
     log
   });
 

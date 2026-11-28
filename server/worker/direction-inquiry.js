@@ -357,6 +357,8 @@ export function inquiryWrapper(input) {
  * Read per launch for a fresh fallback's runtime.
  * @property {(runner: string) => string[]} [launchFlags] - Passed to the
  * launcher; defaults to the stored settings' model/effort flags.
+ * @property {import('./tmux-launcher.js').TmuxLauncherDeps['agyModels']} [agyModels] -
+ * Passed to the launcher; defaults to the process-wide agy model list.
  */
 
 /**
@@ -378,6 +380,7 @@ export function createDirectionInquiry(deps) {
     ...(deps.now ? { now: deps.now } : {}),
     ...(deps.heartbeatPath ? { heartbeatPath: deps.heartbeatPath } : {}),
     ...(deps.launchFlags ? { launchFlags: deps.launchFlags } : {}),
+    ...(deps.agyModels ? { agyModels: deps.agyModels } : {}),
     log
   });
   const autoLaunchEnabled =

@@ -6,6 +6,10 @@ import { parse as parseToml } from 'smol-toml';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { hubReply } from '../../test/session-hub.js';
 import { __resetConversationSettingsForTest } from '../conversation-settings.js';
+import {
+  beginAgyCredentialChange,
+  endAgyCredentialChange
+} from './agy-model-list.js';
 import { agyConversationArgs } from './runner/agy.js';
 import { __resetRuntimeCatalogForTest } from './runner/index.js';
 import {
@@ -1665,11 +1669,16 @@ describe('tmux-launcher startup advance (UI-e5cq §3.1)', () => {
 
 describe('tmux-launcher agy conversations (UI-ufgo Phase 4)', () => {
   const AGY = '/home/u/.local/bin/agy';
+  const LISTED = [
+    'gemini-4-neon-high',
+    'gemini-4-carbon-high',
+    'gemini-4-argon-medium'
+  ];
 
   /**
    * A launcher whose hub opens every window and records each argv.
    *
-   * @param {{ flags?: string[], sessions?: any[] }} [input]
+   * @param {{ flags?: string[], sessions?: any[], names?: string[]|null }} [input]
    */
   function agyLauncher(input = {}) {
     /** @type {string[][]} */
@@ -1698,6 +1707,11 @@ describe('tmux-launcher agy conversations (UI-ufgo Phase 4)', () => {
       },
       resolveRunner: (runner) => (runner === 'agy' ? AGY : null),
       launchFlags: (runner) => (runner === 'agy' ? (input.flags ?? []) : []),
+      agyModels: {
+        checkCredentials: () => false,
+        ready: () => input.names !== null,
+        names: () => input.names ?? LISTED
+      },
       log: () => {}
     });
     /**
@@ -1814,10 +1828,70 @@ describe('tmux-launcher agy conversations (UI-ufgo Phase 4)', () => {
     expect(opened).not.toContain('--agent');
     expect(opened.slice(opened.indexOf('--') + 1)).toEqual([
       AGY,
+      '--model',
+      'gemini-4-neon-high',
       '--dangerously-skip-permissions',
       '-i',
       'hello'
     ]);
+  });
+
+  test('opens an agy conversation on the default model when none is set', async () => {
+    const { launcher, openedArgv } = agyLauncher();
+
+    await launcher.launch(
+      agyInput({ commandArgs: agyConversationArgs({ prompt: 'hello' }) })
+    );
+
+    expect(openedArgv().slice(1, 3)).toEqual(['--model', 'gemini-4-neon-high']);
+  });
+
+  test('refuses an agy conversation while no model list stands', async () => {
+    const { calls, launcher } = agyLauncher({ names: null });
+
+    const result = await launcher.launch(
+      agyInput({ commandArgs: agyConversationArgs({ prompt: 'hello' }) })
+    );
+
+    expect(result).toEqual({
+      session: 'not_launched',
+      reason: 'launch_failed:agy_model_list_unavailable'
+    });
+    expect(calls.some((call) => call[0] === 'open')).toBe(false);
+  });
+
+  test('refuses an agy conversation whose model the list lacks', async () => {
+    const { calls, launcher } = agyLauncher({
+      flags: ['--model', 'gemini-4-hydrogen-medium']
+    });
+
+    const result = await launcher.launch(
+      agyInput({ commandArgs: agyConversationArgs({ prompt: 'hello' }) })
+    );
+
+    expect(result).toEqual({
+      session: 'not_launched',
+      reason: 'launch_failed:agy_model_unlisted'
+    });
+    expect(calls.some((call) => call[0] === 'open')).toBe(false);
+  });
+
+  test('refuses an agy conversation while an agy credential change runs', async () => {
+    const { launcher } = agyLauncher();
+    beginAgyCredentialChange();
+
+    try {
+      const result = await launcher.launch(
+        agyInput({ commandArgs: agyConversationArgs({ prompt: 'hello' }) })
+      );
+
+      expect(result).toEqual({
+        session: 'not_launched',
+        reason: 'launch_failed:agy_credential_change'
+      });
+    } finally {
+      endAgyCredentialChange();
+    }
   });
 
   test('reads an agy startup screen with --runner agy', async () => {

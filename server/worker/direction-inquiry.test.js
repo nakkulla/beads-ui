@@ -224,6 +224,13 @@ function attempt(over = {}) {
   };
 }
 
+/** A ready agy model list that holds the default model. */
+const AGY_MODELS = {
+  checkCredentials: () => false,
+  ready: () => true,
+  names: () => ['gemini-4-neon-high']
+};
+
 /** Conversation settings that keep every launch's provider (`inherit`). */
 const INHERIT_SETTINGS = {
   auto_launch: true,
@@ -301,6 +308,7 @@ function makeInquiry(over = {}) {
       over.autoLaunchEnabled || ((/** @type {boolean} */ value) => value),
     conversationSettings: over.conversationSettings || (() => INHERIT_SETTINGS),
     launchFlags: over.launchFlags || (() => []),
+    agyModels: AGY_MODELS,
     log: () => {}
   });
   return { inquiry, tmux, conversationConfirm };
@@ -796,7 +804,7 @@ describe('direction-inquiry fresh fallback', () => {
     await inquiry.onParkedAttempt(recoveryInput());
 
     expect(tmux.wrapper()).toContain(
-      "exec '/home/.local/bin/agy' '--dangerously-skip-permissions' '-i' '이 세션은"
+      "exec '/home/.local/bin/agy' '--model' 'gemini-4-neon-high' '--dangerously-skip-permissions' '-i' '이 세션은"
     );
     expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
       provider: 'agy',

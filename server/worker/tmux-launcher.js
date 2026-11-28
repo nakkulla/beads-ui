@@ -11,6 +11,11 @@ import { parse as parseToml } from 'smol-toml';
 import { runShell } from '../bd.js';
 import { conversationSettingsStore } from '../conversation-settings.js';
 import { debug } from '../logging.js';
+import {
+  AGY_DEFAULT_MODEL,
+  agyCredentialChangeActive,
+  agyModelList
+} from './agy-model-list.js';
 import { SELECTABLE_RUNNERS } from './runner-catalog.js';
 import { agyLauncherPath } from './runner/agy.js';
 import { runtimeCatalog } from './runner/index.js';
@@ -410,6 +415,9 @@ function defaultLaunchFlags(runner) {
  * @property {string} [bridgeStateDir]
  * @property {(runner: string) => string[]} [launchFlags] - The conversation
  * settings' model/effort flags for a runner, read per launch.
+ * @property {{ checkCredentials: () => boolean, ready: () => boolean, names: () => string[] }} [agyModels] -
+ * The current account's agy model list an agy conversation is checked
+ * against; defaults to the process-wide list.
  */
 
 /**
@@ -896,6 +904,16 @@ export function createTmuxLauncher(deps = {}) {
         reason: `launch_failed:${runner}_not_found`
       };
     }
+    const runner_args = runnerArgs(runner, input);
+    // A session-lane window (`conversation_flags: false`) carries the model
+    // its dispatch gate already checked against the list.
+    if (runner === 'agy' && input.conversation_flags !== false) {
+      const refused = agyConversationRefusal(runner_args);
+      if (refused !== null) {
+        log('agy conversation refused for %s: %s', input.key, refused);
+        return { session: 'not_launched', reason: `launch_failed:${refused}` };
+      }
+    }
     const extra_env = input.env || {};
     /** @type {string|null} */
     let codex_home = null;
@@ -943,7 +961,7 @@ export function createTmuxLauncher(deps = {}) {
       ...(runner === 'claude'
         ? ['--allow-dangerously-skip-permissions', '--no-chrome']
         : []),
-      ...runnerArgs(runner, input)
+      ...runner_args
     ]);
     if (!opened.ok) {
       return { session: 'not_launched', reason: opened.error };
@@ -1007,7 +1025,41 @@ export function createTmuxLauncher(deps = {}) {
       input.commandArgs,
       input.conversation_flags === false ? [] : launchFlags(runner)
     );
-    return runner === 'agy' ? withAgyPermissionFlag(args) : args;
+    if (runner !== 'agy') {
+      return args;
+    }
+    // A conversation with no agy model set opens on the default one
+    // (agy-runtime §3.3).
+    return withAgyPermissionFlag(
+      input.conversation_flags === false || args.includes('--model')
+        ? args
+        : ['--model', AGY_DEFAULT_MODEL, ...args]
+    );
+  }
+
+  /**
+   * Why an agy conversation may not open now, the same reasons the Worker
+   * dispatch refuses with (agy-runtime §3.3): a credential change runs, no
+   * list stands for the current account, or the model is not on it.
+   *
+   * @param {string[]} args - The agy argv after its launcher.
+   * @returns {'agy_credential_change'|'agy_model_list_unavailable'|'agy_model_unlisted'|null}
+   */
+  function agyConversationRefusal(args) {
+    if (agyCredentialChangeActive()) {
+      return 'agy_credential_change';
+    }
+    const models = deps.agyModels || agyModelList();
+    models.checkCredentials();
+    if (!models.ready()) {
+      return 'agy_model_list_unavailable';
+    }
+    const at = args.indexOf('--model');
+    const id = at >= 0 ? args[at + 1] : undefined;
+    if (typeof id !== 'string' || !models.names().includes(id)) {
+      return 'agy_model_unlisted';
+    }
+    return null;
   }
 
   /**

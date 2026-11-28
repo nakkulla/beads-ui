@@ -182,6 +182,13 @@ const INHERIT_SETTINGS = {
 };
 
 /** A catalog slice the flag builder resolves model ids through. */
+/** A ready agy model list that holds the default model. */
+const AGY_MODELS = {
+  checkCredentials: () => false,
+  ready: () => true,
+  names: () => ['gemini-4-neon-high']
+};
+
 const FLAG_CATALOG = {
   runners: {
     claude: { models: { sonnet: { id: 'sonnet' } }, efforts: ['high'] },
@@ -222,6 +229,7 @@ function makeLauncher(input = {}) {
     conversationSettings: () => settings,
     launchFlags: (runner) =>
       conversationLaunchFlags(runner, settings, FLAG_CATALOG),
+    agyModels: AGY_MODELS,
     sessionRefOptions: {
       home_dir: HOME,
       hostname: HOST,
@@ -1971,7 +1979,7 @@ describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
 
     expect([outcome.mode, outcome.runner]).toEqual(['fresh', 'agy']);
     expect(launchedWrapper(tmux)).toContain(
-      "exec '/home/.local/bin/agy' '--dangerously-skip-permissions' '-i' '이 세션은"
+      "exec '/home/.local/bin/agy' '--model' 'gemini-4-neon-high' '--dangerously-skip-permissions' '-i' '이 세션은"
     );
     expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
       provider: 'agy',
@@ -2014,7 +2022,7 @@ describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
 
     expect([outcome.launched, outcome.runner]).toEqual([true, 'agy']);
     expect(launchedWrapper(tmux)).toContain(
-      "exec '/home/.local/bin/agy' '--dangerously-skip-permissions' '-i' '이 세션은"
+      "exec '/home/.local/bin/agy' '--model' 'gemini-4-neon-high' '--dangerously-skip-permissions' '-i' '이 세션은"
     );
   });
 
