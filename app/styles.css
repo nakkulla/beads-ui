@@ -306,11 +306,21 @@ a {
   color: var(--button-fg);
 }
 
-/* Provider usage meters: active account windows, in source order. */
+/* Provider usage meters: active account windows, in source order.
+   미터는 모든 폭에서 provider 그룹 단위로 줄바꿈한다. 한 줄 inline-flex는
+   줄어들 수 없어, 창이 늘면(agy의 5h·7d·Claude·GPT 5h·Claude·GPT 7d) 넓은
+   데스크톱 폭에서도 헤더가 뷰포트를 넘었다. 분기점을 올리는 대신 줄바꿈을 쓰는
+   이유는 창 개수와 무관하게 닫히기 때문이다. 한 줄에 다 들어가는 폭에서는
+   배치가 그대로다. */
 .usage-meter-mount,
 .usage-meter {
   display: inline-flex;
   align-items: center;
+}
+
+.usage-meter-mount {
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* 미터 칸은 헤더 조작 줄의 높이를 따른다 — 미터가 없는 칸은 좁은 폭에서 빈 줄이
@@ -321,6 +331,7 @@ a {
 }
 
 .usage-meter {
+  flex-wrap: wrap;
   gap: var(--sp-12);
   margin-right: var(--sp-4);
 }
@@ -331,9 +342,41 @@ a {
   gap: var(--sp-8);
 }
 
-.usage-meter__group + .usage-meter__group {
-  padding-left: var(--sp-12);
-  border-left: 1px solid var(--border-chip);
+/* 그룹 사이 세로선(901px 이상). 그룹이 다음 줄로 넘어가도 줄 머리에 선이
+   남지 않고 첫 글자가 윗줄과 맞도록, 모든 그룹이 같은 왼쪽 여백과 그 여백 머리의
+   선을 갖고, 미터 전체를 여백만큼 왼쪽으로 당긴 뒤 선 한 줄 폭만 잘라낸다. 한
+   줄 배치에서 첫 그룹 글자와 그룹 사이 간격(간격 + 선 + 12px)은 예전 그대로다 —
+   첫 그룹이 토글이 아닌 정적 span이면 예전처럼 왼쪽 여백이 없다. 선은 그룹 상자
+   밖에 그려 토글의 포커스 링이 잘리지 않는다. 한 그룹만으로 줄을 넘는 폭이면 그
+   그룹은 줄 폭으로 줄고 창을 그룹 안에서 다음 줄로 넘긴다. */
+@media (min-width: 901px) {
+  .usage-meter {
+    margin-left: calc(var(--sp-6) - var(--sp-12) - var(--sp-1));
+    clip-path: inset(
+      calc(-1 * var(--sp-4)) calc(-1 * var(--sp-4)) calc(-1 * var(--sp-4))
+        var(--sp-1)
+    );
+  }
+
+  .usage-meter .usage-meter__group {
+    position: relative;
+    flex-wrap: wrap;
+    margin-left: calc(var(--sp-12) + var(--sp-1) - var(--sp-6));
+    padding-left: var(--sp-6);
+  }
+
+  .usage-meter .usage-meter__group:first-child:not(.usage-meter__toggle) {
+    padding-left: 0;
+  }
+
+  .usage-meter .usage-meter__group::before {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(var(--sp-6) - var(--sp-12) - var(--sp-1));
+    border-left: var(--sp-1) solid var(--border-chip);
+    content: '';
+  }
 }
 
 .usage-meter__group--stale {
@@ -399,16 +442,9 @@ a {
    있는 폭까지 줄이는 것이 목적이므로, 어느 창의 몇 %인지 읽을 수 없게 만드는
    축약은 하지 않는다. */
 @media (max-width: 900px) {
-  /* 미터는 provider 그룹 단위로 줄바꿈한다. 한 줄 inline-flex는 줄어들 수
-     없어 창이 늘면(5h·7d·모델) 뷰포트 밖으로 잘렸다. 줄 머리에 구분선이 남지
-     않도록 그룹 사이 세로선은 지우고 간격으로만 나눈다. */
-  .usage-meter-mount {
-    min-width: 0;
-    max-width: 100%;
-  }
-
+  /* 좁은 폭에서는 그룹이 자주 줄바꿈하므로 그룹 사이 세로선 없이 간격으로만
+     나눈다. 둘째 그룹부터는 토글(`.op-btn`)의 왼쪽 여백도 지운다. */
   .usage-meter {
-    flex-wrap: wrap;
     gap: var(--sp-4) var(--sp-14);
     margin-right: 0;
   }
