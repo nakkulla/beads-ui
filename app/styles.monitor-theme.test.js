@@ -89,6 +89,55 @@ describe('monitor tab styles (UI-eey2)', () => {
     expect(ribbon).toMatch(/\.usage-meter__group\s*{[^}]*width:\s*100%/);
   });
 
+  test('wraps usage windows within a provider row instead of overlapping them on a ≤640px viewport', () => {
+    const block = monitorBlock();
+    const ribbon = block.slice(block.indexOf('.usage-meter-mount'));
+
+    expect(ribbon).toMatch(/\.usage-meter__group\s*{[^}]*flex-wrap:\s*wrap/);
+    expect(ribbon).toMatch(
+      /\.usage-meter__window\s*{[^}]*min-width:\s*max-content/
+    );
+    expect(ribbon).not.toMatch(/\.usage-meter__window\s*{[^}]*min-width:\s*0/);
+  });
+
+  test('wraps the usage ribbon by provider group at every width', () => {
+    const top_level_meter = [...CSS.matchAll(/\n\.usage-meter \{([^}]*)\}/g)];
+    const top_level_mount = [
+      ...CSS.matchAll(/\n\.usage-meter-mount \{([^}]*)\}/g)
+    ];
+
+    expect(top_level_meter.some((m) => /flex-wrap:\s*wrap/.test(m[1]))).toBe(
+      true
+    );
+    expect(
+      top_level_mount.some(
+        (m) => /min-width:\s*0/.test(m[1]) && /max-width:\s*100%/.test(m[1])
+      )
+    ).toBe(true);
+  });
+
+  test('draws the ≥901px group divider outside the group box and clips it at a wrapped row head', () => {
+    const wide = CSS.slice(CSS.indexOf('@media (min-width: 901px)'));
+    const rules = wide.slice(0, wide.indexOf('\n}\n'));
+
+    expect(rules).toMatch(/\.usage-meter\s*{[^}]*margin-left:[^}]*clip-path:/);
+    expect(rules).toMatch(
+      /\.usage-meter \.usage-meter__group::before\s*{[^}]*border-left:/
+    );
+    expect(CSS).not.toMatch(
+      /\n\.usage-meter__group \+ \.usage-meter__group \{[^}]*border-left:\s*1px/
+    );
+  });
+
+  test('wraps windows inside a ≥901px group that alone overflows the row', () => {
+    const wide = CSS.slice(CSS.indexOf('@media (min-width: 901px)'));
+    const rules = wide.slice(0, wide.indexOf('\n}\n'));
+
+    expect(rules).toMatch(
+      /\.usage-meter \.usage-meter__group\s*{[^}]*flex-wrap:\s*wrap/
+    );
+  });
+
   test('blurs the unfocused lanes instead of hiding them (§4.2)', () => {
     const block = monitorBlock();
     const focus = block.slice(block.indexOf('.mon.has-focus'));
