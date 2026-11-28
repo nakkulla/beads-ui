@@ -750,6 +750,33 @@ describe('direction-inquiry fresh fallback', () => {
     });
   });
 
+  test('opens a fresh agy conversation with the entry as its first input', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { inquiry, tmux } = makeInquiry({
+      tmux: launchingHub(),
+      readAttempt: async () => attempt({ session_id: null }),
+      resolveRunner: (/** @type {string} */ runner) =>
+        runner === 'agy' ? '/home/.local/bin/agy' : null,
+      conversationSettings: () => ({
+        ...INHERIT_SETTINGS,
+        fresh_runtime: 'agy'
+      }),
+      store: { recordInteractiveSession }
+    });
+
+    await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(tmux.wrapper()).toContain(
+      "exec '/home/.local/bin/agy' '--dangerously-skip-permissions' '-i' '이 세션은"
+    );
+    expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
+      provider: 'agy',
+      session_id: null,
+      session_id_source: null,
+      mode: 'fresh'
+    });
+  });
+
   test('keeps the attempt runtime for its own session over the setting', async () => {
     const recordInteractiveSession = vi.fn();
     const { inquiry } = makeInquiry({

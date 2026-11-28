@@ -1952,6 +1952,54 @@ describe('resolution session launch settings (UI-jbl1 §3.4)', () => {
     );
   });
 
+  test('opens a fresh agy session with the entry as its first input', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { resolver, tmux } = makeLauncher({
+      metadata: {},
+      resolveRunner: (runner) =>
+        runner === 'agy' ? '/home/.local/bin/agy' : null,
+      settings: { fresh_runtime: 'agy' },
+      store: { recordInteractiveSession }
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect([outcome.mode, outcome.runner]).toEqual(['fresh', 'agy']);
+    expect(launchedWrapper(tmux)).toContain(
+      "exec '/home/.local/bin/agy' '--dangerously-skip-permissions' '-i' '이 세션은"
+    );
+    expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
+      provider: 'agy',
+      session_id: null,
+      session_id_source: null
+    });
+  });
+
+  test('opens a repo-operation conversation on agy with the entry as its first input', async () => {
+    const { resolver, tmux } = makeLauncher({
+      resolveRunner: (runner) =>
+        runner === 'agy' ? '/home/.local/bin/agy' : null,
+      settings: { fresh_runtime: 'agy' }
+    });
+
+    const outcome = await resolver.resolveRepoOperation({
+      workspace: REPO,
+      repo: REPO,
+      operation_id: 'op-1',
+      failure: FAILURE
+    });
+
+    expect([outcome.launched, outcome.runner]).toEqual([true, 'agy']);
+    expect(launchedWrapper(tmux)).toContain(
+      "exec '/home/.local/bin/agy' '--dangerously-skip-permissions' '-i' '이 세션은"
+    );
+  });
+
   test('opens a fresh codex session with the codex model and effort flags', async () => {
     const { resolver, tmux } = makeLauncher({
       metadata: {},

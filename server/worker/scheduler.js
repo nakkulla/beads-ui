@@ -1588,7 +1588,7 @@ function startupEventPrefix(kind) {
  * @property {string} line
  * @property {string} key
  * @property {number} launched_at
- * @property {'claude'|'codex'} provider
+ * @property {'claude'|'codex'|'agy'} provider
  * @property {string|null} session_id
  */
 

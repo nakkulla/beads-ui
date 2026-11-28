@@ -60,6 +60,7 @@ import {
   operationIncidentFingerprint,
   selfRepairFailureIdentity
 } from './resolution-ladder.js';
+import { agyConversationArgs } from './runner/agy.js';
 import { UNKNOWN_RUNNER } from './runner/index.js';
 import { sessionInquiryIdOf } from './session-inquiry/contract.js';
 import { resolveSessionLaunchOptions } from './session-launch-accounts.js';
@@ -102,6 +103,26 @@ function forkArgs(runner, session_id, prompt, launch_session_id, cwd) {
         /** @type {string} */ (launch_session_id),
         prompt
       ];
+}
+
+/**
+ * The argv of a FRESH conversation: claude takes the id it was launched with,
+ * agy its first input through `-i` (its conversation id is read from the hub
+ * later, UI-ufgo Phase 4), and codex the bare prompt.
+ *
+ * @param {'claude'|'codex'|'agy'} runner
+ * @param {string|null} launch_session_id
+ * @param {string} prompt
+ * @returns {string[]}
+ */
+function freshArgs(runner, launch_session_id, prompt) {
+  if (runner === 'claude') {
+    return ['--session-id', /** @type {string} */ (launch_session_id), prompt];
+  }
+  if (runner === 'agy') {
+    return agyConversationArgs({ prompt });
+  }
+  return [prompt];
 }
 
 /**
@@ -1299,7 +1320,7 @@ export function failedDiscardOperation(queue, bead_id) {
  * @property {string|null} fallback_reason - Why the recorded session was not
  * forked; null on a fork.
  * @property {string|null} session_id
- * @property {'claude'|'codex'|null} runner - The provider the window actually runs.
+ * @property {'claude'|'codex'|'agy'|null} runner - The provider the window actually runs.
  * A fork keeps the RECORDED session's provider, and so does the fresh fallback
  * a missing or unusable transcript forces (§4.1). Only a bead with no recorded
  * session at all follows current execution settings.
@@ -1389,7 +1410,7 @@ export function createResolveSession(deps) {
    *
    * @param {'claude'|'codex'|null} inherited - null when the current runner is
    * not a registered one.
-   * @returns {'claude'|'codex'|null}
+   * @returns {'claude'|'codex'|'agy'|null}
    */
   function freshRunner(inherited) {
     try {
@@ -1644,16 +1665,12 @@ export function createResolveSession(deps) {
         checkout
       });
       const launch_session_id = runner === 'claude' ? randomUUID() : null;
+      // A fork keeps the recorded provider, which is claude or codex only.
+      const fork_runner = /** @type {'claude'|'codex'} */ (target.runner);
       const command_args =
         session_id === null
-          ? runner === 'claude'
-            ? [
-                '--session-id',
-                /** @type {string} */ (launch_session_id),
-                prompt
-              ]
-            : [prompt]
-          : forkArgs(runner, session_id, prompt, launch_session_id, cwd);
+          ? freshArgs(runner, launch_session_id, prompt)
+          : forkArgs(fork_runner, session_id, prompt, launch_session_id, cwd);
       const outcome = await launcher.launch({
         ...(await resolveSessionLaunchOptions(
           deps.resolveSessionAccounts,
@@ -1735,7 +1752,7 @@ export function createResolveSession(deps) {
             ? runner === 'claude'
               ? `claude --session-id ${shellQuote(/** @type {string} */ (launch_session_id))}`
               : runner
-            : forkCommand(runner, session_id, launch_session_id, cwd),
+            : forkCommand(fork_runner, session_id, launch_session_id, cwd),
         bridge_active: launcher.bridgeActive(),
         placement:
           outcome.session === 'not_launched'
@@ -1807,14 +1824,7 @@ export function createResolveSession(deps) {
         // pane listing's fixed fields, so the window name uses a dash.
         window_name: `resolve-repo-op-${input.operation_id.slice(0, 12)}`,
         cwd: checkout,
-        commandArgs:
-          runner === 'claude'
-            ? [
-                '--session-id',
-                /** @type {string} */ (launch_session_id),
-                prompt
-              ]
-            : [prompt],
+        commandArgs: freshArgs(runner, launch_session_id, prompt),
         runner,
         placement: input.placement === 'inquiry' ? 'inquiry' : 'user'
       });
